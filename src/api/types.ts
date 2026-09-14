@@ -81,6 +81,13 @@ export interface WalletInfo {
   dataDir: string;
 }
 
+/** Desktop only. The web host reports a storage label through its session view instead —
+ *  a browser is never given a server path. */
+export interface Paths {
+  dataDir: string;
+  walletsDir: string;
+}
+
 export interface RestoreSelection {
   selectionId: string;
   displayName: string;
@@ -465,6 +472,8 @@ export interface RecoveryContract {
   confirmations: number;
   /** Blocks still to wait. Timelock only. */
   blocksRemaining?: number;
+  /** The refund delay in full, so progress through it can be shown. Timelock only. */
+  lockBlocks?: number;
 }
 
 /** A contract the recovery loop has already claimed back. */

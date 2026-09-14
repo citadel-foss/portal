@@ -15,7 +15,8 @@ use log4rs::append::rolling_file::policy::compound::CompoundPolicy;
 use log4rs::append::rolling_file::RollingFileAppender;
 use log4rs::config::{Appender, Config, Logger, Root};
 use log4rs::Handle;
-use tauri::Emitter;
+
+use crate::events::{AppEvent, EventSink, InitPhase};
 
 static HANDLE: OnceLock<Handle> = OnceLock::new();
 static TAKER_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -181,13 +182,6 @@ const INIT_PHASE_NOTES: &[(&str, Option<&str>)] = &[
     ),
 ];
 
-/// The phase `Taker::init` has reached, and any note to show beneath that step.
-#[derive(Clone, Copy, PartialEq, serde::Serialize)]
-struct InitPhase {
-    phase: u8,
-    note: Option<&'static str>,
-}
-
 impl InitPhase {
     /// Folds one crate log line in, reporting whether it moved. Phases only ever advance: the
     /// recovery pass re-logs lines the earlier phases also emit, and those must not walk the
@@ -215,23 +209,23 @@ impl InitPhase {
 }
 
 struct InitPhaseWatch {
-    app: tauri::AppHandle,
+    sink: EventSink,
     at: InitPhase,
 }
 
 static INIT_PHASE: Mutex<Option<InitPhaseWatch>> = Mutex::new(None);
 
-/// Report `Taker::init`'s phase to the webview until [`stop_watching_init_phases`].
-pub fn watch_init_phases(app: tauri::AppHandle) {
+/// Report `Taker::init`'s phase through `sink` until [`stop_watching_init_phases`].
+pub fn watch_init_phases(sink: EventSink) {
     // Phase 0 is announced here rather than by a marker: it begins when `Taker::init` is
     // called, and a restore needs that edge to know its own step has finished.
     let at = InitPhase {
         phase: 0,
         note: None,
     };
-    let _ = app.emit("wallet://init-phase", at);
+    sink.publish(AppEvent::WalletInitPhase(at));
     if let Ok(mut guard) = INIT_PHASE.lock() {
-        *guard = Some(InitPhaseWatch { app, at });
+        *guard = Some(InitPhaseWatch { sink, at });
     }
 }
 
@@ -259,7 +253,7 @@ impl log::Log for InitPhaseWatcher {
             return;
         };
         if watch.at.advance(&record.args().to_string()) {
-            let _ = watch.app.emit("wallet://init-phase", watch.at);
+            watch.sink.publish(AppEvent::WalletInitPhase(watch.at));
         }
     }
 
@@ -362,7 +356,7 @@ pub fn tail_lines(path: &Path, want: usize) -> std::io::Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_line, MakerLogRouter};
+    use super::{redact_line, InitPhase, MakerLogRouter};
 
     #[test]
     fn extracts_leading_bracketed_port() {
@@ -377,11 +371,11 @@ mod tests {
     /// re-emits wallet lines the earlier phases already matched.
     #[test]
     fn init_phases_advance_over_a_real_startup() {
-        let mut at = super::InitPhase {
+        let mut at = InitPhase {
             phase: 0,
             note: None,
         };
-        let seen = |at: &mut super::InitPhase, line: &str| {
+        let seen = |at: &mut InitPhase, line: &str| {
             at.advance(line);
             (at.phase, at.note)
         };
@@ -421,7 +415,7 @@ mod tests {
             "Waiting for 1 confirmation(s) on 1 transaction(s)...",
         );
         assert_eq!(phase, 4);
-        assert!(note.is_some_and(|note| note.contains("waiting for a block")));
+        assert!(note.is_some_and(|note: &str| note.contains("waiting for a block")));
         // The recovery pass re-logs a wallet line from an earlier phase; nothing may rewind.
         assert_eq!(seen(&mut at, "Sync Started for \"w\""), (phase, note));
     }

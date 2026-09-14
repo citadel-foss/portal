@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { subscribe } from "../../api/transport";
 import {
   AlertTriangle,
   ArrowLeftRight,
@@ -231,22 +231,22 @@ export function SwapPage() {
     let unlistenFinished: (() => void) | undefined;
     let unlistenFailed: (() => void) | undefined;
     let unlistenRecovering: (() => void) | undefined;
-    void listen<string>("swap://finished", () => setPhase("finished")).then(
+    void subscribe<string>("swap://finished", () => setPhase("finished")).then(
       (fn) => {
         unlistenFinished = fn;
       },
     );
     // Only fires for a failure with nothing on-chain, which is a plain error with nothing to
     // recover. Anything past the funding broadcast arrives as swap://recovering instead.
-    void listen<AppError>("swap://failed", (e) => {
-      setFailure(e.payload);
+    void subscribe<AppError>("swap://failed", (e) => {
+      setFailure(e);
       setPhase("failed");
     }).then((fn) => {
       unlistenFailed = fn;
     });
     // The funds are in contracts and the crate is already claiming them back, so this page hands
     // itself back for the next swap and the recovery page takes over.
-    void listen("swap://recovering", () => {
+    void subscribe("swap://recovering", () => {
       resetWizard();
       pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
       navigate("/swap/recovery");

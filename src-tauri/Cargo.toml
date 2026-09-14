@@ -1,9 +1,9 @@
 [package]
 name = "portal"
-version = "0.1.0"
+version.workspace = true
 description = "Portal desktop app (Tauri + React)"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 
 [lib]
 name = "portal_lib"
@@ -13,23 +13,21 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+portal-core = { path = "../core" }
+tokio.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-dirs = "6"
-log = "0.4"
-uuid = { version = "1", features = ["v4", "serde"] }
-libc = "0.2"
-minreq = { version = "2.12.0", features = ["https"] }
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+log.workspace = true
+uuid.workspace = true
+libc.workspace = true
+minreq.workspace = true
 # Decodes Tor's `tor/hostname` file in the maker's data dir — same format openswap itself uses.
-serde_cbor = "0.11.2"
-# Own logger config (see src/logging.rs) — openswap's setup_taker_logger/setup_maker_logger
-# share one process-wide OnceLock, so we can't use both to get two separate log files.
-log4rs = "1.4.0"
-openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
-libtor = { version = "47.13", features = ["vendored-openssl"], optional = true }
+serde_cbor.workspace = true
+openswap.workspace = true
 tauri-plugin-single-instance = "2"
 
 [features]
@@ -37,4 +35,4 @@ tauri-plugin-single-instance = "2"
 # use their own process and authentication choice; users without one can still
 # start Portal without installing Tor separately.
 default = ["embedded-tor"]
-embedded-tor = ["dep:libtor"]
+embedded-tor = ["portal-core/embedded-tor"]

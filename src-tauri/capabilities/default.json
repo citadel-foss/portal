@@ -49,6 +49,7 @@
     "allow-get-swap-report",
     "allow-get-swap-tracker",
     "allow-get-transactions",
+    "allow-get-paths",
     "allow-get-wallet-info",
     "allow-import-dashboard-makers",
     "allow-init-maker",

@@ -12,14 +12,14 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 # The openswap commit Cargo.lock currently pins, read out of that package's block alone so a
 # rev belonging to some other git dependency can't be picked up by mistake.
 pinned_rev() {
-  sed -n '/^name = "openswap"$/,/^\[\[package\]\]/p' src-tauri/Cargo.lock |
+  sed -n '/^name = "openswap"$/,/^\[\[package\]\]/p' Cargo.lock |
     sed -n 's/^source = .*#\([0-9a-f]\{40\}\)"$/\1/p' | head -1
 }
 
 before=$(pinned_rev)
 
 step "Updating the openswap crate"
-(cd src-tauri && cargo update -p openswap)
+cargo update -p openswap
 after=$(pinned_rev)
 if [ -z "$after" ]; then
   echo "openswap is not pinned to a git revision in Cargo.lock" >&2
@@ -34,10 +34,10 @@ step "Installing npm packages"
 npm install
 
 step "Checking Rust"
-(cd src-tauri && cargo clippy --all-targets)
+cargo clippy --workspace --all-targets
 
 step "Testing Rust"
-(cd src-tauri && cargo test)
+cargo test --workspace
 
 step "Checking TypeScript"
 npm run typecheck

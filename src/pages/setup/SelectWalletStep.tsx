@@ -1,10 +1,9 @@
-import { open } from "@tauri-apps/plugin-dialog";
-import { listen } from "@tauri-apps/api/event";
-import { dirname } from "@tauri-apps/api/path";
+import { subscribe } from "../../api/transport";
+import { capabilities, pickDirectory, pickFile, selectBackup } from "../../platform";
 import { FolderOpen, FolderPlus, Plus, RotateCcw } from "lucide-react";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { chooseRestoreBackup, initWallet, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
+import { initWallet, listWallets, restoreWallet, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { InitResult, RestoreSelection } from "../../api/types";
 import { Card, Modal, WalletCard } from "../../components/ui/display";
@@ -56,6 +55,10 @@ const IDLE_PROGRESS: InitProgress = { phase: -1, note: null, failed: false };
 
 function randomWalletName() {
   return `taker-wallet-${Math.floor(100000 + Math.random() * 900000)}`;
+}
+
+function parentDir(path: string) {
+  return path.replace(/[/\\][^/\\]*$/, "");
 }
 
 function basename(path: string) {
@@ -111,10 +114,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   useEffect(() => {
     // Phases only advance: `Taker::init`'s recovery pass re-logs lines the earlier phases also
     // emit, and a late one must not walk the checklist backwards.
-    const unlisten = listen<{ phase: number; note: string | null }>("wallet://init-phase", (event) =>
+    const unlisten = subscribe<{ phase: number; note: string | null }>("wallet://init-phase", (event) =>
       setProgress((current) => ({
-        phase: Math.max(current.phase, event.payload.phase),
-        note: event.payload.note,
+        phase: Math.max(current.phase, event.phase),
+        note: event.note,
         failed: false,
       })),
     );
@@ -145,20 +148,22 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   }
 
   async function changeLocation() {
-    const path = await open({ directory: true, defaultPath: dataDir ?? (await getDefaultDataDir()) });
-    if (typeof path !== "string") return;
+    const path = await pickDirectory(dataDir ?? (await getDefaultDataDir()));
+    if (path === null) return;
     setDataDir(path);
     saveDataDir(path);
     refreshWallets(path);
   }
 
   async function loadWalletFile() {
-    const path = await open({ multiple: false, defaultPath: dataDir ?? (await getDefaultWalletsDir()) });
-    if (typeof path !== "string") return;
+    const path = await pickFile(dataDir ?? (await getDefaultWalletsDir()));
+    if (path === null) return;
     // Wallet files live at <data_dir>/wallets/<name> — if this file is
     // outside the current data dir, adopt its parent as the new data dir.
-    const walletsDir = await dirname(path);
-    const newDataDir = await dirname(walletsDir);
+    // Wallet files live at <data_dir>/wallets/<name>; both hosts hand back a POSIX-or-Windows
+    // path, so the split is done here rather than through a native path API.
+    const walletsDir = parentDir(path);
+    const newDataDir = parentDir(walletsDir);
     setDataDir(newDataDir);
     saveDataDir(newDataDir);
     selectWallet(basename(path));
@@ -166,7 +171,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
 
   async function beginRestore() {
     try {
-      const selection = await chooseRestoreBackup();
+      const selection = await selectBackup();
       setRestoreSelection(selection);
       setRestoreName(randomWalletName());
       setRestorePassword("");
@@ -306,14 +311,20 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   // not also skip the only route to a different folder, file, or new wallet.
   const walletActions = (
     <div className="mt-3 flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5">
-      <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={changeLocation}>
-        <FolderOpen size={13} strokeWidth={1.8} />
-        Change location
-      </Button>
-      <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={loadWalletFile}>
-        <FolderPlus size={13} strokeWidth={1.8} />
-        Load wallet
-      </Button>
+      {/* Both browse the host's filesystem, which a browser has no access to and no
+          business seeing: the web host manages wallet locations itself. */}
+      {capabilities.nativeFilePicker && (
+        <>
+          <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={changeLocation}>
+            <FolderOpen size={13} strokeWidth={1.8} />
+            Change location
+          </Button>
+          <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={loadWalletFile}>
+            <FolderPlus size={13} strokeWidth={1.8} />
+            Load wallet
+          </Button>
+        </>
+      )}
       <Button variant="ghost" size="sm" className="px-2.5 text-[11.5px]" onClick={() => setViewMode("create")}>
         <Plus size={13} strokeWidth={1.8} />
         Create new wallet

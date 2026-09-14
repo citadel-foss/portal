@@ -1,6 +1,11 @@
 fn main() {
-    println!("cargo:rerun-if-changed=Cargo.lock");
-    let lock = std::fs::read_to_string("Cargo.lock").expect("Cargo.lock is required");
+    // One lockfile at the workspace root now, not beside this package.
+    let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("src-tauri always has a workspace root above it")
+        .join("Cargo.lock");
+    println!("cargo:rerun-if-changed={}", lock_path.display());
+    let lock = std::fs::read_to_string(&lock_path).expect("Cargo.lock is required");
     let openswap_block = lock
         .split("[[package]]")
         .find(|block| {
@@ -27,6 +32,7 @@ fn main() {
         "check_backend",
         "list_wallets",
         "init_taker",
+        "get_paths",
         "get_wallet_info",
         "choose_restore_backup",
         "restore_wallet",

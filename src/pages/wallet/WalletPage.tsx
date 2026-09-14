@@ -1,7 +1,14 @@
 import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight, Clock } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { Card, ExternalLinkButton, SatsAmount, StatStrip, StatusChip } from "../../components/ui/display";
+import { openExternal } from "../../platform";
+import {
+  Card,
+  ExternalLinkButton,
+  SatsAmount,
+  SkeletonRows,
+  StatStrip,
+  StatusChip,
+} from "../../components/ui/display";
 import { LinkButton, SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
 import { WalletFooterCard } from "./WalletBackupCard";
@@ -60,6 +67,10 @@ export function WalletPage() {
   const historyError = useWalletCacheStore((s) => s.historyError);
 
   const refreshing = syncStatus === "syncing";
+  // "idle" counts as pending too: the first fetch is queued but has not started, and calling
+  // that settled would flash "no transactions" before a single row has been read.
+  const historyPending =
+    historyStatus === "loading" || historyStatus === "idle" || refreshing;
   // A process-local snapshot can paint immediately. On a fresh process, only
   // wait for the persisted wallet data read, never for Electrum synchronization.
   const [initialLoading, setInitialLoading] = useState(() => useWalletCacheStore.getState().balances === null);
@@ -379,14 +390,18 @@ export function WalletPage() {
                 </div>
               );
             })}
-            {filteredTx.length === 0 && pendingSends.length === 0 && (
+            {/* Placeholders only while there is nothing to show yet. A refresh over existing
+                rows keeps them: swapping real history for skeletons on every poll would read
+                as the list emptying and refilling. */}
+            {filteredTx.length === 0 && pendingSends.length === 0 && historyPending && (
+              <SkeletonRows count={4} />
+            )}
+            {filteredTx.length === 0 && pendingSends.length === 0 && !historyPending && (
               <p className="px-3 py-6 text-center text-[13px] text-subtle">
-                {historyStatus === "loading" || refreshing
-                  ? "Loading recent transaction history from Electrum…"
-                  : historyStatus === "error"
-                    ? `Transaction history unavailable: ${historyError ?? "Electrum query failed."}`
-                    : syncStatus === "error"
-                      ? "Transaction history unavailable until wallet sync succeeds."
+                {historyStatus === "error"
+                  ? `Transaction history unavailable: ${historyError ?? "Electrum query failed."}`
+                  : syncStatus === "error"
+                    ? "Transaction history unavailable until wallet sync succeeds."
                     : transactions.length === 0
                       ? "No wallet transactions were returned."
                       : "No transactions match the selected filter."}
@@ -399,8 +414,8 @@ export function WalletPage() {
                   key={`${tx.txid}:${tx.category}:${tx.address ?? ""}:${tx.amountSats}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => void openUrl(explorerTxUrl(tx.txid))}
-                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && openUrl(explorerTxUrl(tx.txid))}
+                  onClick={() => void openExternal(explorerTxUrl(tx.txid))}
+                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && openExternal(explorerTxUrl(tx.txid))}
                   className="grid min-h-[58px] cursor-pointer grid-cols-[38px_minmax(0,1fr)_auto_52px] items-center gap-3 px-0 py-2.5 text-left outline-none transition-colors duration-200 hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
                 >
                   <span

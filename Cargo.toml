@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["core", "src-tauri", "src-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Single source of truth for versions shared by the hosts and the core library, so a bump
+# cannot leave two crates linking different copies of the same types.
+[workspace.dependencies]
+openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "signal", "time", "fs"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+libc = "0.2"
+dirs = "6"
+serde_cbor = "0.11.2"
+minreq = { version = "2.12.0", features = ["https"] }
+# Own logger config (see core/src/logging.rs) - openswap's setup_taker_logger/setup_maker_logger
+# share one process-wide OnceLock, so we can't use both to get two separate log files.
+log4rs = "1.4.0"
+libtor = { version = "47.13", features = ["vendored-openssl"] }
+axum = { version = "0.8", features = ["json", "macros"] }
+tower-http = { version = "0.6", features = ["fs", "set-header", "limit"] }
+clap = { version = "4", features = ["derive", "env"] }
+argon2 = "0.5"
+rand = "0.8"
+tokio-stream = "0.1"
+futures-util = "0.3"
+async-stream = "0.3"

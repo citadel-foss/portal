@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "sync": "scripts/sync.sh",
-    "sync:dev": "scripts/sync.sh --dev"
+    "sync:dev": "scripts/sync.sh --dev",
+    "web:dev": "scripts/web-dev.sh",
+    "web:build": "tsc --noEmit && vite build --mode web && cargo build --locked --release -p portal-web",
+    "web:start": "cargo run --release -p portal-web -- --assets-dir dist/web"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

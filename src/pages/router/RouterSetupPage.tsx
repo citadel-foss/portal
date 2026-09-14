@@ -1,7 +1,7 @@
 import { ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { listen } from "@tauri-apps/api/event";
+import { subscribe } from "../../api/transport";
 import { getRouterBalances, getRouterLogs, getRouterStatus, startRouter } from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
 import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
@@ -90,8 +90,8 @@ export function RouterSetupPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const unlisten = listen<{ routerId: string; phase: RouterPhase }>("maker://phase-changed", (event) => {
-      if (event.payload.routerId === id) applyPhase(event.payload.phase);
+    const unlisten = subscribe<{ routerId: string; phase: RouterPhase }>("maker://phase-changed", (event) => {
+      if (event.routerId === id) applyPhase(event.phase);
     });
 
     void (async () => {

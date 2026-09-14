@@ -1,0 +1,582 @@
+{
+  "$comment": "Exposure inventory for every host-exposed operation. Carries no wallet logic and imports no Rust runtime: it is the list that desktop registrations and web routes are both checked against. See docs/FINAL_IMPLEMENTATION.md section 5.",
+  "version": 1,
+  "operations": [
+    {
+      "name": "check_tor",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Server-owned job with cancellation/serialization rules; cached public health never invokes it."
+    },
+    {
+      "name": "restart_tor_bootstrap",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Server-owned job with cancellation/serialization rules; cached public health never invokes it."
+    },
+    {
+      "name": "get_chain_backend",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "set_chain_backend",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Update memory-only connection settings with explicit secret patch semantics; restrict endpoints and check active route/generation."
+    },
+    {
+      "name": "check_backend",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
+    },
+    {
+      "name": "list_wallets",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "List server-managed entries using stable IDs; redact paths and credentials."
+    },
+    {
+      "name": "init_taker",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "idempotent-key",
+      "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
+    },
+    {
+      "name": "get_paths",
+      "executionClass": "read",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "replaced",
+      "retryClass": "none",
+      "note": "Desktop only. Web receives opaque wallet IDs and a storage label through its session view, not server paths."
+    },
+    {
+      "name": "get_wallet_info",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "choose_restore_backup",
+      "executionClass": "read",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "replaced",
+      "retryClass": "none",
+      "note": "Browser file input plus POST /uploads replaces this command; no native-picker route."
+    },
+    {
+      "name": "restore_wallet",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "idempotent-key",
+      "note": "Consume the session-bound upload capability and restore into a managed destination; no supplied server path."
+    },
+    {
+      "name": "backup_wallet",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Use POST /backups and the authenticated POST attachment download flow; no backup_wallet command route."
+    },
+    {
+      "name": "get_balances",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "validate_address",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_new_address",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "verify_last_address",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_transactions",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_utxos",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "send_to_address",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "idempotent-key",
+      "note": "Execute only the reviewed server intent; persist txid/send metadata and reconcile lost responses."
+    },
+    {
+      "name": "sync_wallet",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Server-owned job with cancellation/serialization rules; cached public health never invokes it."
+    },
+    {
+      "name": "estimate_fees",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
+    },
+    {
+      "name": "get_btc_price",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
+    },
+    {
+      "name": "get_offers",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "sync_offerbook",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Server-owned job with cancellation/serialization rules; cached public health never invokes it."
+    },
+    {
+      "name": "poll_maker",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
+    },
+    {
+      "name": "remove_maker",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "prepare_swap",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "estimate_swap_funding",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Run bounded estimation through the shared service; reject stale wallet/route and restrict any peer inputs."
+    },
+    {
+      "name": "start_swap",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "get_swap_progress",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_swap_tracker",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_swap_preparation",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "recover_swap",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "get_recovery_status",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_recoveries",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_swap_reports",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_swap_report",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_incoming_swap_utxo",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
+    },
+    {
+      "name": "verify_deniability",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
+    },
+    {
+      "name": "get_logs",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "init_maker",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "idempotent-key",
+      "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
+    },
+    {
+      "name": "update_maker_settings",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "idempotent-key",
+      "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
+    },
+    {
+      "name": "start_maker",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "stop_maker",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "get_maker_status",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_maker_info",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_maker_swap_reports",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_maker_swap_report",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "verify_maker_deniability",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Bound network work and restrict supported destinations; coalesce expensive duplicate calls."
+    },
+    {
+      "name": "get_maker_balances",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_maker_utxos",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_maker_new_address",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "idempotent-key",
+      "note": "Idempotent admission, relevant wallet/router generation, and domain lifecycle checks."
+    },
+    {
+      "name": "get_maker_transactions",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "sync_maker_wallet",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Server-owned job with cancellation/serialization rules; cached public health never invokes it."
+    },
+    {
+      "name": "list_maker_fidelity_bonds",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "list_makers",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "List server-managed entries using stable IDs; redact paths and credentials."
+    },
+    {
+      "name": "get_saved_maker_settings",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "List server-managed entries using stable IDs; redact paths and credentials."
+    },
+    {
+      "name": "list_dashboard_imports",
+      "executionClass": "read",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "replaced",
+      "retryClass": "none",
+      "note": "No automatic scan/import of the host dashboard directories. Explicit validated offline service migration is documented separately."
+    },
+    {
+      "name": "import_dashboard_makers",
+      "executionClass": "read",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "replaced",
+      "retryClass": "none",
+      "note": "No automatic scan/import of the host dashboard directories. Explicit validated offline service migration is documented separately."
+    },
+    {
+      "name": "clear_maker_settings",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "idempotent-key",
+      "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
+    },
+    {
+      "name": "get_suggested_maker_ports",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Use server-managed candidate ports only; no arbitrary host/port scanning. Suggestions do not reserve a port."
+    },
+    {
+      "name": "check_maker_ports",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "specialized",
+      "retryClass": "none",
+      "note": "Use server-managed candidate ports only; no arbitrary host/port scanning. Suggestions do not reserve a port."
+    },
+    {
+      "name": "get_maker_logs",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "quit_app",
+      "executionClass": "read",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "replaced",
+      "retryClass": "none",
+      "note": "The supervisor owns service termination; web UI offers logout, not daemon quit."
+    }
+  ]
+}

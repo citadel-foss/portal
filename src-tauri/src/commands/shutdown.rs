@@ -2,14 +2,15 @@
 //! tears the process down in dependency order rather than letting the OS drop it:
 //! makers, then the taker, then Tor last, because both of the first two route through it.
 
+use std::sync::Arc;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::{maker, taker_wallet};
-use crate::error::AppError;
-use crate::state::{AppState, SwapLifecycle};
-use crate::types::{MakerPhase, QuitBlockers};
+use portal_core::error::AppError;
+use portal_core::state::{AppState, SwapLifecycle};
+use portal_core::types::{MakerPhase, QuitBlockers};
 
 /// Latched by whichever path starts the teardown, so a second Quit while one is already
 /// running is ignored and `RunEvent::Exit` does not repeat the work.
@@ -62,7 +63,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
 /// Entry point for every deliberate quit gesture. Asks first when something is mid-flight,
 /// otherwise goes straight to teardown.
 pub fn begin_quit(app: &AppHandle) {
-    let blockers = quit_blockers(&app.state::<AppState>());
+    let blockers = quit_blockers(&app.state::<Arc<AppState>>());
     if blockers.swap_running || blockers.recovery_running || !blockers.running_makers.is_empty() {
         crate::show_main_window(app);
         let _ = app.emit("app://quit-blocked", blockers);
@@ -103,22 +104,22 @@ pub fn shutdown_on_exit(app: &AppHandle) {
 }
 
 fn shutdown_runtime(app: &AppHandle) {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
 
     // Makers first: each one finishes its in-flight connections and a closing wallet sync,
     // and all of that traffic is still riding on Tor.
     let _ = app.emit("app://quit-progress", "Stopping routers");
-    maker::shutdown_all(&state);
+    portal_core::ops::maker::shutdown_all(&state);
 
     // Then the taker. Dropping it is the graceful path: the crate's `Drop` flushes the swap
     // tracker and stops the recovery loop and breach detector. A running swap holds the
     // taker mutex for its whole duration, so this cannot take it — the swap's own per-phase
     // writes are what the next launch recovers from.
     let _ = app.emit("app://quit-progress", "Stopping wallet");
-    if let Err(e) = taker_wallet::shutdown(&state) {
+    if let Err(e) = portal_core::ops::taker_wallet::shutdown(&state) {
         log::warn!("taker did not shut down cleanly: {e:?}");
     }
 
     let _ = app.emit("app://quit-progress", "Stopping Tor");
-    crate::tor::shutdown();
+    portal_core::tor::shutdown();
 }

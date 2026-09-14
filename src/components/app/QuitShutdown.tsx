@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { subscribe } from "../../api/transport";
 import { quitApp } from "../../api/commands";
 import type { QuitBlockers } from "../../api/types";
 import { Button } from "../ui/inputs";
@@ -15,12 +15,12 @@ export function QuitShutdown() {
 
   useEffect(() => {
     const unlisteners = [
-      listen<QuitBlockers>("app://quit-blocked", (e) => setBlockers(e.payload)),
-      listen("app://quitting", () => {
+      subscribe<QuitBlockers>("app://quit-blocked", setBlockers),
+      subscribe("app://quitting", () => {
         setBlockers(null);
         setStep("Shutting down");
       }),
-      listen<string>("app://quit-progress", (e) => setStep(e.payload)),
+      subscribe<string>("app://quit-progress", setStep),
     ];
     return () => {
       void Promise.all(unlisteners).then((fns) => fns.forEach((fn) => fn()));

@@ -5,17 +5,6 @@ use std::sync::Arc;
 
 use crate::error::{AppError, ErrorCode};
 
-/// Restricts sensitive commands to the application's primary webview.
-pub fn ensure_main_window(window: &tauri::WebviewWindow) -> Result<(), AppError> {
-    if window.label() != "main" {
-        return Err(AppError::new(
-            ErrorCode::AuthorizationDenied,
-            "sensitive operations are available only from the main Portal window",
-        ));
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Copy)]
 /// Audit label for operations that must not overlap approval dialogs or secret handling.
 pub enum SensitiveOperation {

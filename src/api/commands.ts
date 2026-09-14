@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./transport";
 import type {
   SwapPreparation,
   AddressType,
@@ -21,6 +21,7 @@ import type {
   NewAddress,
   OfferBookView,
   Outpoint,
+  Paths,
   PriceEstimate,
   ProtocolVersion,
   RecoveryStatus,
@@ -82,6 +83,12 @@ export function listWallets(dataDir?: string): Promise<string[]> {
 
 export function initWallet(config: InitConfig): Promise<InitResult> {
   return invoke("init_taker", { config });
+}
+
+/** Where this host keeps wallet data. Never derived in the frontend: only the backend knows
+ *  the crate's default and whether the session already points somewhere else. */
+export function getPaths(): Promise<Paths> {
+  return invoke("get_paths");
 }
 
 export function getWalletInfo(): Promise<WalletInfo> {

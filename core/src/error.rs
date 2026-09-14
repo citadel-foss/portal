@@ -1,14 +1,14 @@
 //! App-level error envelope. Crate errors are `Debug`-only, so everything is
-//! converted here before crossing IPC. Frontend switches on `code`.
+//! converted here before crossing a host boundary. Frontend switches on `code`.
 
 use openswap::maker::MakerError;
 use openswap::security::SecurityError;
 use openswap::taker::error::TakerError;
 use openswap::wallet::WalletError;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-/// Serializable error envelope used by every Tauri command.
+/// Serializable error envelope returned by every host command and carried on failure events.
 pub struct AppError {
     /// Stable code for frontend control flow.
     pub code: ErrorCode,
@@ -20,7 +20,7 @@ pub struct AppError {
 }
 
 #[allow(dead_code)] // full app-wide error surface; some variants not wired up yet
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 /// Stable machine-readable failures sent across IPC; messages remain user-facing detail.
 pub enum ErrorCode {
@@ -112,10 +112,15 @@ impl AppError {
 
 impl From<TakerError> for AppError {
     fn from(e: TakerError) -> Self {
+        // A wallet failure already carries its own classification — a wrong password most of
+        // all. Collapsing the whole variant to `WalletLoadFailed` loses that, and the unlock
+        // screen then shows a raw crate debug string instead of "Incorrect password".
+        if let TakerError::Wallet(wallet) = e {
+            return AppError::from(wallet);
+        }
         let code = match &e {
             TakerError::ContractsBroadcasted(_) => ErrorCode::ContractsBroadcasted,
             TakerError::NotEnoughMakersInOfferBook => ErrorCode::NotEnoughMakers,
-            TakerError::Wallet(_) => ErrorCode::WalletLoadFailed,
             TakerError::IO(_) => ErrorCode::Io,
             _ => ErrorCode::Internal,
         };
@@ -194,10 +199,10 @@ impl<T> From<std::sync::PoisonError<T>> for AppError {
 /// classifies the spawn_blocking JoinError's panic message into a proper ErrorCode instead of a
 /// generic Internal. Upstream now returns `WalletError::Security` for that, but the panic paths
 /// outside wallet decryption remain, so this stays.
-pub fn from_wallet_join_error(e: tauri::Error) -> AppError {
-    let tauri::Error::JoinError(join_err) = e else {
-        return AppError::internal(e);
-    };
+///
+/// Takes Tokio's error, not a host error type: both hosts run wallet work on the same blocking
+/// pool, and only the host knows how to unwrap its own wrapper around this.
+pub fn from_wallet_join_error(join_err: tokio::task::JoinError) -> AppError {
     if !join_err.is_panic() {
         return AppError::new(ErrorCode::Internal, "wallet task was cancelled".to_string());
     }
@@ -217,4 +222,43 @@ pub fn from_wallet_join_error(e: tauri::Error) -> AppError {
         ErrorCode::WalletLoadFailed
     };
     AppError::new(code, msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Taker::init` reports a wrong password as `TakerError::Wallet(Security(Decryption))`.
+    /// The unlock screen switches on `code`, so this has to survive the wrapper — the panic
+    /// path in `from_wallet_join_error` is only the other half of the same guarantee.
+    #[test]
+    fn a_wrong_password_survives_the_taker_error_wrapper() {
+        let wrapped = TakerError::Wallet(WalletError::Security(SecurityError::Decryption));
+        assert_eq!(AppError::from(wrapped).code, ErrorCode::WalletWrongPassword);
+
+        let missing = TakerError::Wallet(WalletError::Security(SecurityError::PasswordRequired));
+        assert_eq!(AppError::from(missing).code, ErrorCode::WalletWrongPassword);
+    }
+
+    /// Non-wallet taker failures keep their own mapping.
+    #[test]
+    fn other_taker_failures_are_unchanged() {
+        assert_eq!(
+            AppError::from(TakerError::NotEnoughMakersInOfferBook).code,
+            ErrorCode::NotEnoughMakers
+        );
+    }
+
+    #[test]
+    fn a_panicking_wallet_load_is_still_classified() {
+        // The historical path: upstream panicked rather than returning an error.
+        let joined = std::thread::spawn(|| panic!("Failed to decrypt the wallet file"))
+            .join()
+            .unwrap_err();
+        let message = joined
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("Failed to decrypt"));
+    }
 }

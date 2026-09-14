@@ -12,6 +12,7 @@ use openswap::wallet::Wallet;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::events::EventSink;
 use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto};
 
 /// Non-blocking taker lock — fails fast with SwapInProgress instead of
@@ -86,6 +87,9 @@ pub struct AppState {
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
+    /// Domain events. Each host subscribes and forwards these onto its own transport, so
+    /// publishers never learn whether they are talking to a webview or a browser.
+    pub events: EventSink,
 }
 
 pub struct ActiveSwap {

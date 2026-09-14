@@ -1,66 +1,24 @@
-//! Tail of each role's `debug.log`, written by our own dual-role logger
-//! (see `logging.rs`, wired up in `commands::taker_wallet::init_taker` /
-//! `commands::maker::init_maker`). One function per role, not worth two
-//! files for — both are a three-line tail against a different `AppState`
-//! field.
+//! Log tail commands.
+//!
+//! Bodies live in `portal_core::ops::logs`; these wrappers register the operation with
+//! Tauri and hand over the managed state.
 
-use crate::error::AppError;
-use crate::state::AppState;
-use crate::types::LogLine;
+use std::sync::Arc;
+
+use portal_core::error::AppError;
+use portal_core::ops::logs;
+use portal_core::state::AppState;
+use portal_core::types::*;
 
 #[tauri::command]
-pub async fn get_logs(
-    state: tauri::State<'_, AppState>,
-    lines: Option<usize>,
-) -> Result<Vec<LogLine>, AppError> {
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let path = data_dir.join("debug.log");
-    let want = lines.unwrap_or(100).min(1000);
-
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<LogLine>, AppError> {
-        Ok(crate::logging::tail_lines(&path, want)?
-            .into_iter()
-            .map(|line| LogLine { line })
-            .collect())
-    })
-    .await
-    .map_err(AppError::internal)?
+pub async fn get_logs(state: tauri::State<'_, Arc<AppState>>, lines: Option<usize>) -> Result<Vec<LogLine>, AppError> {
+    logs::get_logs(&state, lines).await
 }
 
 #[tauri::command]
 pub async fn get_maker_logs(
-    state: tauri::State<'_, AppState>,
-    router_id: String,
-    lines: Option<usize>,
+    state: tauri::State<'_, Arc<AppState>>, router_id: String, lines: Option<usize>,
 ) -> Result<Vec<LogLine>, AppError> {
-    let data_dir = {
-        let makers = state.makers.lock()?;
-        let in_memory = makers.get(&router_id).map(|entry| entry.settings.clone());
-        drop(makers);
-        let settings = match in_memory {
-            Some(settings) => settings,
-            None => crate::commands::maker_settings::load(&router_id)?
-                .ok_or_else(|| AppError::maker_not_found(&router_id))?,
-        };
-        settings
-            .data_dir
-            .as_deref()
-            .map(std::path::PathBuf::from)
-            .ok_or_else(AppError::maker_not_initialized)?
-    };
-    let path = data_dir.join("debug.log");
-    let want = lines.unwrap_or(100).min(1000);
-
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<LogLine>, AppError> {
-        Ok(crate::logging::tail_lines(&path, want)?
-            .into_iter()
-            .map(|line| LogLine { line })
-            .collect())
-    })
-    .await
-    .map_err(AppError::internal)?
+    logs::get_maker_logs(&state, router_id, lines).await
 }
+

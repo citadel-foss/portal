@@ -1,0 +1,26 @@
+[package]
+name = "portal-core"
+description = "Transport-free Portal services shared by the desktop and web hosts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+openswap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+libc.workspace = true
+dirs.workspace = true
+serde_cbor.workspace = true
+minreq.workspace = true
+log4rs.workspace = true
+libtor = { workspace = true, optional = true }
+
+[features]
+# Selected by each host, not here, so a headless build can opt out of the bundled Tor.
+default = []
+embedded-tor = ["dep:libtor"]
+

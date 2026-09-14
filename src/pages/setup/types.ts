@@ -1,20 +1,19 @@
-import { homeDir, join } from "@tauri-apps/api/path";
+import { getPaths } from "../../api/commands";
 
 export type WalletChoice =
   | { mode: "create"; walletName: string; password: string }
   | { mode: "load"; walletName: string; password?: string }
   | { mode: "restore"; walletName: string; selectionId: string; displayName: string; password?: string };
 
-// Matches openswap::utill::get_taker_dir() — get_home_dir().join(".openswap").join("taker").
+// Asked of the backend rather than rebuilt here: only it knows the crate's own default and
+// whether the user has already pointed the session somewhere else. The native picker also
+// needs a real resolved path, not a "~/..." string it has no shell to expand.
 export async function getDefaultDataDir(): Promise<string> {
-  return join(await homeDir(), ".openswap", "taker");
+  return (await getPaths()).dataDir;
 }
 
-// Wallet files live under <data_dir>/wallets/ (see src-tauri's wallet_path() helper).
-// The dialog plugin needs a real resolved path here, not a "~/..." string — the native
-// file picker has no shell to expand tildes.
 export async function getDefaultWalletsDir(): Promise<string> {
-  return join(await getDefaultDataDir(), "wallets");
+  return (await getPaths()).walletsDir;
 }
 
 // Key keeps its old spelling through the .coinswap → .openswap rename: it stores an explicit

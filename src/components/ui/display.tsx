@@ -7,7 +7,7 @@ import {
   ExternalLink,
   XCircle,
 } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternal } from "../../platform";
 import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -355,7 +355,7 @@ export function ExternalLinkButton({ txid }: { txid: string }) {
       title="View on explorer"
       onClick={(e) => {
         e.stopPropagation();
-        void openUrl(explorerTxUrl(txid));
+        void openExternal(explorerTxUrl(txid));
       }}
       aria-label="View transaction on explorer"
       className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border border-line text-muted outline-none transition-colors hover:border-primary/60 hover:bg-primary/[0.14] hover:text-primary-hover focus-visible:shadow-ring active:translate-y-px"
@@ -708,6 +708,38 @@ export function SkeletonLines({ count = 8 }: { count?: number }) {
           className="h-3 animate-pulse rounded-sm bg-white/[0.07]"
           style={{ width: `${72 + (i % 4) * 7}%` }}
         />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Placeholder for a list of records still being fetched, shaped like the rows that will
+ * replace them so the panel does not jump when they arrive. Widths vary per row so the
+ * block reads as content rather than as a progress bar.
+ */
+export function SkeletonRows({ count = 4 }: { count?: number }) {
+  return (
+    <div className="divide-y divide-line" aria-label="Loading">
+      <span className="sr-only">Loading</span>
+      {Array.from({ length: count }, (_, i) => (
+        <div
+          key={i}
+          className="grid min-h-[58px] grid-cols-[38px_minmax(0,1fr)_auto] items-center gap-3 py-2.5"
+        >
+          <span className="h-[34px] w-[34px] animate-pulse rounded-control bg-white/[0.07]" />
+          <span className="flex min-w-0 flex-col gap-1.5">
+            <span
+              className="h-3 animate-pulse rounded-sm bg-white/[0.07]"
+              style={{ width: `${58 + (i % 3) * 9}%` }}
+            />
+            <span className="h-2.5 w-16 animate-pulse rounded-sm bg-white/[0.05]" />
+          </span>
+          <span className="flex flex-col items-end gap-1.5">
+            <span className="h-3 w-20 animate-pulse rounded-sm bg-white/[0.07]" />
+            <span className="h-2.5 w-12 animate-pulse rounded-sm bg-white/[0.05]" />
+          </span>
+        </div>
       ))}
     </div>
   );

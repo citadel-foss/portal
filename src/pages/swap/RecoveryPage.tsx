@@ -57,9 +57,30 @@ function Stat({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/** A block-by-block bar. Discrete rather than a smooth fill because the wait advances in
+ *  whole blocks — a continuously creeping bar would imply progress between them that is not
+ *  happening. */
+function LockProgress({ elapsed, total }: { elapsed: number; total: number }) {
+  return (
+    <span className="mt-1.5 flex items-center gap-2">
+      <span className="flex h-1.5 flex-1 overflow-hidden rounded-pill bg-white/[0.07]">
+        <span
+          className="h-full rounded-pill bg-warning transition-[width] duration-500"
+          style={{ width: `${Math.min(100, (elapsed / total) * 100)}%` }}
+        />
+      </span>
+      <span className="flex-none font-numeric text-[10.5px] text-subtle">
+        {elapsed}/{total}
+      </span>
+    </span>
+  );
+}
+
 function ContractRow({ contract }: { contract: RecoveryContract }) {
   const blocks = contract.blocksRemaining;
   const waiting = blocks !== undefined && blocks > 0;
+  const total = contract.lockBlocks;
+
   return (
     <div className="flex items-center justify-between gap-3 py-3">
       <span className="flex min-w-0 flex-col gap-1.5">
@@ -79,10 +100,13 @@ function ContractRow({ contract }: { contract: RecoveryContract }) {
           </StatusChip>
           {contract.confirmations === 0 && (
             <StatusChip tone="subtle" className="self-start">
-              In the mempool
+              Unconfirmed — the lock starts when it confirms
             </StatusChip>
           )}
         </span>
+        {waiting && total !== undefined && (
+          <LockProgress elapsed={total - blocks} total={total} />
+        )}
       </span>
       <span className="flex flex-none items-center gap-2">
         <span className="font-numeric text-[12.5px] text-foreground">
@@ -241,6 +265,14 @@ export function RecoveryPage() {
   }
 
   const blocks = status?.blocksRemaining;
+  // The pending list is sorted longest-wait-last, so the contract holding everything up is
+  // the one whose lock the headline should count against.
+  const longest = status?.pending?.[(status.pending.length ?? 1) - 1];
+  const lockTotal = longest?.lockBlocks;
+  const lockElapsed =
+    lockTotal !== undefined && blocks !== undefined ? Math.max(0, lockTotal - blocks) : undefined;
+  // Nothing is counting down until the contracts confirm.
+  const unconfirmed = (status?.pending ?? []).filter((c) => c.confirmations === 0).length;
   const waiting = blocks !== undefined && blocks > 0;
   const claimableNow = (status?.pending ?? []).filter(
     (c) => c.claimPath === "hashlock" || (c.blocksRemaining ?? 0) === 0,
@@ -257,7 +289,9 @@ export function RecoveryPage() {
     },
     {
       label: waiting
-        ? `Waiting out the refund lock · ~${blocks} blocks (${formatBlockWait(blocks)})`
+        ? unconfirmed > 0
+          ? `Waiting for the contracts to confirm · the ${lockTotal ?? blocks}-block refund lock starts then`
+          : `Waiting out the refund lock · ${lockElapsed ?? 0} of ${lockTotal ?? blocks} blocks · ${formatBlockWait(blocks)} left`
         : "Refund lock matured",
       state: waiting ? "running" : pendingCount > 0 || resolvedCount > 0 ? "passed" : "idle",
     },
@@ -324,11 +358,24 @@ export function RecoveryPage() {
                 </strong>
               </div>
               {waiting && (
-                <div className="flex items-baseline justify-between gap-3 border-t border-line pt-3">
-                  <span className="text-[12px] text-muted">Longest wait left</span>
-                  <strong className="font-numeric text-[13px] text-warning">
-                    ~{blocks} blocks
-                  </strong>
+                <div className="flex flex-col gap-2 border-t border-line pt-3">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="text-[12px] text-muted">Refund lock progress</span>
+                    <strong className="font-numeric text-[13px] text-warning">
+                      {lockTotal === undefined
+                        ? `~${blocks} blocks`
+                        : `${lockElapsed} / ${lockTotal} blocks`}
+                    </strong>
+                  </div>
+                  {lockTotal !== undefined && lockElapsed !== undefined && (
+                    <LockProgress elapsed={lockElapsed} total={lockTotal} />
+                  )}
+                  {unconfirmed > 0 && (
+                    <p className="text-[11.5px] leading-5 text-subtle">
+                      Not counting yet — the delay runs from the contract confirming, and{" "}
+                      {unconfirmed === 1 ? "one is" : `${unconfirmed} are`} still in the mempool.
+                    </p>
+                  )}
                 </div>
               )}
               <div className="flex items-center gap-2 border-t border-line pt-3 text-[11.5px] text-subtle">

@@ -1,4 +1,4 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternal } from "../../platform";
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ExternalLink, Inbox, RefreshCw, Search } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -143,7 +143,7 @@ function FidelityBondModal({ router, onClose }: { router: Router; onClose: () =>
           <span className="mb-2 block text-[11px] text-subtle">Bond Txid</span>
           <button
             type="button"
-            onClick={() => void openUrl(explorerTxUrl(bond.bondTxid))}
+            onClick={() => void openExternal(explorerTxUrl(bond.bondTxid))}
             className="break-all text-left font-mono text-[13px] text-primary hover:text-primary-hover"
           >
             {bond.bondTxid}:{bond.bondVout}

@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/app/AppShell";
 import { QuitShutdown } from "./components/app/QuitShutdown";
 import { ConnectPage } from "./pages/connect/ConnectPage";
+import { LoginPage } from "./pages/auth/LoginPage";
 import { LaunchPage } from "./pages/launch/LaunchPage";
 import { LogsPage } from "./pages/logs/LogsPage";
 import { RouterPage } from "./pages/router/RouterPage";
@@ -21,6 +22,8 @@ import { SwapReportsPage } from "./pages/swap/SwapReportsPage";
 import { WalletPage } from "./pages/wallet/WalletPage";
 import { refreshWalletCache } from "./lib/wallet-sync";
 import { useSessionStore } from "./store/session";
+import { capabilities, session } from "./platform";
+import { ServerUnreachable } from "./pages/auth/ServerUnreachable";
 import { REFRESH_INTERVAL_MS } from "./store/wallet-cache";
 
 /**
@@ -61,6 +64,49 @@ function RequireConnection() {
   return <Outlet />;
 }
 
+/**
+ * Ahead of every other gate, including the connection one: on the web nothing behind this is
+ * readable unauthenticated, so asking the chain backend anything first would only produce a
+ * 401. Desktop resolves immediately and renders straight through.
+ */
+function RequireSession() {
+  const authenticated = useSessionStore((s) => s.authenticated);
+  const setAuthenticated = useSessionStore((s) => s.setAuthenticated);
+  const setHasOwner = useSessionStore((s) => s.setHasOwner);
+  const [unreachable, setUnreachable] = useState(false);
+
+  useEffect(() => {
+    if (authenticated !== null) return;
+    void session
+      .restore()
+      .then((info) => {
+        setUnreachable(false);
+        setHasOwner(info.hasOwner);
+        setAuthenticated(info.authenticated);
+      })
+      .catch((e) => {
+        // Only a refusal means log in. Anything else is the server being absent, which a
+        // password cannot fix and must not be disguised as.
+        if ((e as { code?: string })?.code === "SERVER_UNREACHABLE") setUnreachable(true);
+        else setAuthenticated(false);
+      });
+  }, [authenticated, setAuthenticated, setHasOwner]);
+
+  if (unreachable) {
+    return (
+      <ServerUnreachable
+        onRetry={() => {
+          setUnreachable(false);
+          setAuthenticated(null as unknown as boolean);
+        }}
+      />
+    );
+  }
+  if (authenticated === null) return null;
+  if (!authenticated) return <Navigate to="/login" replace />;
+  return <Outlet />;
+}
+
 function App() {
   return (
     <HashRouter>
@@ -68,9 +114,14 @@ function App() {
           that render before a wallet exists. */}
       <QuitShutdown />
       <Routes>
-        <Route path="/connect" element={<ConnectPage />} />
+        {/* Registered on any host that could need it. Whether a user ever reaches it is
+            decided by the session restore below, not by the route table. */}
+        {capabilities.requiresLogin && <Route path="/login" element={<LoginPage />} />}
 
-        <Route element={<RequireConnection />}>
+        <Route element={<RequireSession />}>
+          <Route path="/connect" element={<ConnectPage />} />
+
+          <Route element={<RequireConnection />}>
           <Route path="/launch" element={<LaunchPage />} />
           <Route path="/setup" element={<SetupPage />} />
 
@@ -92,6 +143,7 @@ function App() {
             <Route path="/router/:routerId" element={<RouterWorkspacePage />} />
             <Route path="/router/:routerId/setup" element={<RouterSetupPage />} />
             <Route path="/router/:routerId/report/:swapId" element={<RouterSwapReportPage />} />
+            </Route>
           </Route>
         </Route>
 
