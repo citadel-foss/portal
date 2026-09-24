@@ -103,7 +103,7 @@ fn persist_to(dir: &Path, record: &OperationRecord) -> Result<(), AppError> {
 /// `recover_swap` is deliberately absent. It also broadcasts, but it is the remedy for a
 /// stuck swap — blocking it would strand the funds it exists to reclaim.
 pub fn moves_funds(kind: &str) -> bool {
-    matches!(kind, "send_to_address" | "start_swap")
+    matches!(kind, "send_to_address" | "send_maker_to_address" | "start_swap")
 }
 
 /// `Interrupted` is no longer produced, but records written before that change still carry

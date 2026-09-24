@@ -72,6 +72,12 @@ pub struct Issued {
     pub csrf: String,
 }
 
+/// A live session and the CSRF token bound to it.
+#[derive(Debug, Clone)]
+pub struct SessionRef {
+    pub csrf: String,
+}
+
 impl Auth {
     /// Loads a provisioned owner verifier and one-time bootstrap secret from private files.
     /// Neither is ever echoed back, and the bootstrap file is consumed on use.
@@ -163,6 +169,13 @@ impl Auth {
         self.issue()
     }
 
+    /// A session with no password behind it, for a run where none is required. Identical to
+    /// one earned by logging in: the point is that each browser gets its *own*, not that it
+    /// proved anything to get it.
+    pub fn issue_unauthenticated(&self) -> Result<Issued, &'static str> {
+        self.issue()
+    }
+
     fn issue(&self) -> Result<Issued, &'static str> {
         let mut sessions = self.sessions.lock().map_err(|_| "auth state poisoned")?;
         let now = Instant::now();
@@ -195,9 +208,10 @@ impl Auth {
             && now.duration_since(session.last_seen) < IDLE_EXPIRY
     }
 
-    /// Returns the session's CSRF token. `refresh` is false for background polling and SSE,
-    /// so a tab left open cannot keep a session alive indefinitely without a real operator.
-    pub fn validate(&self, token: &str, refresh: bool) -> Option<String> {
+    /// Validates a token and returns the CSRF token bound to it. `refresh` is false for
+    /// background polling and SSE, so a tab left open cannot keep a session alive
+    /// indefinitely without a real operator.
+    pub fn validate(&self, token: &str, refresh: bool) -> Option<SessionRef> {
         let mut sessions = self.sessions.lock().ok()?;
         let now = Instant::now();
         let key = digest(token);
@@ -209,7 +223,26 @@ impl Auth {
         if refresh {
             session.last_seen = now;
         }
-        Some(session.csrf.clone())
+        Some(SessionRef { csrf: session.csrf.clone() })
+    }
+
+    /// Installs a freshly generated bootstrap secret when an installation has no owner and
+    /// none was provisioned, returning it once so the caller can print it.
+    ///
+    /// Without this a local run would have no way in at all: nothing is open by default any
+    /// more, and claiming an installation requires a secret. Readable only on the server's
+    /// own console, which is the same trust boundary as the credential file it replaces.
+    pub fn ensure_bootstrap(&self) -> Option<String> {
+        // Same order `bootstrap` takes both locks in, or the two can deadlock against
+        // a concurrent claim.
+        let mut bootstrap = self.bootstrap.lock().ok()?;
+        let verifier = self.verifier.lock().ok()?;
+        if verifier.is_some() || bootstrap.is_some() {
+            return None;
+        }
+        let secret = random_token();
+        *bootstrap = Some(secret.clone());
+        Some(secret)
     }
 
     pub fn logout(&self, token: &str) {
@@ -268,7 +301,7 @@ mod tests {
     fn login_issues_a_session_with_its_own_csrf_token() {
         let auth = owned();
         let issued = auth.login("correct horse").expect("password is right");
-        assert_eq!(auth.validate(&issued.token, true).as_deref(), Some(issued.csrf.as_str()));
+        assert_eq!(auth.validate(&issued.token, true).map(|s| s.csrf), Some(issued.csrf.clone()));
         assert!(auth.login("wrong").is_err());
     }
 
@@ -280,6 +313,15 @@ mod tests {
         auth.logout(&a.token);
         assert!(auth.validate(&a.token, true).is_none());
         assert!(auth.validate(&b.token, true).is_some());
+    }
+
+    #[test]
+    fn an_unowned_install_provisions_one_bootstrap_secret() {
+        let auth = Auth::load(None, None, None);
+        let secret = auth.ensure_bootstrap().expect("an unowned install needs a way in");
+        assert!(auth.ensure_bootstrap().is_none(), "a second call must not replace it");
+        assert!(auth.bootstrap(&secret, "long-enough-password").is_ok());
+        assert!(auth.ensure_bootstrap().is_none(), "an owned install needs no bootstrap");
     }
 
     #[test]

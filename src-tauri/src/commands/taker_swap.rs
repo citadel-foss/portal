@@ -13,9 +13,9 @@ use portal_core::types::*;
 
 #[tauri::command]
 pub async fn estimate_swap_funding(
-    state: tauri::State<'_, Arc<AppState>>, amount_sats: u64, protocol: ProtocolVersionDto, outpoints: Option<Vec<Outpoint>>,
+    state: tauri::State<'_, Arc<AppState>>, amount_sats: u64, protocol: ProtocolVersionDto, outpoints: Option<Vec<Outpoint>>, tx_count: Option<u32>,
 ) -> Result<SwapFundingEstimateDto, AppError> {
-    taker_swap::estimate_swap_funding(&state, amount_sats, protocol, outpoints).await
+    taker_swap::estimate_swap_funding(&state, amount_sats, protocol, outpoints, tx_count).await
 }
 
 #[tauri::command]

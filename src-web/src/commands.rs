@@ -97,9 +97,10 @@ pub static OPERATIONS: &[Operation] = &[
             amount_sats: u64,
             protocol: ProtocolVersionDto,
             outpoints: Option<Vec<Outpoint>>,
+            tx_count: Option<u32>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::estimate_swap_funding(&rt, body.amount_sats, body.protocol, body.outpoints).await?)
+            encode(&ops::taker_swap::estimate_swap_funding(&rt, body.amount_sats, body.protocol, body.outpoints, body.tx_count).await?)
         })
     }),
     op("get_balances", false, |rt, args| {
@@ -249,6 +250,10 @@ pub static OPERATIONS: &[Operation] = &[
             let body: Args = parse(args)?;
             encode(&ops::maker_settings::get_saved_maker_settings(body.router_id)?)
         })
+    }),
+    op("get_router_defaults", false, |rt, args| {
+        let _ = (&rt, &args);
+        Box::pin(async move { encode(&ops::maker::router_defaults()) })
     }),
     op("get_suggested_maker_ports", true, |rt, args| {
         let _ = (&rt, &args);
@@ -502,7 +507,7 @@ pub static OPERATIONS: &[Operation] = &[
     }),
     op("shutdown_taker", true, |rt, args| {
         let _ = (&rt, &args);
-        Box::pin(async move { encode(&ops::taker_wallet::shutdown(&rt)?) })
+        Box::pin(async move { encode(&ops::taker_wallet::shutdown_async(&rt).await?) })
     }),
     op("sync_offerbook", true, |rt, args| {
         let _ = (&rt, &args);
@@ -636,6 +641,31 @@ pub static DURABLE: &[Operation] = &[
             }
             let body: Args = parse(args)?;
             encode(&ops::taker_wallet::restore_wallet(&rt, None, body.wallet_name, body.socks_port, body.selection_id, body.password).await?)
+        })
+    }),
+    op("send_maker_to_address", true, |rt, args| {
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                router_id: String,
+                address: String,
+                amount_sats: u64,
+                fee_rate: Option<f64>,
+                outpoints: Option<Vec<portal_core::types::Outpoint>>,
+            }
+            let body: Args = parse(args)?;
+            encode(
+                &ops::maker_wallet::send_maker_to_address(
+                    &rt,
+                    body.router_id,
+                    body.address,
+                    body.amount_sats,
+                    body.fee_rate,
+                    body.outpoints,
+                )
+                .await?,
+            )
         })
     }),
     op("send_to_address", true, |rt, args| {

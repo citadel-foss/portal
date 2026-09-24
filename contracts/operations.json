@@ -498,6 +498,15 @@
       "note": "Return the existing safe DTO; bound response size and redact internal details."
     },
     {
+      "name": "send_maker_to_address",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "shared",
+      "retryClass": "idempotent-key",
+      "note": "Moves funds out of a router's wallet. Durable like the taker spend: the effect may land even if the response does not, so it must never be resubmitted blind."
+    },
+    {
       "name": "sync_maker_wallet",
       "executionClass": "transient",
       "desktop": true,
@@ -559,6 +568,15 @@
       "webAdaptation": "specialized",
       "retryClass": "idempotent-key",
       "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
+    },
+    {
+      "name": "get_router_defaults",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "shared",
+      "retryClass": "none",
+      "note": "Reads the protocol crate's own MakerServerConfig::default(); constant for the build, touches no wallet and no network."
     },
     {
       "name": "get_suggested_maker_ports",

@@ -205,6 +205,17 @@ pub async fn init_taker(
 /// Drops the Taker and reports success only when its decrypted handles were
 /// actually removed. Process-close callers may ignore an in-progress error,
 /// but interactive lock/reset must not reset its UI on that error.
+/// `shutdown` blocks on the wallet handle, which an in-flight sync can hold for seconds after
+/// `sync_cancel` is raised. Callers reached from a UI must go through this: on the desktop the
+/// synchronous form ran on the main thread, so closing a wallet froze the window for the whole
+/// wait and looked like a hang rather than a wait.
+pub async fn shutdown_async(state: &Arc<AppState>) -> Result<(), AppError> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || shutdown(&state))
+        .await
+        .map_err(AppError::internal)?
+}
+
 pub fn shutdown(state: &Arc<AppState>) -> Result<(), AppError> {
     if state
         .active_swap

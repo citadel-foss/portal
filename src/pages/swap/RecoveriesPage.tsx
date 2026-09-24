@@ -7,13 +7,14 @@ import {
   BackButton,
   Card,
   EmptyState,
+  Identifier,
   Notice,
   SatsAmount,
   StatStrip,
   StatusChip,
 } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
-import { formatRelativeTime, truncateMiddle } from "../../lib/wallet-format";
+import { formatRelativeTime } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
 // Matches the detail page: the crate's own recovery loop retries once a minute.
@@ -134,9 +135,7 @@ export function RecoveriesPage() {
                     strokeWidth={1.9}
                     className={row.active ? "text-warning" : "text-success"}
                   />
-                  <span className="truncate font-mono text-muted" title={row.swapId}>
-                    {truncateMiddle(row.swapId, 10, 6)}
-                  </span>
+                  <Identifier value={row.swapId} className="leading-[1.45] text-muted" />
                   <span className="text-subtle">{formatRelativeTime(row.updatedAt)}</span>
                   <span>
                     <StatusChip tone={row.active ? "warning" : "success"}>

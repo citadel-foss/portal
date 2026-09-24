@@ -53,7 +53,10 @@ function RequireWallet() {
     return () => clearInterval(id);
   }, [initialized]);
 
-  if (!initialized) return <Navigate to="/launch" replace />;
+  // The wallet picker, not the role picker: reaching a wallet route already answers which
+  // role was wanted, and the picker offers its own way back to the role choice. The role
+  // picker stays the entry point the connection gate hands off to.
+  if (!initialized) return <Navigate to="/setup" replace />;
   return <Outlet />;
 }
 
@@ -120,44 +123,39 @@ function RequireSession() {
   const setHasOwner = useSessionStore((s) => s.setHasOwner);
   const [unreachable, setUnreachable] = useState(false);
 
+  const askAgain = () => {
+    setUnreachable(false);
+    setAuthenticated(null as unknown as boolean);
+  };
+
   useEffect(() => {
-    if (authenticated !== null) return;
+    if (authenticated !== null || unreachable) return;
     void session
       .restore()
       .then((info) => {
-        setUnreachable(false);
         setHasOwner(info.hasOwner);
         setAuthenticated(info.authenticated);
       })
       .catch((e) => {
         // Only a refusal means log in. Anything else is the server being absent, which a
         // password cannot fix and must not be disguised as.
-        if ((e as { code?: string })?.code === "SERVER_UNREACHABLE")
-          setUnreachable(true);
+        if ((e as { code?: string })?.code === "SERVER_UNREACHABLE") setUnreachable(true);
         else setAuthenticated(false);
       });
-  }, [authenticated, setAuthenticated, setHasOwner]);
+  }, [authenticated, unreachable, setAuthenticated, setHasOwner]);
 
-  if (unreachable) {
-    return (
-      <ServerUnreachable
-        onRetry={() => {
-          setUnreachable(false);
-          setAuthenticated(null as unknown as boolean);
-        }}
-      />
-    );
-  }
+  if (unreachable) return <ServerUnreachable onRetry={askAgain} />;
   if (authenticated === null) return null;
   if (!authenticated) return <Navigate to="/login" replace />;
   return <Outlet />;
 }
 
+
 function App() {
   return (
     <HashRouter>
       {/* Outside the routes: a quit can be requested from any page, including the ones
-          that render before a wallet exists. */}
+          that render before a wallet exists, and the access warning belongs on all of them. */}
       <QuitShutdown />
       <Routes>
         {/* Registered on any host that could need it. Whether a user ever reaches it is

@@ -9,7 +9,12 @@ use std::sync::Arc;
 use portal_core::error::AppError;
 use portal_core::ops::maker;
 use portal_core::state::AppState;
-use portal_core::types::{MakerInitConfig, MakerSettingsDto, MakerStatusDto, WalletInfo};
+use portal_core::types::{MakerInitConfig, MakerSettingsDto, MakerStatusDto, RouterDefaultsDto, WalletInfo};
+
+#[tauri::command]
+pub fn get_router_defaults() -> RouterDefaultsDto {
+    maker::router_defaults()
+}
 
 #[tauri::command]
 pub async fn init_maker(

@@ -9,7 +9,9 @@ use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AccessProfile {
-    /// Loopback only, plain HTTP. Real authentication still applies.
+    /// Loopback only, plain HTTP. No password: reaching 127.0.0.1 already means holding the
+    /// user's OS account, which is the same boundary the desktop app runs under. Sessions are
+    /// still issued per browser — see `auth_optional`.
     DevelopmentLoopback,
     /// A TLS-terminating proxy in front; the backend port must not be reachable directly.
     TrustedTlsProxy,
@@ -130,15 +132,14 @@ impl Config {
         Ok(())
     }
 
-    /// True when this is a plain local run with no credential configured: loopback-bound,
-    /// development profile, nothing provisioned.
+    /// True when a password would protect nothing the OS account does not: loopback-bound,
+    /// development profile, no credential provisioned.
     ///
-    /// Authentication is then off, and the UI is identical to the desktop app's. That is not
-    /// a hole — reaching 127.0.0.1 already means having the user's account, which is exactly
-    /// the trust boundary the desktop app runs under. A password here would protect nothing
-    /// the OS account does not, while making the two hosts behave differently for no reason.
-    /// Provisioning either credential file, or any non-development profile, turns it back on.
-    pub fn open_local(&self) -> bool {
+    /// A browser still gets its own session here — it is simply handed one rather than having
+    /// to earn it. That distinction is the whole point: the sessionless version of this let
+    /// every browser be the same caller, so one open wallet was reachable from all of them.
+    /// Provisioning either credential file, or any other profile, requires a password again.
+    pub fn auth_optional(&self) -> bool {
         self.access_profile == AccessProfile::DevelopmentLoopback
             && self.owner_credential_file.is_none()
             && self.bootstrap_file.is_none()
@@ -237,7 +238,6 @@ mod tests {
         );
         assert!(umbrel.validate().is_ok());
         assert!(!umbrel.secure_cookies());
-        assert!(!umbrel.open_local());
         assert!(config(
             AccessProfile::TrustedHttpProxy,
             "0.0.0.0:3000",
@@ -272,29 +272,6 @@ mod tests {
         let mut dev = config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None);
         dev.assets_dir = None;
         assert!(dev.validate().is_ok());
-    }
-
-    /// The exemption is narrow on purpose: only a loopback development run with nothing
-    /// provisioned. Everything else authenticates.
-    #[test]
-    fn only_an_unprovisioned_loopback_run_skips_authentication() {
-        let dev = config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None);
-        assert!(dev.open_local());
-
-        let mut provisioned = config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None);
-        provisioned.bootstrap_file = Some(PathBuf::from("/run/secrets/bootstrap"));
-        assert!(!provisioned.open_local(), "a configured secret means auth is wanted");
-
-        let mut with_owner = config(AccessProfile::DevelopmentLoopback, "127.0.0.1:3000", None);
-        with_owner.owner_credential_file = Some(PathBuf::from("/run/secrets/owner"));
-        assert!(!with_owner.open_local());
-
-        assert!(
-            !config(AccessProfile::TrustedTlsProxy, "0.0.0.0:3000", Some("https://p.example"))
-                .open_local(),
-            "a reachable deployment always authenticates"
-        );
-        assert!(!config(AccessProfile::OnlyOnion, "0.0.0.0:3000", Some("http://a.onion")).open_local());
     }
 
     /// The line a person scrolls back to find, so it has to be openable as printed.

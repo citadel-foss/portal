@@ -44,6 +44,7 @@ import { IntroStage } from "../../components/ui/IntroStage";
 import { RouterIntro } from "./RouterIntro";
 import { useToastStore } from "../../store/toast";
 import { DashboardImport } from "./DashboardImport";
+import { copyText } from "../../lib/clipboard";
 
 interface OwnedRouter {
   settings: RouterSettings;
@@ -122,7 +123,8 @@ function RouterCard({
 
   function copyTorAddress() {
     if (!torAddress) return;
-    void navigator.clipboard.writeText(torAddress).then(() => {
+    void copyText(torAddress).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1400);
     });

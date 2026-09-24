@@ -6,17 +6,17 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState};
+use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBookHandle};
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, AppState};
 use crate::types::{MakerDto, OfferBookView, OfferDto};
 
 fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
     let state = match m.state {
         MakerState::Good => "good",
-        MakerState::Bad => "bad",
-        MakerState::Unresponsive { .. } => "unresponsive",
+        MakerState::Banned(_) => "bad",
+        MakerState::Unavailable(_) => "unresponsive",
     };
     let protocol = m.protocol.map(|p| match p {
         MakerProtocol::Legacy => "legacy".to_string(),
@@ -50,19 +50,38 @@ fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
 }
 
 /// Cached snapshot — no network I/O.
+///
+/// Falls back to the offerbook file when a running swap holds the taker: the sync service
+/// writes it after every poll, so the market stays readable for the hours a swap owns the
+/// mutex instead of going blank for the whole of it.
 pub fn get_offers(state: &Arc<AppState>) -> Result<OfferBookView, AppError> {
-    let taker_guard = try_lock_taker(&state.taker)?;
-    let taker = taker_guard.as_ref().ok_or_else(AppError::not_initialized)?;
-    let book = taker.fetch_offers()?;
+    let makers = match try_lock_taker(&state.taker) {
+        Ok(guard) => guard
+            .as_ref()
+            .ok_or_else(AppError::not_initialized)?
+            .fetch_offers()?
+            .all_makers(),
+        Err(busy) if busy.code == ErrorCode::SwapInProgress => {
+            let data_dir = state
+                .data_dir
+                .read()?
+                .clone()
+                .ok_or_else(AppError::not_initialized)?;
+            // A fresh handle each time, never a cached one: the handle loads the file once at
+            // construction, so a long-lived one would answer with whatever was on disk at init.
+            OfferBookHandle::load_or_create(&data_dir)?.all_makers()?
+        }
+        Err(other) => return Err(other),
+    };
 
     let mut good = Vec::new();
     let mut bad = Vec::new();
     let mut unresponsive = Vec::new();
-    for maker in book.all_makers() {
+    for maker in makers {
         match maker.state {
             MakerState::Good => good.push(to_maker_dto(maker)),
-            MakerState::Bad => bad.push(to_maker_dto(maker)),
-            MakerState::Unresponsive { .. } => unresponsive.push(to_maker_dto(maker)),
+            MakerState::Banned(_) => bad.push(to_maker_dto(maker)),
+            MakerState::Unavailable(_) => unresponsive.push(to_maker_dto(maker)),
         }
     }
 

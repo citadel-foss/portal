@@ -60,15 +60,33 @@ function Marker({ state }: { state: CheckState }) {
   );
 }
 
+/** Blinks on the marker's own rhythm, so the badge and the dot beside it read as one signal. */
+function WaitingBadge({ text }: { text: string }) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <motion.span
+      animate={{ opacity: reduceMotion ? 1 : [1, 0.4, 1] }}
+      transition={{ duration: 1.5, repeat: reduceMotion ? 0 : Infinity, ease: "easeInOut" }}
+      className="w-fit rounded-pill border border-warning/40 bg-warning/[0.1] px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-warning"
+    >
+      {text}
+    </motion.span>
+  );
+}
+
 /**
  * A run of checks as a connected stepper. The spine's filled length is the progress signal,
  * so each row only has to say what it is rather than carry its own progress bar.
  */
-export function Checklist({ steps }: { steps: { label: string; state: CheckState }[] }) {
+export function Checklist({
+  steps,
+}: {
+  steps: { label: string; state: CheckState; badge?: string }[];
+}) {
   const reduceMotion = useReducedMotion();
   return (
     <div className="flex flex-col">
-      {steps.map(({ label, state }, i) => (
+      {steps.map(({ label, state, badge }, i) => (
         <motion.div
           key={i}
           initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? 0 : 8 }}
@@ -90,7 +108,7 @@ export function Checklist({ steps }: { steps: { label: string; state: CheckState
             )}
           </div>
           <span
-            className={`text-[14px] font-medium transition-colors duration-500 ${
+            className={`flex flex-col items-start gap-1.5 text-[14px] font-medium transition-colors duration-500 ${
               // Sets the row's height, and so the length of the spine segment beside it.
               i < steps.length - 1 ? "pb-7" : ""
             } ${
@@ -104,6 +122,7 @@ export function Checklist({ steps }: { steps: { label: string; state: CheckState
             }`}
           >
             {label}
+            {badge && <WaitingBadge text={badge} />}
           </span>
         </motion.div>
       ))}

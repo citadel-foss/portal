@@ -7,7 +7,7 @@ import { isAppError } from "../../api/types";
 import type { Router } from "../../api/types";
 import { Card, IndeterminateBar, Modal, SatsAmount, StatStrip, Tooltip } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
-import { estimateRouterFee, formatTorEndpoint } from "../../lib/market-format";
+import { estimateRouterFee, routerName } from "../../lib/market-format";
 import { explorerTxUrl } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
@@ -32,9 +32,9 @@ const STATUS_TAB_CLASS: Record<RouterStatus, { text: string; glow: string }> = {
 // Address/Swap range/Fidelity Bond/Actions gate whether a router is usable at all, so they stay
 // visible; the raw Base/Liquidity/Time fee breakdown is a detail tucked behind the expand toggle.
 const ROUTER_TABLE_GRID = {
-  collapsed: "grid-cols-[minmax(150px,1.4fr)_repeat(2,minmax(90px,0.85fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
+  collapsed: "grid-cols-[minmax(230px,1.6fr)_repeat(2,minmax(90px,0.85fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
   expanded:
-    "grid-cols-[minmax(150px,1.35fr)_repeat(5,minmax(74px,0.78fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
+    "grid-cols-[minmax(230px,1.5fr)_repeat(5,minmax(74px,0.78fr))_minmax(122px,0.9fr)_minmax(250px,max-content)]",
 };
 
 // Fewer columns (collapsed) means more room per column, so text can run larger; each range is also
@@ -121,7 +121,7 @@ function FidelityBondModal({ router, onClose }: { router: Router; onClose: () =>
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Tor Address</span>
-          <strong className="break-all font-mono text-[13px] text-foreground">{router.address}</strong>
+          <strong className="font-mono text-[13px] text-foreground">{routerName(router.address)}</strong>
         </div>
         <div className="rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Bond Amount</span>
@@ -179,8 +179,8 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
       onClose={onClose}
       footer={<Button variant="secondary" onClick={onClose}>Close</Button>}
     >
-      <p className="truncate font-mono text-[11px] text-muted" title={router.address}>
-        {formatTorEndpoint(router.address, 22, 12, true)}
+      <p className="font-mono text-[11px] leading-[1.45] text-muted">
+        {routerName(router.address)}
       </p>
 
       <label className="flex flex-col gap-2">
@@ -282,9 +282,9 @@ function ConfirmRemoveModal({ address, onConfirm, onCancel, removing }: { addres
         </>
       }
     >
-      <p className="break-all text-[13px] text-muted">
-        Remove <span className="font-mono text-foreground">{address}</span> from the offerbook? It will no longer
-        appear in market results until rediscovered.
+      <p className="text-[13px] text-muted">
+        Remove <span className="font-mono text-foreground">{routerName(address)}</span> from the offerbook? It will
+        no longer appear in market results until rediscovered.
       </p>
     </Modal>
   );
@@ -629,8 +629,8 @@ export function MarketPage() {
                       showAllColumns ? ROUTER_ROW_TEXT.expanded : ROUTER_ROW_TEXT.collapsed
                     } transition-colors hover:bg-[var(--color-hover)]`}
                   >
-                    <div className="truncate text-muted" title={router.address}>
-                      {formatTorEndpoint(router.address, 8, 6, true)}
+                    <div className="leading-[1.45] text-muted">
+                      {routerName(router.address)}
                     </div>
                     {showAllColumns && (
                       <div className="text-right font-semibold text-primary">

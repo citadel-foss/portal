@@ -4,6 +4,7 @@ import { openExternal } from "../../platform";
 import {
   Card,
   ExternalLinkButton,
+  Identifier,
   SatsAmount,
   SkeletonRows,
   StatStrip,
@@ -17,11 +18,11 @@ import { sendConfirmations, usePendingSendsStore } from "../../store/pending-sen
 import { useWalletCacheStore } from "../../store/wallet-cache";
 import {
   classifySpendType,
+  classifyTransactionType,
   explorerTxUrl,
   formatRelativeTime,
   getTransactionKind,
   scriptTypeFromAddress,
-  truncateMiddle,
 } from "../../lib/wallet-format";
 
 type UtxoFilter = "all" | "regular" | "contract" | "swap";
@@ -300,11 +301,15 @@ export function WalletPage() {
                 { value: "swap", label: "Swap", suffix: <span>{utxoCounts.swap}</span> },
               ]}
             />
-            <div className="grid grid-cols-[1.35fr_0.58fr_0.58fr_1.1fr_52px] gap-3 px-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-              <span>Txid . Amount</span>
+            {/* Every width fixed but the address: each row is its own grid, so an `auto`
+                column sized itself to that row's own digits, and a 9,822,645 row then
+                resolved different column edges than a 40,828 one — sliding the pills
+                out of line down the list. */}
+            <div className="grid grid-cols-[minmax(0,1fr)_92px_92px_124px_44px] gap-3 px-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+              <span>Address</span>
               <span>Script</span>
               <span>Type</span>
-              <span>Address</span>
+              <span className="text-right">Amount</span>
               <span />
             </div>
             <div className="flex flex-1 flex-col divide-y divide-line overflow-y-auto">
@@ -317,17 +322,16 @@ export function WalletPage() {
                 return (
                   <div
                     key={`${u.txid}:${u.vout}`}
-                    className="grid min-h-[58px] grid-cols-[1.35fr_0.58fr_0.58fr_1.1fr_52px] items-center gap-3 px-3 py-2.5 transition-colors duration-200 hover:bg-[var(--color-hover)]"
+                    className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_92px_92px_124px_44px] items-center gap-3 px-3 py-2.5 transition-colors duration-200 hover:bg-[var(--color-hover)]"
                   >
-                    <span className="flex min-w-0 flex-col gap-1">
-                      <span className="truncate font-mono text-[12px] text-muted">
-                        {truncateMiddle(u.txid, 12, 4)}:{u.vout}
-                      </span>
-                      <SatsAmount sats={u.amountSats} className="text-[13px] font-semibold text-success" />
-                    </span>
+                    {u.address ? (
+                      <Identifier value={u.address} className="text-[11.5px] leading-[1.45] text-muted" />
+                    ) : (
+                      <span className="font-mono text-[11.5px] text-subtle">No address</span>
+                    )}
                     <Pill label={script.toUpperCase()} className={SCRIPT_PILL_CLASS[script]} />
                     <Pill label={bucket.toUpperCase()} className={TYPE_PILL_CLASS[bucket]} />
-                    <span className="truncate font-mono text-[11.5px] text-muted">{u.address ?? "No address"}</span>
+                    <SatsAmount sats={u.amountSats} className="justify-self-end text-[13px] font-semibold text-success" />
                     <ExternalLinkButton txid={u.txid} />
                   </div>
                 );
@@ -365,27 +369,25 @@ export function WalletPage() {
             {pendingSends.map((send) => {
               const confirmations = sendConfirmations(send.txid, utxos);
               return (
-                <div key={send.txid} className="flex items-center gap-3 px-3 py-3">
-                  <StatusChip tone="warning" shape="tile" className="h-[34px] w-[34px] justify-center px-0">
-                    <Clock size={16} strokeWidth={2} />
-                  </StatusChip>
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="truncate font-mono text-[12px] text-muted" title={send.txid}>
-                      {truncateMiddle(send.txid, 12, 8)}
-                    </span>
-                    <StatusChip tone="warning" className="self-start">
+                <div key={send.txid} className="flex flex-col gap-1.5 px-3 py-3">
+                  <span className="flex items-start gap-2.5">
+                    <StatusChip tone="warning" shape="tile" className="h-[34px] w-[34px] flex-none justify-center px-0">
+                      <Clock size={16} strokeWidth={2} />
+                    </StatusChip>
+                    <Identifier value={send.txid} className="min-w-0 flex-1 pt-0.5 text-[11.5px] leading-[1.5] text-muted" />
+                    <ExternalLinkButton txid={send.txid} />
+                  </span>
+                  <span className="flex items-center justify-between gap-3 pl-[44px]">
+                    <StatusChip tone="warning">
                       {confirmations === null
                         ? "Broadcast — waiting for the mempool"
                         : confirmations === 0
                           ? "In the mempool — waiting for a block"
                           : `${confirmations} confirmation${confirmations === 1 ? "" : "s"}`}
                     </StatusChip>
-                  </span>
-                  <span className="flex flex-none items-center gap-2">
                     <span className="font-numeric text-[12.5px] text-danger">
                       −<SatsAmount sats={send.amountSats} />
                     </span>
-                    <ExternalLinkButton txid={send.txid} />
                   </span>
                 </div>
               );
@@ -416,20 +418,23 @@ export function WalletPage() {
                   tabIndex={0}
                   onClick={() => void openExternal(explorerTxUrl(tx.txid))}
                   onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && openExternal(explorerTxUrl(tx.txid))}
-                  className="grid min-h-[58px] cursor-pointer grid-cols-[38px_minmax(0,1fr)_auto_52px] items-center gap-3 px-0 py-2.5 text-left outline-none transition-colors duration-200 hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
+                  className="flex cursor-pointer flex-col gap-1.5 px-3 py-3 text-left outline-none transition-colors duration-200 hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
                 >
-                  <span
-                    className={`flex h-[34px] w-[34px] items-center justify-center rounded-control border ${
-                      isReceive
-                        ? "border-success/45 bg-success/[0.08] text-success"
-                        : "border-danger/45 bg-danger/[0.08] text-danger"
-                    }`}
-                  >
-                    {isReceive ? <ArrowDownLeft size={20} strokeWidth={2} /> : <ArrowUpRight size={20} strokeWidth={2} />}
+                  <span className="flex items-start gap-2.5">
+                    <span
+                      className={`flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border ${
+                        isReceive
+                          ? "border-success/45 bg-success/[0.08] text-success"
+                          : "border-danger/45 bg-danger/[0.08] text-danger"
+                      }`}
+                    >
+                      {isReceive ? <ArrowDownLeft size={20} strokeWidth={2} /> : <ArrowUpRight size={20} strokeWidth={2} />}
+                    </span>
+                    <Identifier value={tx.txid} className="min-w-0 flex-1 pt-0.5 text-[11.5px] leading-[1.5] text-muted" />
+                    <ExternalLinkButton txid={tx.txid} />
                   </span>
-                  <span className="flex min-w-0 flex-col gap-1">
-                    <span className="truncate font-mono text-[12px] text-muted">{truncateMiddle(tx.txid, 16, 8)}</span>
-                    <span className="flex items-center gap-1.5">
+                  <span className="flex items-center justify-between gap-3 pl-[44px]">
+                    <span className="flex items-center gap-2">
                       <span
                         className={`w-fit rounded-control border px-1.5 py-0.5 font-mono text-[9.5px] tracking-wide ${
                           tx.confirmations >= 6
@@ -439,16 +444,17 @@ export function WalletPage() {
                       >
                         {Math.min(tx.confirmations, 6)}/6 CONF
                       </span>
+                      <Pill
+                        label={classifyTransactionType(tx.category, tx.label).toUpperCase()}
+                        className={TYPE_PILL_CLASS[classifyTransactionType(tx.category, tx.label)]}
+                      />
+                      <span className="font-mono text-[10.5px] text-subtle">{formatRelativeTime(tx.time)}</span>
                     </span>
-                  </span>
-                  <span className="flex flex-col items-end gap-1">
                     <SatsAmount
                       sats={Math.abs(tx.amountSats)}
                       className={`text-[13px] font-semibold ${isReceive ? "text-success" : "text-danger"}`}
                     />
-                    <span className="font-mono text-[10.5px] text-subtle">{formatRelativeTime(tx.time)}</span>
                   </span>
-                  <ExternalLinkButton txid={tx.txid} />
                 </div>
               );
             })}

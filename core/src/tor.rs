@@ -31,6 +31,10 @@ pub struct TorRuntime {
 /// the instance already starting instead of spawning a second one on a second pair of ports.
 static RUNTIME: Mutex<Option<TorRuntime>> = Mutex::new(None);
 
+/// Whether the Tor in `RUNTIME` is one this process launched, as opposed to one it adopted
+/// from another Portal on the same data root. Only the launcher may halt it.
+static OWNS_TOR: AtomicBool = AtomicBool::new(false);
+
 /// Separate from `RUNTIME` because it is never cleared: `tor_main` cannot run twice in one
 /// process, so once a launch has been attempted the only way to another one is a new process.
 /// Without this a failed readiness wait — which clears `RUNTIME` — would let the next retry
@@ -47,30 +51,48 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
         match slot.as_ref() {
             Some(runtime) => runtime.clone(),
             None => {
-                // Load-then-store rather than swap, and stored only once `tor_main` has actually
-                // been spawned: picking ports or creating the Tor directory can fail without
-                // ever reaching it, and latching the flag there would answer every later retry
-                // with the permanent error below over a transient fault. Safe as two steps
-                // because the `RUNTIME` lock is held across both.
-                if STARTED.load(Ordering::SeqCst) {
-                    return Err(
-                        "Portal's Tor already ran once this session and cannot be started again \
-                         in place. Quit and reopen Portal to try a fresh one."
-                            .to_string(),
+                // `STARTED` is load-then-store rather than a swap, and stored only once
+                // `tor_main` has actually been spawned: picking ports or creating the Tor
+                // directory can fail without ever reaching it, and latching the flag there
+                // would answer every later retry with a permanent error over a transient
+                // fault. Safe as two steps because the `RUNTIME` lock is held across both.
+                // A Portal already running on this data root has a Tor of its own, and one
+                // Tor serves any number of clients. Checked before launching rather than
+                // after failing to: two Tors on one data directory is the case where the
+                // second simply exits, taking its Portal with it.
+                if let Some(adopted) = adopt_running_tor() {
+                    log::info!(
+                        "using the Tor another Portal started (socks {}, control {})",
+                        adopted.socks_port,
+                        adopted.control_port
                     );
+                    *slot = Some(adopted.clone());
+                    adopted
+                } else {
+                    if STARTED.load(Ordering::SeqCst) {
+                        return Err(
+                            "Portal's Tor already ran once this session and cannot be started \
+                             again in place. Quit and reopen Portal to try a fresh one."
+                                .to_string(),
+                        );
+                    }
+                    let (socks_port, control_port) =
+                        free_port_pair().map_err(|e| e.to_string())?;
+                    let control_password = hex_upper(&random_bytes::<16>());
+                    let hashed =
+                        hashed_control_password(&control_password, &random_bytes::<8>());
+                    start_embedded_tor(&tor_dir()?, socks_port, control_port, &hashed)?;
+                    STARTED.store(true, Ordering::SeqCst);
+                    OWNS_TOR.store(true, Ordering::SeqCst);
+                    let runtime = TorRuntime {
+                        socks_port,
+                        control_port,
+                        control_password,
+                    };
+                    publish_tor_session(&runtime);
+                    *slot = Some(runtime.clone());
+                    runtime
                 }
-                let (socks_port, control_port) = free_port_pair().map_err(|e| e.to_string())?;
-                let control_password = hex_upper(&random_bytes::<16>());
-                let hashed = hashed_control_password(&control_password, &random_bytes::<8>());
-                start_embedded_tor(&tor_dir()?, socks_port, control_port, &hashed)?;
-                STARTED.store(true, Ordering::SeqCst);
-                let runtime = TorRuntime {
-                    socks_port,
-                    control_port,
-                    control_password,
-                };
-                *slot = Some(runtime.clone());
-                runtime
             }
         }
     };
@@ -91,6 +113,15 @@ pub fn shutdown() {
     let Some(tor) = runtime() else {
         return;
     };
+    if !OWNS_TOR.load(Ordering::SeqCst) {
+        // Adopted, not launched: another Portal is still routing through it. Let go of the
+        // handle and leave the process alone.
+        if let Ok(mut slot) = RUNTIME.lock() {
+            *slot = None;
+        }
+        return;
+    }
+    withdraw_tor_session();
     // SIGNAL HALT rather than letting the thread die with the process, so Tor runs its own
     // cleanup and writes back the cached consensus the next launch starts from.
     if let Err(e) = signal_halt(&tor) {
@@ -162,17 +193,149 @@ fn signal_halt(tor: &TorRuntime) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What a running Portal advertises about the Tor it launched, so another Portal on the same
+/// data root can route through it instead of starting a second one.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TorSession {
+    pid: u32,
+    socks_port: u16,
+    control_port: u16,
+    /// At rest, deliberately. It guards a loopback control port belonging to a Tor this user
+    /// already owns, under a directory only this user can read — anyone who can read the file
+    /// can already attach to the process itself, so it protects nothing the OS account does
+    /// not. Without it a second Portal has no way to prove the Tor it found is ours.
+    control_password: String,
+}
+
+fn tor_session_path() -> Result<PathBuf, String> {
+    openswap::utill::get_taker_dir()
+        .map(|dir| dir.join("tor-session.json"))
+        .map_err(|e| e.to_string())
+}
+
+/// Adopts a Tor another Portal launched, if there is one.
+///
+/// Three things have to hold, and each rules out a different wrong answer: the process that
+/// advertised it is still alive, something is answering on the control port, and that
+/// something accepts *our* password. The last is what distinguishes our Tor from a system Tor
+/// or an unrelated service that happened to inherit the port — Portal never touches a Tor it
+/// did not start, and a password only our own instance was given is the proof of that.
+fn adopt_running_tor() -> Option<TorRuntime> {
+    let path = tor_session_path().ok()?;
+    let session: TorSession = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    if session.pid == std::process::id() || !process_is_alive(session.pid) {
+        return None;
+    }
+    let runtime = TorRuntime {
+        socks_port: session.socks_port,
+        control_port: session.control_port,
+        control_password: session.control_password,
+    };
+    control_authenticates(&runtime).then_some(runtime)
+}
+
+fn publish_tor_session(runtime: &TorRuntime) {
+    let Ok(path) = tor_session_path() else { return };
+    let session = TorSession {
+        pid: std::process::id(),
+        socks_port: runtime.socks_port,
+        control_port: runtime.control_port,
+        control_password: runtime.control_password.clone(),
+    };
+    let Ok(body) = serde_json::to_vec(&session) else {
+        return;
+    };
+    // Private, because of the password inside it.
+    if let Err(e) = crate::security::fs::write_private(&path, &body) {
+        log::warn!("could not advertise Portal's Tor to other instances: {}", e.message);
+    }
+}
+
+/// Retracts the advertisement, so a Portal starting later does not try to adopt a Tor that
+/// has just been halted. Best effort: a stale record is caught by the liveness and
+/// authentication checks in `adopt_running_tor` anyway.
+fn withdraw_tor_session() {
+    if let Ok(path) = tor_session_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Whether the control port accepts this runtime's password — the test of "is this ours".
+fn control_authenticates(tor: &TorRuntime) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], tor.control_port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(700)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    if stream
+        .write_all(format!("AUTHENTICATE \"{}\"\r\n", tor.control_password).as_bytes())
+        .is_err()
+    {
+        return false;
+    }
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).is_ok() && line.starts_with("250")
+}
+
 /// The ports Tor is on, once started. `None` before the first `ensure_tor`.
 pub fn runtime() -> Option<TorRuntime> {
     RUNTIME.lock().ok()?.clone()
 }
 
-/// Shared by the taker and every maker, but kept under the taker data dir so the layout
-/// stays inside the directories the openswap crate already owns.
+/// Shared by the taker and every maker in *this* process, but never between processes.
+///
+/// Kept under the taker data dir so the layout stays inside the directories the openswap
+/// crate already owns, and suffixed with the process id so a desktop app and a web server on
+/// one data root do not fight over it. Tor refuses to start against a directory another Tor
+/// already holds — it waits five seconds, logs "No, it's still there. Exiting.", and dies,
+/// which takes Portal down with it moments after it has announced itself as listening.
 fn tor_dir() -> Result<PathBuf, String> {
     openswap::utill::get_taker_dir()
-        .map(|dir| dir.join("tor-manager"))
+        .map(|dir| dir.join(format!("tor-manager-{}", std::process::id())))
         .map_err(|e| e.to_string())
+}
+
+/// Removes `tor-manager` directories left by processes that are no longer running.
+///
+/// Each run gets its own, so without this they accumulate — one per launch, each holding a
+/// Tor identity. Called at startup rather than shutdown: a process killed outright never gets
+/// to tidy up after itself, and that is exactly when the directory is left behind.
+pub fn sweep_stale_tor_dirs() {
+    let Ok(root) = openswap::utill::get_taker_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mine = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("tor-manager-"))
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == mine || process_is_alive(pid) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    // Signal 0 checks for the process without delivering anything.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    // Without a cheap liveness check, keeping the directory is the safe answer: a live Tor
+    // losing its data directory is worse than a stale one lingering.
+    true
 }
 
 /// Picks a free loopback port pair. Holding both listeners until each port is known stops the

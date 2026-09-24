@@ -45,6 +45,18 @@ export function scriptTypeFromAddress(address: string | undefined): "Taproot" | 
   return "SegWit";
 }
 
+/**
+ * Which kind of coin a transaction moved, in the same four buckets the UTXO list uses.
+ *
+ * A separate axis from `getTransactionKind`, which answers in/out/swap for the filter tabs.
+ * The backend has no dedicated field for this, so it reads the same category and label text
+ * `classifySpendType` reads off a UTXO — one classifier, so a row and the coin it produced
+ * can never disagree about what they are.
+ */
+export function classifyTransactionType(category: string, label: string | undefined): UtxoBucket {
+  return classifySpendType(`${category} ${label ?? ""}`);
+}
+
 export type TxKind = "received" | "sent" | "swap";
 
 export function getTransactionKind(category: string, label: string | undefined, amountSats: number): TxKind {
@@ -59,6 +71,12 @@ export const EXPLORER_BASE_URL = "https://mempool.citadelfoss.xyz";
 
 export function explorerTxUrl(txid: string): string {
   return `${EXPLORER_BASE_URL}/tx/${encodeURIComponent(txid)}`;
+}
+
+/** The address page, which lists every transaction that ever touched a coin — what you want
+ *  when the row you clicked is a UTXO rather than the transaction that created it. */
+export function explorerAddressUrl(address: string): string {
+  return `${EXPLORER_BASE_URL}/address/${encodeURIComponent(address)}`;
 }
 
 // ---------------------------------------------------------------------------

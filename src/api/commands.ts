@@ -39,9 +39,15 @@ import type {
   TorStatus,
   TxSummary,
   UtxoEntry,
+  RouterDefaults,
   SessionState,
   WalletInfo,
 } from "./types";
+
+/** What a new router starts with, straight from the protocol crate's defaults. */
+export function getRouterDefaults(): Promise<RouterDefaults> {
+  return invoke("get_router_defaults");
+}
 
 export function getChainBackend(): Promise<ChainBackendConfig> {
   return invoke("get_chain_backend");
@@ -139,8 +145,9 @@ export async function estimateSwapFunding(
   amountSats: number,
   protocol: ProtocolVersion,
   outpoints?: Outpoint[],
+  txCount?: number,
 ): Promise<SwapFundingEstimate> {
-  return invoke("estimate_swap_funding", { amountSats, protocol, outpoints });
+  return invoke("estimate_swap_funding", { amountSats, protocol, outpoints, txCount });
 }
 
 export function getNewAddress(addressType: AddressType): Promise<NewAddress> {
@@ -275,6 +282,17 @@ export function listRouterUtxos(routerId: string): Promise<UtxoEntry[]> {
 
 export function getRouterTransactions(routerId: string, count?: number, skip?: number): Promise<TxSummary[]> {
   return invoke("get_maker_transactions", { routerId, count, skip });
+}
+
+/** Spend from a router's own wallet. Durable, like the taker spend it mirrors. */
+export function sendRouterToAddress(
+  routerId: string,
+  address: string,
+  amountSats: number,
+  feeRate?: number,
+  outpoints?: Outpoint[],
+): Promise<SendResult> {
+  return invoke("send_maker_to_address", { routerId, address, amountSats, feeRate, outpoints });
 }
 
 export function getRouterNewAddress(routerId: string, addressType: AddressType): Promise<NewAddress> {

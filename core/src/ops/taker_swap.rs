@@ -10,14 +10,14 @@ use std::sync::Arc;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use openswap::bitcoin::{Amount, OutPoint, Txid};
+use openswap::bitcoin::{Address, Amount, OutPoint, Txid};
 use openswap::protocol::ProtocolVersion;
 use openswap::taker::swap_tracker::{
     ContractResolution, ExchangeProgress, LegacyExchangeProgress, MakerProgress,
     RecoveryPhase, SwapPhase, SwapRecord, SwapTracker, TaprootExchangeProgress,
 };
 use openswap::taker::{SwapParams, SwapSummary};
-use openswap::utill::{funding_fee_policy_sats, sweep_fee_policy_sats};
+use openswap::utill::{funding_fee_policy_sats, sweep_fee_policy_sats, MAX_TX_COUNT};
 use openswap::wallet::UTXOSpendInfo;
 use crate::events::AppEvent;
 
@@ -27,7 +27,7 @@ use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
 use crate::types::{
     ProtocolVersionDto, RecoveredContractDto, RecoveryContractDto, RecoveryStatus, RecoverySummary,
     RecoveryHandoff,
-    SwapPreparationDto, RouterFeeInfoDto, RouterMilestoneDto,
+    PaymentQuoteDto, SwapPreparationDto, RouterFeeInfoDto, RouterMilestoneDto,
     RouterProgressDto, RouterStageDto, SwapFundingEstimateDto, SwapProgressDto, SwapRequest,
     SwapSummaryDto, SwapTrackerDto,
 };
@@ -42,6 +42,7 @@ fn protocol_label(p: ProtocolVersion) -> &'static str {
 }
 
 fn to_summary_dto(s: &SwapSummary) -> SwapSummaryDto {
+    let router_fees: u64 = s.makers.iter().map(|m| m.estimated_fee_sats).sum();
     SwapSummaryDto {
         swap_id: s.swap_id.clone(),
         protocol: protocol_label(s.protocol).to_string(),
@@ -61,6 +62,15 @@ fn to_summary_dto(s: &SwapSummary) -> SwapSummaryDto {
             .collect(),
         total_estimated_fee_sats: s.total_estimated_fee.to_sat(),
         estimated_receive_amount_sats: s.estimated_receive_amount.to_sat(),
+        router_fee_sats: router_fees,
+        // Whatever the ceiling holds beyond the routers' own service fees is miner cost:
+        // our funding, each hop's forwarding, and the claim sweep.
+        mining_fee_sats: s.total_estimated_fee.to_sat().saturating_sub(router_fees),
+        payment: s.payment.as_ref().map(|p| PaymentQuoteDto {
+            address: p.address.to_string(),
+            amount_sats: p.amount.to_sat(),
+            settlement_budget_sats: p.settlement_budget.to_sat(),
+        }),
     }
 }
 
@@ -187,9 +197,15 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
         router_count: r.maker_count,
         failure_reason: r.failure_reason.clone(),
         routers,
-        outgoing_contract_count: r.outgoing_contract_txids.len(),
-        incoming_contract_count: r.incoming_contract_txids.len(),
-        watchonly_contract_count: r.watchonly_contract_txids.len(),
+        outgoing_contract_txids: r.outgoing_contract_txids.iter().map(Txid::to_string).collect(),
+        incoming_contract_txids: r.incoming_contract_txids.iter().map(Txid::to_string).collect(),
+        watchonly_contract_txids: r
+            .watchonly_contract_txids
+            .iter()
+            .map(Txid::to_string)
+            .collect(),
+        payment_address: r.payment_address.clone(),
+        payment_amount_sats: r.payment_amount_sat,
     }
 }
 
@@ -206,6 +222,7 @@ pub async fn estimate_swap_funding(
     amount_sats: u64,
     protocol: ProtocolVersionDto,
     outpoints: Option<Vec<crate::types::Outpoint>>,
+    tx_count: Option<u32>,
 ) -> Result<SwapFundingEstimateDto, AppError> {
     let wallet = get_wallet_handle(state)?;
     let protocol = match protocol {
@@ -213,7 +230,10 @@ pub async fn estimate_swap_funding(
         ProtocolVersionDto::Taproot => ProtocolVersion::Taproot,
     };
     // Only the fee defaults are read off this; the hop count never reaches a quote.
-    let params = SwapParams::new(protocol, Amount::from_sat(amount_sats), 2);
+    let mut params = SwapParams::new(protocol, Amount::from_sat(amount_sats), 2);
+    if let Some(count) = tx_count {
+        params = params.with_tx_count(validate_tx_count(count)?);
+    }
     let outpoints = outpoints
         .map(|items| {
             items
@@ -277,6 +297,10 @@ pub async fn estimate_swap_funding(
             input_count,
             vbytes,
             fee_sats,
+            outgoing_utxo_count: input_count,
+            // The most the last leg can carry: each hop re-plans against its own pool and may
+            // commit to fewer, and every later hop inherits that smaller count.
+            incoming_utxo_count: params.tx_count as usize,
             fee_rate_sats_per_vb: feerate,
             route_mining_fee_per_router_sats,
             sweep_fee_sats: params.tx_count as u64 * sweep_per_contract_sats,
@@ -284,6 +308,18 @@ pub async fn estimate_swap_funding(
     })
     .await
     .map_err(AppError::internal)?
+}
+
+/// The crate rejects an out-of-range split count at prepare time, which is after the user has
+/// waited through maker discovery; refusing it here keeps the message specific and immediate.
+fn validate_tx_count(count: u32) -> Result<u32, AppError> {
+    if count == 0 || count > MAX_TX_COUNT {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            format!("splitCount must be between 1 and {MAX_TX_COUNT}"),
+        ));
+    }
+    Ok(count)
 }
 
 /// Phase 1: maker discovery + negotiation, no funds committed. Summary is
@@ -326,6 +362,15 @@ pub async fn prepare_swap(
     }
     if let Some(preferred) = request.preferred_routers {
         params = params.with_preferred_makers(preferred);
+    }
+    if let Some(count) = request.tx_count {
+        params = params.with_tx_count(validate_tx_count(count)?);
+    }
+    if let Some(address) = request.payment_address {
+        // Parsed here, checked against the wallet's own network inside `prepare_swap`.
+        let parsed = Address::from_str(address.trim())
+            .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
+        params = params.with_payment_address(parsed);
     }
 
     let taker = state.taker.clone();

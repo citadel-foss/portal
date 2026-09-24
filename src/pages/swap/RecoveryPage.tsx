@@ -16,6 +16,7 @@ import {
   Disclosure,
   EmptyState,
   ExternalLinkButton,
+  Identifier,
   LogViewer,
   MicroLabel,
   Notice,
@@ -24,7 +25,7 @@ import {
 } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
-import { formatBlockWait, truncateMiddle } from "../../lib/wallet-format";
+import { formatBlockWait } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { SwapCircuit } from "./circuit/SwapCircuit";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
@@ -84,12 +85,10 @@ function ContractRow({ contract }: { contract: RecoveryContract }) {
   return (
     <div className="flex items-center justify-between gap-3 py-3">
       <span className="flex min-w-0 flex-col gap-1.5">
-        <span
-          className="truncate font-mono text-[12px] text-muted"
-          title={`${contract.outpoint.txid}:${contract.outpoint.vout}`}
-        >
-          {truncateMiddle(contract.outpoint.txid, 10, 6)}:{contract.outpoint.vout}
-        </span>
+        <Identifier
+          value={`${contract.outpoint.txid}:${contract.outpoint.vout}`}
+          className="text-[12px] leading-[1.45] text-muted"
+        />
         <span className="flex flex-wrap items-center gap-1.5">
           <StatusChip tone={waiting ? "warning" : "primary"} className="self-start">
             {contract.claimPath === "hashlock"
@@ -231,9 +230,7 @@ export function RecoveryPage() {
                     className="flex items-center justify-between gap-3 py-3"
                   >
                     <span className="flex min-w-0 flex-col gap-1.5">
-                      <span className="truncate font-mono text-[12px] text-muted" title={c.contractTxid}>
-                        {truncateMiddle(c.contractTxid, 10, 6)}
-                      </span>
+                      <Identifier value={c.contractTxid} className="text-[12px] leading-[1.45] text-muted" />
                       <StatusChip tone="success" className="self-start">
                         {RESOLUTION_LABEL[c.resolution] ?? c.resolution}
                       </StatusChip>
@@ -435,9 +432,7 @@ export function RecoveryPage() {
             {(status?.resolved ?? []).map((r) => (
               <div key={r.contractTxid} className="flex items-center justify-between gap-3 py-3">
                 <span className="flex min-w-0 flex-col gap-1.5">
-                  <span className="truncate font-mono text-[12px] text-muted" title={r.contractTxid}>
-                    {truncateMiddle(r.contractTxid, 10, 6)}
-                  </span>
+                  <Identifier value={r.contractTxid} className="text-[12px] leading-[1.45] text-muted" />
                   <StatusChip tone="success" className="self-start">
                     Claimed back
                   </StatusChip>

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use openswap::utill::get_taker_dir;
 
-use crate::error::{AppError, ErrorCode};
+use crate::error::AppError;
 
 /// Non-wallet files the crate and this app write into the wallets directory (crate
 /// report/lock/temp, plus our own last-issued-address sidecar).
@@ -52,73 +52,6 @@ pub fn list_wallets(data_dir: &Option<String>) -> Result<Vec<String>, AppError> 
     }
     names.sort();
     Ok(names)
-}
-
-/// Exclusive ownership of a data root, released when dropped.
-///
-/// Two Portal processes on one root corrupt each other in ways that are hard to read from the
-/// symptoms: they share the wallet files, the operation journal and the Tor identity
-/// directory, so the second one to start finds Tor already bound and reports a bootstrap
-/// failure rather than a conflict. Failing loudly at startup is far kinder than that.
-///
-/// This binds cooperating Portal processes only. An unmodified upstream CLI tool writing the
-/// same files does not consult it, so offline maintenance still has to be arranged by hand.
-#[derive(Debug)]
-pub struct RootLock {
-    _file: std::fs::File,
-}
-
-#[cfg(unix)]
-pub fn lock_data_root(root: &Path) -> Result<RootLock, AppError> {
-    use std::os::unix::io::AsRawFd;
-    crate::security::fs::ensure_private_dir(root)?;
-    let path = root.join(".portal.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)?;
-    // Non-blocking: waiting would just hang a start that is never going to succeed.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        // Name the holder. "Another Portal" is not enough to act on when the other one is a
-        // desktop window that has been open for hours and looks unrelated.
-        let holder = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|pid| pid.trim().parse::<u32>().ok())
-            .map(|pid| format!(" (process {pid})"))
-            .unwrap_or_default();
-        return Err(AppError::new(
-            ErrorCode::Io,
-            format!(
-                "another Portal{holder} is already using {}. Quit it first — the desktop app \
-                 and the web server cannot share one data directory.",
-                root.display()
-            ),
-        ));
-    }
-    // Recorded after the lock is held, so whoever fails to take it can say who has it.
-    // Best-effort: a missing or unreadable pid only costs the hint.
-    use std::io::{Seek, Write};
-    let mut file = file;
-    let _ = file.set_len(0);
-    let _ = file.rewind();
-    let _ = write!(file, "{}", std::process::id());
-    let _ = file.flush();
-    Ok(RootLock { _file: file })
-}
-
-/// Windows has no `flock`; the equivalent is opening the file without share permissions,
-/// which needs its own testing before it guards a wallet. Until then the desktop build
-/// there runs unguarded rather than pretending to hold a lock it does not.
-#[cfg(not(unix))]
-pub fn lock_data_root(root: &Path) -> Result<RootLock, AppError> {
-    crate::security::fs::ensure_private_dir(root)?;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(root.join(".portal.lock"))?;
-    Ok(RootLock { _file: file })
 }
 
 /// Writes bytes a host received into a private file under the managed root, returning the

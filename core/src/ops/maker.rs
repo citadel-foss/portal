@@ -104,6 +104,20 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
     Ok(())
 }
 
+/// What a new router should be configured with, taken from the crate rather than restated.
+pub fn router_defaults() -> crate::types::RouterDefaultsDto {
+    let core = MakerServerConfig::default();
+    crate::types::RouterDefaultsDto {
+        min_swap_amount: core.min_swap_amount,
+        fidelity_amount: core.fidelity_amount,
+        fidelity_timelock: core.fidelity_timelock,
+        required_confirms: core.required_confirms,
+        base_fee: core.base_fee,
+        amount_relative_fee_pct: core.amount_relative_fee_pct,
+        time_relative_fee_pct: core.time_relative_fee_pct,
+    }
+}
+
 fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> Result<MakerServerConfig, AppError> {
     let tor = crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
     let backend = chain_backend::resolve(&config.wallet_name, Some(tor.socks_port))?;

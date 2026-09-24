@@ -303,6 +303,7 @@ fn failed(failure: ErrorCode, error: String) -> BackendStatus {
         synced: false,
         subversion: None,
         verification_progress: None,
+        signet_challenge: None,
     }
 }
 
@@ -326,6 +327,7 @@ fn probe_electrum(dto: &ElectrumBackendDto, socks_port: Option<u16>) -> BackendS
             synced: true,
             subversion: None,
             verification_progress: Some(1.0),
+            signet_challenge: None,
         },
         Err(e) => unreachable(format!("{e:?}")),
     }
@@ -369,7 +371,22 @@ fn probe_core_rpc(node: &NodeBackendDto) -> BackendStatus {
         synced: !info.initial_block_download && info.blocks == info.headers,
         subversion: client.get_network_info().ok().map(|n| n.subversion),
         verification_progress: Some(info.verification_progress),
+        signet_challenge: signet_challenge(&client, info.chain),
     }
+}
+
+/// `GetBlockchainInfoResult` has no field for it, so the raw JSON is re-read rather than the
+/// typed call being replaced. Only on signet: every other chain omits the key entirely.
+fn signet_challenge(client: &Client, chain: Network) -> Option<String> {
+    if chain != Network::Signet {
+        return None;
+    }
+    client
+        .call::<serde_json::Value>("getblockchaininfo", &[])
+        .ok()?
+        .get("signet_challenge")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// Address of a UTXO, re-derived from its scriptPubKey when the backend left it unset:

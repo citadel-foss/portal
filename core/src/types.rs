@@ -60,6 +60,24 @@ pub struct ChainBackendView {
     pub node: Option<NodeBackendViewDto>,
 }
 
+/// The economics a new router starts with, read straight off the protocol crate's own
+/// `MakerServerConfig::default()`.
+///
+/// Served rather than restated in the frontend so there is exactly one source of truth: the
+/// app had drifted to ten times core's figures on every one of these, which a UI constant can
+/// do silently and a crate bump will never correct.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterDefaultsDto {
+    pub min_swap_amount: u64,
+    pub fidelity_amount: u64,
+    pub fidelity_timelock: u32,
+    pub required_confirms: u32,
+    pub base_fee: u64,
+    pub amount_relative_fee_pct: f64,
+    pub time_relative_fee_pct: f64,
+}
+
 /// Result of probing a chain backend. Electrum answers the height/chain questions
 /// from its tip subscription, so both backends fill the same shape; `subversion`
 /// is the one field only Core can report.
@@ -85,6 +103,12 @@ pub struct BackendStatus {
     /// [0..1] estimate of chain verification progress.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_progress: Option<f64>,
+    /// Hex of the signet challenge script, on signet only. Every signet shares one genesis
+    /// hash and differs solely in this script, so it is the only thing that names *which*
+    /// signet. Core reports it; Electrum synthesizes its chain info from the header tip and
+    /// cannot, which is why callers must tolerate `None` on a signet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signet_challenge: Option<String>,
 }
 
 /// bootstrapProgress is informational only — init doesn't gate on it.
@@ -381,6 +405,13 @@ pub struct SwapRequest {
     pub outpoints: Option<Vec<Outpoint>>,
     #[serde(default)]
     pub preferred_routers: Option<Vec<String>>,
+    /// Funding transactions per hop. `None` keeps the crate's own default.
+    #[serde(default)]
+    pub tx_count: Option<u32>,
+    /// PaySwap receiver. When set, `amount_sats` is what the receiver gets, not what leaves
+    /// the wallet — the crate solves the gross route amount backward from it.
+    #[serde(default)]
+    pub payment_address: Option<String>,
 }
 
 fn default_router_count() -> usize {
@@ -395,6 +426,12 @@ pub struct SwapFundingEstimateDto {
     pub input_count: usize,
     pub vbytes: u64,
     pub fee_sats: u64,
+    /// Wallet UTXOs the funding transactions consume.
+    pub outgoing_utxo_count: usize,
+    /// Contracts the last hop can pay us back through — the sweep spends each one separately,
+    /// so one UTXO each. A ceiling, not a count: `tx_count` is the most any hop may forward,
+    /// and a router short of liquidity commits to fewer, which then carries down the route.
+    pub incoming_utxo_count: usize,
     /// The swap feerate every transaction in the route is priced at. Reported because it is
     /// the `SwapParams` default and nothing here overrides it, so a swap cannot be sped up or
     /// slowed down by paying more.
@@ -429,7 +466,25 @@ pub struct SwapSummaryDto {
     /// maximum, and the taker's own funding tx. The settled cost can only come in under it.
     pub total_estimated_fee_sats: u64,
     /// What the taker gets back if every cost hits its ceiling, so a floor, not a forecast.
+    /// Zero on a PaySwap: the receiver is paid and nothing comes back.
     pub estimated_receive_amount_sats: u64,
+    /// `total_estimated_fee_sats` split the way the summary panel and the report already
+    /// split it, so the live circuit cannot disagree with either about what a mining fee is.
+    pub router_fee_sats: u64,
+    pub mining_fee_sats: u64,
+    /// Present only when this swap pays a third-party receiver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment: Option<PaymentQuoteDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentQuoteDto {
+    pub address: String,
+    /// Exact amount the receiver gets.
+    pub amount_sats: u64,
+    /// Reserved on the final hop to settle the receiver's output.
+    pub settlement_budget_sats: u64,
 }
 
 /// Coarse in-memory lifecycle snapshot (survives across commands via `AppState.active_swap`).
@@ -503,14 +558,20 @@ pub struct SwapTrackerDto {
     pub failure_reason: Option<String>,
     pub routers: Vec<RouterProgressDto>,
     /// Contract transactions recorded so far on each kind of leg. A hop is funded by up to
-    /// `tx_count` splits rather than one transaction, so these are how many strands a leg
-    /// actually carries, and they fill in as the swap records each txid.
+    /// `tx_count` splits rather than one transaction, so these are the strands a leg actually
+    /// carries, and they fill in as the swap records each txid.
     ///
     /// `watchonly` covers every leg between two routers as one flat list — the crate keeps no
     /// per-hop grouping — so it only attributes to a leg when it divides evenly across them.
-    pub outgoing_contract_count: usize,
-    pub incoming_contract_count: usize,
-    pub watchonly_contract_count: usize,
+    pub outgoing_contract_txids: Vec<String>,
+    pub incoming_contract_txids: Vec<String>,
+    pub watchonly_contract_txids: Vec<String>,
+    /// PaySwap receiver, echoed from the tracker so a remounted page still knows where the
+    /// coins are going without the prepared quote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_amount_sats: Option<u64>,
 }
 
 /// How far `prepare_swap` has got, for a progress readout while it blocks.

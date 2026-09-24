@@ -44,6 +44,7 @@ import {
   AmountTile,
   Card,
   Disclosure,
+  Identifier,
   LogViewer,
   SatsAmount,
 } from "../../components/ui/display";
@@ -59,16 +60,16 @@ import { NowPanel, Vitals } from "./circuit/panels";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
 import {
   estimateRouteRouterFees,
-  formatTorEndpoint,
+  routerName,
 } from "../../lib/market-format";
 import {
   classifySpendType,
+  scriptTypeFromAddress,
   formatDuration,
   formatFeeRate,
   formatUnitAmount,
   satsToUnitString,
   SATS_PER_BTC,
-  truncateMiddle,
   unitStringToSats,
   type Unit,
 } from "../../lib/wallet-format";
@@ -88,7 +89,10 @@ function EstimatedSats({
   return sats === null ? (
     <strong className="font-mono text-subtle">—</strong>
   ) : (
-    <SatsAmount sats={sats} className={className} />
+    <span className="inline-flex items-baseline gap-1">
+      <span className="font-mono text-subtle" aria-label="approximately">≈</span>
+      <SatsAmount sats={sats} className={className} />
+    </span>
   );
 }
 
@@ -96,6 +100,10 @@ function EstimatedSats({
 const PREPARATION_POLL_MS = 1_200;
 
 const ROUTER_COUNT_PRESETS = [2, 3, 4] as const;
+
+/** `SwapParams::new`'s own default and `MAX_TX_COUNT`; the backend rejects anything outside. */
+const DEFAULT_TX_COUNT = 2;
+const MAX_TX_COUNT = 10;
 
 const FUNDING_RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
 
@@ -162,6 +170,9 @@ export function SwapPage() {
   const [routerCount, setRouterCount] = useState(2);
   const [customRouterCount, setCustomRouterCount] = useState("5");
   const [selectedRouters, setSelectedRouters] = useState<string[]>([]);
+  const [txCount, setTxCount] = useState(DEFAULT_TX_COUNT);
+  const [destination, setDestination] = useState<"wallet" | "address">("wallet");
+  const [paymentAddress, setPaymentAddress] = useState("");
 
   const [phase, setPhase] = useState<Lifecycle>("configure");
   const [summary, setSummary] = useState<SwapSummary | null>(null);
@@ -193,11 +204,7 @@ export function SwapPage() {
   useEffect(() => {
     // A warning, not an error: arriving here before the offerbook has synced is the normal
     // first-launch state, the page still works, and the router list fills in on its own.
-    // Silent for SWAP_IN_PROGRESS, which is not a fault at all: `get_offers` needs the taker,
-    // a running swap holds it for hours, and the router list is not what the user is here for
-    // while that is true.
     void loadReference().catch((e) => {
-      if (isAppError(e) && e.code === "SWAP_IN_PROGRESS") return;
       pushToast(
         "warning",
         isAppError(e) ? e.message : "Router list is not available yet.",
@@ -229,49 +236,51 @@ export function SwapPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The promises are what cleanup awaits, never a variable each one assigns on resolving: a
+  // remount before `subscribe` resolves would find that variable still unset, leak the first
+  // listener and leave every event handled twice. StrictMode remounts exactly that fast.
   useEffect(() => {
-    let unlistenFinished: (() => void) | undefined;
-    let unlistenFailed: (() => void) | undefined;
-    let unlistenRecovering: (() => void) | undefined;
-    void subscribe<string>("swap://finished", () => setPhase("finished")).then(
-      (fn) => {
-        unlistenFinished = fn;
-      },
-    );
-    // Only fires for a failure with nothing on-chain, which is a plain error with nothing to
-    // recover. Anything past the funding broadcast arrives as swap://recovering instead.
-    void subscribe<AppError>("swap://failed", (e) => {
-      setFailure(e);
-      setPhase("failed");
-    }).then((fn) => {
-      unlistenFailed = fn;
-    });
-    // The funds are in contracts and the crate is already claiming them back, so this page hands
-    // itself back for the next swap and the recovery page takes over.
-    void subscribe("swap://recovering", () => {
-      resetWizard();
-      pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
-      navigate("/swap/recovery");
-    }).then((fn) => {
-      unlistenRecovering = fn;
-    });
+    const unlisteners = [
+      subscribe<string>("swap://finished", () => setPhase("finished")),
+      // Only fires for a failure with nothing on-chain, which is a plain error with nothing to
+      // recover. Anything past the funding broadcast arrives as swap://recovering instead.
+      subscribe<AppError>("swap://failed", (e) => {
+        setFailure(e);
+        setPhase("failed");
+      }),
+      // The funds are in contracts and the crate is already claiming them back, so this page
+      // hands itself back for the next swap and the recovery page takes over.
+      subscribe("swap://recovering", () => {
+        resetWizard();
+        pushToast("warning", "The swap stopped. Recovering your funds — see Recovery.");
+        navigate("/swap/recovery");
+      }),
+    ];
     return () => {
-      unlistenFinished?.();
-      unlistenFailed?.();
-      unlistenRecovering?.();
+      void Promise.all(unlisteners).then((fns) => fns.forEach((fn) => fn()));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Live per-router detail straight off swap_tracker.cbor — same 2s poll cadence the old Electron
   // app used for its disk-read poll of the same file.
+  //
+  // The same poll is what ends the swap. `swap://finished` is a notification, not the source of
+  // truth, and a browser that misses one — a dropped SSE stream, a session that idled out during
+  // a swap that runs for half an hour — would otherwise sit on a running screen forever with the
+  // timer still counting. The active slot emptying is `start_swap` having returned, report
+  // written and all, so it is the one signal that cannot be missed.
   useEffect(() => {
     if (phase !== "running") return;
     let cancelled = false;
     const poll = () => {
-      void getSwapTracker()
-        .then((next) => {
-          if (!cancelled) setTracker(next);
+      void Promise.all([getSwapTracker(), getSwapProgress()])
+        .then(([next, progress]) => {
+          if (cancelled) return;
+          setTracker(next);
+          if (progress === null) {
+            setPhase(next?.phase === "completed" ? "finished" : "failed");
+          }
         })
         .catch(() => {});
     };
@@ -431,7 +440,7 @@ export function SwapPage() {
         manualCoins && selectedOutpoints.length > 0
           ? selectedOutpoints
           : undefined;
-      void estimateSwapFunding(amountSats, protocol, outpoints)
+      void estimateSwapFunding(amountSats, protocol, outpoints, txCount)
         .then((estimate) => {
           if (cancelled) return;
           setFundingEstimate(estimate);
@@ -459,7 +468,7 @@ export function SwapPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [amountSats, protocol, manualCoins, selectedOutpoints, fundingAttempt]);
+  }, [amountSats, protocol, manualCoins, selectedOutpoints, txCount, fundingAttempt]);
 
   const feeSummary = useMemo(() => {
     const hasCompleteRoute =
@@ -494,14 +503,18 @@ export function SwapPage() {
         : null;
     const receiveAmount =
       routeDeductions !== null ? Math.max(0, amountSats - routeDeductions) : null;
-    return {
-      routerFee,
-      fundingFee,
-      routeMiningFee,
-      sweepFee,
-      totalFee,
-      receiveAmount,
-    };
+    // Every on-chain cost as one figure: the funding transaction the wallet pays on top,
+    // the per-hop route fee, and the claim sweep. The summary, the animation and the report
+    // all take this split, so none of them can disagree about what a mining fee is.
+    const miningFee =
+      fundingFee !== null && routeMiningFee !== null && sweepFee !== null
+        ? fundingFee + routeMiningFee + sweepFee
+        : null;
+    // What the whole swap costs as a share of what is being swapped — the number that makes
+    // a fee comparable between a small swap and a large one.
+    const feePct =
+      totalFee !== null && amountSats > 0 ? (totalFee / amountSats) * 100 : null;
+    return { routerFee, miningFee, feePct, totalFee, receiveAmount };
   }, [estimateRouters, effectiveRouterCount, amountSats, fundingEstimate]);
 
   const warnings = useMemo(() => {
@@ -519,13 +532,18 @@ export function SwapPage() {
       list.push("Amount exceeds your swappable balance.");
     if (manualCoins && selectedTotal < amountSats)
       list.push("Selected UTXOs don't cover the swap amount.");
-    if (
+    if (destination === "address") {
+      if (amountSats > 0 && amountSats < 10_000)
+        list.push("Payment amount is below what routers will route.");
+    } else if (
       amountSats > 0 &&
       feeSummary.receiveAmount !== null &&
       feeSummary.receiveAmount < 10_000
     ) {
       list.push("Estimated receive amount is too small after fees.");
     }
+    if (destination === "address" && paymentAddress.trim().length === 0)
+      list.push("Enter the address this swap should pay.");
     if (manualRouters && selectedRouters.length < 2) {
       list.push("Pin at least two routers, or untick them all to auto-select.");
     } else if (effectiveRouterCount < 2) {
@@ -542,6 +560,8 @@ export function SwapPage() {
   }, [
     amountInput,
     amountSats,
+    destination,
+    paymentAddress,
     liquidity,
     manualCoins,
     selectedOutpoints,
@@ -635,6 +655,9 @@ export function SwapPage() {
           manualRouters && selectedRouters.length > 0
             ? selectedRouters
             : undefined,
+        txCount,
+        paymentAddress:
+          destination === "address" ? paymentAddress.trim() : undefined,
       };
       const prepared = await prepareSwap(request);
       setSummary(prepared);
@@ -756,7 +779,6 @@ export function SwapPage() {
                       <Elapsed startedAt={startedAt} active={phase === "running"} />
                     )
                   }
-                  blockHeight={null}
                 />
                 <NowPanel view={circuit} />
               </div>
@@ -928,6 +950,36 @@ export function SwapPage() {
             </div>
           </div>
 
+          <div className="flex flex-col gap-2.5 border-t border-line pt-5">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="font-header text-[13.5px] font-bold text-foreground">
+                Destination
+              </h2>
+              <SegmentedToggle
+                groupId="swap-destination"
+                value={destination}
+                onChange={setDestination}
+                options={[
+                  { value: "wallet", label: "My wallet" },
+                  { value: "address", label: "An address" },
+                ]}
+              />
+            </div>
+            {destination === "address" && (
+              <TextField
+                label="Pay to address"
+                placeholder="bc1…"
+                value={paymentAddress}
+                onChange={(e) => setPaymentAddress(e.target.value)}
+              />
+            )}
+            <p className="text-[11.5px] text-subtle">
+              {destination === "address"
+                ? "The last hop settles straight to this address, so the receiver gets exactly the amount above and your wallet covers the fees on top. The route cost is solved when the swap is prepared."
+                : "The swapped coins come back to this wallet as a fresh UTXO."}
+            </p>
+          </div>
+
           <div className="flex items-center justify-between gap-3 border-t border-line pt-5">
             <h2 className="font-header text-[13.5px] font-bold text-foreground">
               Protocol
@@ -1013,6 +1065,33 @@ export function SwapPage() {
                 <div className="flex flex-col gap-2.5">
                   <div className="flex items-center justify-between">
                     <h3 className="font-header text-[12.5px] font-bold text-foreground">
+                      Funding Splits
+                    </h3>
+                    <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+                      {txCount} per hop
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={MAX_TX_COUNT}
+                    step={1}
+                    value={txCount}
+                    onChange={(e) => setTxCount(Number(e.target.value))}
+                    className="accent-[var(--color-primary)]"
+                    aria-label="Funding transactions per hop"
+                  />
+                  <p className="text-[11.5px] text-subtle">
+                    Every hop is funded by this many contracts instead of one, so an observer
+                    sees several smaller amounts rather than the whole swap in one transaction.
+                    More splits cost more in mining fees. A router short of liquidity may forward
+                    fewer than asked.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-header text-[12.5px] font-bold text-foreground">
                       Pin Specific Routers
                     </h3>
                     <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
@@ -1036,14 +1115,14 @@ export function SwapPage() {
                         key={m.address}
                         className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
                       >
-                        <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
+                        <span className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted">
                           <input
                             type="checkbox"
                             checked={selectedRouters.includes(m.address)}
                             onChange={() => toggleRouter(m.address)}
                             className="accent-primary"
                           />
-                          {formatTorEndpoint(m.address, 10, 6, true)}
+                          <span className="font-mono text-[11px] leading-[1.45] text-muted">{routerName(m.address)}</span>
                         </span>
                         <span className="flex flex-none items-center gap-2 font-mono text-[11px] text-subtle">
                           {m.offer?.amountRelativeFeePct.toFixed(3)}%
@@ -1095,16 +1174,30 @@ export function SwapPage() {
                       return (
                         <label
                           key={key}
-                          className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
+                          // The wallet's own UTXO columns, in the same order: address, script,
+                          // type, amount. Picking a coin here and reading it there have to be
+                          // the same act of recognition.
+                          className="grid cursor-pointer grid-cols-[18px_minmax(0,1fr)_74px_74px_auto] items-center gap-2 rounded-control border border-line bg-surface-raised px-3 py-2 font-mono text-[11px] text-muted"
                         >
-                          <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleOutpoint(u)}
-                              className="accent-primary"
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleOutpoint(u)}
+                            className="accent-primary"
+                          />
+                          {u.address ? (
+                            <Identifier value={u.address} className="text-[11px] leading-[1.45]" />
+                          ) : (
+                            <Identifier
+                              value={`${u.txid}:${u.vout}`}
+                              className="text-[11px] leading-[1.45] text-subtle"
                             />
-                            {truncateMiddle(u.txid, 8, 6)}:{u.vout}
+                          )}
+                          <span className="rounded-control border border-line px-1.5 py-0.5 text-center text-[9px] text-subtle">
+                            {scriptTypeFromAddress(u.address)}
+                          </span>
+                          <span className="rounded-control border border-line px-1.5 py-0.5 text-center text-[9px] text-subtle">
+                            {classifySpendType(u.spendType)}
                           </span>
                           <SatsAmount
                             sats={u.amountSats}
@@ -1228,30 +1321,34 @@ export function SwapPage() {
                 </strong>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Funding inputs</span>
+                <span className="text-subtle">Outgoing UTXOs</span>
                 <strong className="font-mono text-foreground">
-                  {fundingEstimate?.inputCount ?? "—"}
+                  {fundingEstimate?.outgoingUtxoCount ?? "—"}
                 </strong>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Funding size</span>
+                <span className="text-subtle">Incoming UTXOs</span>
+                <strong className="font-mono text-foreground">
+                  {destination === "address"
+                    ? 0
+                    : fundingEstimate
+                      ? // A ceiling, so say so: a router short of liquidity forwards fewer
+                        // splits and every hop after it inherits the smaller count.
+                        `${fundingEstimate.incomingUtxoCount > 1 ? "≤ " : ""}${fundingEstimate.incomingUtxoCount}`
+                      : "—"}
+                </strong>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-subtle">Funding tx size</span>
                 <strong className="font-mono text-foreground">
                   {fundingEstimate ? `${fundingEstimate.vbytes} vB` : "—"}
                 </strong>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-subtle">Funding fee</span>
-                <EstimatedSats
-                  sats={feeSummary.fundingFee}
-                  className="font-semibold text-foreground"
-                />
-              </div>
             </div>
 
-            {/* The three rows below the divider are what comes out of the amount, so they read
-                straight down into "You receive"; the funding fee sits above it with its own tx.
-                Every one is the ceiling the crate quotes — routers billed at the full input
-                budget on every split — so the settled cost can only come in under it. */}
+            {/* Every figure here is the ceiling the crate quotes — routers billed at the full
+                input budget on every split — so the settled cost can only come in under it.
+                That is what the ≈ on each of them says. */}
             <div className="flex flex-col gap-1.5 border-t border-dashed border-line pt-3 text-[12px]">
               <div className="flex items-center justify-between">
                 <span className="text-subtle">Router fees</span>
@@ -1261,34 +1358,46 @@ export function SwapPage() {
                 />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-subtle">Route mining fees</span>
+                <span className="text-subtle">Total mining fees</span>
                 <EstimatedSats
-                  sats={feeSummary.routeMiningFee}
-                  className="font-semibold text-foreground"
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-subtle">Claim tx fee</span>
-                <EstimatedSats
-                  sats={feeSummary.sweepFee}
+                  sats={feeSummary.miningFee}
                   className="font-semibold text-foreground"
                 />
               </div>
               <div className="flex items-center justify-between border-t border-line pt-1.5">
-                <span className="text-subtle">Max total cost</span>
+                <span className="text-subtle">Max total fees</span>
                 <EstimatedSats
                   sats={feeSummary.totalFee}
                   className="font-bold text-primary"
                 />
               </div>
+              <div className="flex items-center justify-between">
+                <span className="text-subtle">% Fees</span>
+                {feeSummary.feePct === null ? (
+                  <strong className="font-mono text-subtle">—</strong>
+                ) : (
+                  <span className="inline-flex items-baseline gap-1">
+                    <span className="font-mono text-subtle" aria-label="approximately">≈</span>
+                    <strong className="font-numeric tabular-nums font-semibold text-foreground">
+                      {feeSummary.feePct.toFixed(2)}%
+                    </strong>
+                  </span>
+                )}
+              </div>
             </div>
 
-            <AmountTile label="You receive at least">
-              <EstimatedSats
-                sats={feeSummary.receiveAmount}
-                className="text-success"
-              />
-            </AmountTile>
+            {destination === "address" ? (
+              <AmountTile label="Receiver gets exactly">
+                <SatsAmount sats={amountSats} className="text-success" />
+              </AmountTile>
+            ) : (
+              <AmountTile label="You receive at least">
+                <EstimatedSats
+                  sats={feeSummary.receiveAmount}
+                  className="text-success"
+                />
+              </AmountTile>
+            )}
           </Card>
         </div>
       </div>

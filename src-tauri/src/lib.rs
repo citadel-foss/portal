@@ -6,7 +6,6 @@ use commands::{
     shutdown, taker_reports, taker_swap, taker_wallet,
 };
 use tauri::menu::{Menu, MenuItem};
-use tauri_plugin_dialog::DialogExt;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use std::sync::Arc;
 
@@ -140,6 +139,7 @@ pub fn run() {
             maker_wallet::list_maker_utxos,
             maker_wallet::get_maker_new_address,
             maker_wallet::get_maker_transactions,
+            maker_wallet::send_maker_to_address,
             maker_wallet::sync_maker_wallet,
             maker_wallet::list_maker_fidelity_bonds,
             // maker settings (persisted, non-secret config)
@@ -148,6 +148,7 @@ pub fn run() {
             maker_settings::list_dashboard_imports,
             maker_settings::import_dashboard_makers,
             maker_settings::clear_maker_settings,
+            maker::get_router_defaults,
             maker_settings::get_suggested_maker_ports,
             maker_settings::check_maker_ports,
             // maker logs
@@ -169,27 +170,10 @@ pub fn run() {
             // command has been able to emit yet and the bridge cannot miss a startup event.
             bridge_events(app.handle().clone(), app.state::<Arc<AppState>>().events.subscribe());
 
-            // Before Tor or any wallet work: a second Portal on this root would share its
-            // Tor identity directory and report a bootstrap failure rather than the conflict.
-            match portal_core::storage::resolve_data_dir(&None)
-                .and_then(|root| portal_core::storage::lock_data_root(&root))
-            {
-                Ok(lock) => {
-                    // Parked in app state so it lives as long as the process does.
-                    app.manage(lock);
-                }
-                Err(error) => {
-                    app.dialog()
-                        .message(error.message)
-                        .title("Portal is already running")
-                        .blocking_show();
-                    std::process::exit(1);
-                }
-            }
-
             // Ahead of everything else: Tor, the wallet and the config cleanup below all
             // resolve paths under the data dir, and Tor in particular creates part of it.
             portal_core::storage::migrate_legacy_data_dir();
+            portal_core::tor::sweep_stale_tor_dirs();
 
             // Earlier versions persisted the backend, RPC password included. Ceasing to
             // write it is not enough — the old file has to go.
@@ -207,14 +191,21 @@ pub fn run() {
             // already inside the OS termination watchdog — too late to stop a maker's closing
             // wallet sync properly. Tauri builds the macOS app submenu first with Quit last.
             let menu = Menu::default(app.handle())?;
-            let app_quit =
-                MenuItem::with_id(app, "quit", "Quit Portal", true, Some("CmdOrCtrl+Q"))?;
+            // macOS only: it is the platform with an application submenu holding a predefined
+            // Quit, and the only one where the menu bar is the usual way out. Everywhere else
+            // the tray item below is that route, so building this item off macOS would leave
+            // it unattached — dead on Linux and Windows, and a build failure under
+            // `-D warnings`.
             #[cfg(target_os = "macos")]
-            if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
-                if let Some(predefined_quit) = app_menu.items()?.last() {
-                    app_menu.remove(predefined_quit)?;
+            {
+                let app_quit =
+                    MenuItem::with_id(app, "quit", "Quit Portal", true, Some("CmdOrCtrl+Q"))?;
+                if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
+                    if let Some(predefined_quit) = app_menu.items()?.last() {
+                        app_menu.remove(predefined_quit)?;
+                    }
+                    app_menu.append(&app_quit)?;
                 }
-                app_menu.append(&app_quit)?;
             }
             app.set_menu(menu)?;
             app.on_menu_event(|app, event| {

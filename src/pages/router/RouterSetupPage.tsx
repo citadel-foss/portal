@@ -8,6 +8,7 @@ import { Card, LogViewer, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
+import { copyText } from "../../lib/clipboard";
 
 /**
  * A router cannot be bonded before it runs: the server derives the fidelity-bond address itself
@@ -41,7 +42,7 @@ function looksFunded(lines: LogLine[]) {
   return lines.some((l) => FUNDED_MARKERS.some((marker) => l.line.includes(marker)));
 }
 
-const STEP_LABELS = ["Starting router", "Awaiting deposit", "Creating fidelity bond", "Live on the network"];
+const STEP_LABELS = ["Starting router", "Awaiting deposit", "Creating fidelity bond", "Router Ready"];
 const ORDER: Stage[] = ["starting", "funding", "bonding", "live"];
 
 function stepStates(stage: Stage, failedAt: number): CheckState[] {
@@ -166,7 +167,8 @@ export function RouterSetupPage() {
 
   function copyAddress() {
     if (!deposit) return;
-    void navigator.clipboard.writeText(deposit.address).then(() => {
+    void copyText(deposit.address).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     });
@@ -188,7 +190,17 @@ export function RouterSetupPage() {
       <div className="mx-auto w-full max-w-lg">
         <Card className={`border-line-strong ${stage === "funding" ? "hairline" : ""}`}>
           <div className="p-8 text-left">
-            <Checklist steps={STEP_LABELS.map((label, i) => ({ label, state: stepStates(stage, failedAt.current)[i] }))} />
+            <Checklist
+              steps={STEP_LABELS.map((label, i) => ({
+                label,
+                state: stepStates(stage, failedAt.current)[i],
+                // The bond is broadcast well before it is usable; this is the wait nobody
+                // can see, so it is the one step that says what it is waiting for.
+                badge: stage === "bonding" && i === ORDER.indexOf("bonding")
+                  ? "Waiting for confirmation"
+                  : undefined,
+              }))}
+            />
           </div>
 
           {needsPassword && (

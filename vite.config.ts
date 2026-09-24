@@ -36,7 +36,9 @@ export default defineConfig(async ({ mode }) => {
       strictPort: true,
       host: host || false,
       hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
-      watch: { ignored: ["**/src-tauri/**", "**/core/**"] },
+      watch: {
+        ignored: ["**/src-tauri/**", "**/core/**", "**/src-web/**", "**/target/**", "**/dist/**"],
+      },
       // Development runs behind Vite's origin so the browser sees one origin for assets and
       // API alike; cookies, CSRF and SSE then behave as they do in production.
       proxy: web

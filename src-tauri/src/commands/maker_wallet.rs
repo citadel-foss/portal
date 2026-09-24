@@ -35,6 +35,21 @@ pub async fn get_maker_new_address(
 }
 
 #[tauri::command]
+pub async fn send_maker_to_address(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+    address: String,
+    amount_sats: u64,
+    fee_rate: Option<f64>,
+    outpoints: Option<Vec<Outpoint>>,
+) -> Result<SendResult, AppError> {
+    crate::native::ensure_main_window(&window)?;
+    maker_wallet::send_maker_to_address(&state, router_id, address, amount_sats, fee_rate, outpoints)
+        .await
+}
+
+#[tauri::command]
 pub async fn sync_maker_wallet(state: tauri::State<'_, Arc<AppState>>, router_id: String) -> Result<(), AppError> {
     maker_wallet::sync_maker_wallet(&state, router_id).await
 }

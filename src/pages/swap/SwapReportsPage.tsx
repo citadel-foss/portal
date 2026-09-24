@@ -3,14 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { getRecoveryStatus, listSwapReports } from "../../api/commands";
 import type { SwapReportSummary, SwapStatus } from "../../api/types";
-import { BackButton, Card, SatsAmount, StatStrip, StatusChip } from "../../components/ui/display";
+import { BackButton, Card, Identifier, SatsAmount, StatStrip, StatusChip } from "../../components/ui/display";
 import { SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import {
   formatBlockWait,
   formatDuration,
   formatRelativeTime,
   swapStatusPresentation,
-  truncateMiddle,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
@@ -167,7 +166,7 @@ export function SwapReportsPage() {
                   <>
                     <StatusChip tone={STATUS_TONE[r.status]} shape="tile" className="h-[34px] w-[34px] justify-center px-0"><Icon size={17} strokeWidth={2} /></StatusChip>
                     <span className="flex min-w-0 flex-col gap-1">
-                      <span className="truncate font-mono text-[12px] text-muted">{truncateMiddle(r.swapId, 10, 6)}</span>
+                      <Identifier value={r.swapId} className="text-[12px] leading-[1.45] text-muted" />
                       <StatusChip tone={STATUS_TONE[r.status] ?? "warning"} className="self-start">{STATUS_LABEL[r.status] ?? rawStatusLabel}</StatusChip>
                     </span>
                     <span className="font-mono text-[11.5px] text-subtle">

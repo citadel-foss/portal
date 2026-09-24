@@ -72,18 +72,19 @@ pub(crate) struct Caller {
     pub(crate) csrf: String,
 }
 
+/// Every request carries a session, including on a run that asks for no password — there the
+/// session is handed out by `session` rather than earned. Sessions are not exclusive: any
+/// number of browsers, and the desktop app, may hold one at the same time.
+///
 /// `refresh` distinguishes operator activity from background polling: only the former should
 /// push the idle deadline out.
 pub(crate) fn authenticate(state: &WebState, headers: &HeaderMap, refresh: bool) -> Result<Caller, ApiError> {
-    if state.open_local() {
-        return Ok(Caller { csrf: String::new() });
-    }
     let token = cookie(headers, SESSION_COOKIE).ok_or_else(|| unauthorized(state))?;
-    let csrf = state
+    let session = state
         .auth
         .validate(&token, refresh)
         .ok_or_else(|| unauthorized(state))?;
-    Ok(Caller { csrf })
+    Ok(Caller { csrf: session.csrf })
 }
 
 /// Same-origin enforcement. A browser always sends `Origin` on a cross-origin request, so a
@@ -255,7 +256,8 @@ async fn login(
 }
 
 async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    // Accepted work keeps running: logging out ends a viewing session, not a swap.
+    // Accepted work keeps running: logging out ends a viewing session, not a swap, and not
+    // the wallet either — the process holds that for every client, not for this one.
     if let Some(token) = cookie(&headers, SESSION_COOKIE) {
         state.auth.logout(&token);
     }
@@ -275,12 +277,32 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Result<Res
     Ok(response)
 }
 
+/// Where a browser gets, or is handed, its session.
+///
+/// On a run that requires no password this mints one rather than refusing, which is what keeps
+/// a local app off a sign-in page it has nothing to sign in to. Every browser still gets its
+/// own, so the single-client hold and the wallet's session binding work exactly as they do
+/// behind a password.
 async fn session(
     State(state): State<WebState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    let caller = authenticate(&state, &headers, true)?;
-    Ok(Json(json!({
+) -> Result<Response, ApiError> {
+    let mut issued = None;
+    let caller = match authenticate(&state, &headers, true) {
+        Ok(caller) => caller,
+        Err(refusal) if state.auth_optional() => {
+            let fresh = state
+                .auth
+                .issue_unauthenticated()
+                .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, AppError::internal("could not start a session")))?;
+            let _ = refusal;
+            let caller = Caller { csrf: fresh.csrf.clone() };
+            issued = Some(fresh);
+            caller
+        }
+        Err(refusal) => return Err(refusal),
+    };
+    let body = Json(json!({
         "installationId": state.installation_id,
         "runtimeId": state.runtime_id,
         "csrfToken": caller.csrf,
@@ -288,12 +310,19 @@ async fn session(
             "nativeFilePicker": false,
             "canQuit": false,
         },
-        // Tells the UI whether to show a login gate at all, so a local run looks exactly
-        // like the desktop app.
-        "requiresLogin": !state.open_local(),
+        // False only where a password would protect nothing the OS account already does.
+        "requiresLogin": !state.auth_optional(),
         "storageLabel": state.storage_label(),
         "hasOwner": state.auth.has_owner(),
-    })))
+    }));
+    let mut response = body.into_response();
+    if let Some(fresh) = issued {
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            session_cookie(&state, &fresh.token).parse().expect("cookie is ascii"),
+        );
+    }
+    Ok(response)
 }
 
 async fn events(
@@ -316,21 +345,25 @@ async fn command(
     let caller = authenticate(&state, &headers, true)?;
     let args = body.map(|Json(v)| v).unwrap_or(Value::Null);
 
-    if let Some(operation) = commands::lookup_durable(&name) {
-        return durable(&state, &caller, &headers, &name, operation, args).await;
-    }
-    let Some(operation) = commands::lookup(&name) else {
+    let outcome = if let Some(operation) = commands::lookup_durable(&name) {
+        durable(&state, &caller, &headers, &name, operation, args).await
+    } else if let Some(operation) = commands::lookup(&name) {
+        if operation.mutates {
+            check_csrf(&caller, &headers)?;
+        }
+        (operation.run)(state.runtime.clone(), args)
+            .await
+            .map(|result| Json(result).into_response())
+            .map_err(ApiError::from)
+    } else {
         // Unknown or desktop-only: a 404 rather than a fall-through into arbitrary dispatch.
-        return Err(ApiError(
+        Err(ApiError(
             StatusCode::NOT_FOUND,
             AppError::new(ErrorCode::InvalidInput, "no such operation on this host"),
-        ));
+        ))
     };
-    if operation.mutates {
-        check_csrf(&caller, &headers)?;
-    }
-    let result = (operation.run)(state.runtime.clone(), args).await?;
-    Ok(Json(result).into_response())
+
+    outcome
 }
 
 /// Durable submission. Acceptance is persisted before the worker starts and before this

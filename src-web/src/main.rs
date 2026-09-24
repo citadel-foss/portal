@@ -65,11 +65,8 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         None => default_root,
     };
     std::fs::create_dir_all(&data_root)?;
-    // Held for the life of the process. Two Portals on one root share wallets, the journal
-    // and the Tor identity directory; the second to start would otherwise report a confusing
-    // Tor bootstrap failure instead of the conflict that actually caused it.
-    let _root_lock = portal_core::storage::lock_data_root(&data_root).map_err(|e| e.message)?;
     portal_core::logging::set_taker_dir(data_root.clone());
+    portal_core::tor::sweep_stale_tor_dirs();
 
     // The protocol crate dumps a whole swap report to stdout when a swap ends, which buries
     // the URL below and shows nothing the app does not already render from the saved report.
@@ -115,10 +112,16 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     log::info!("portal-web listening on {bind}");
-    if state.open_local() {
-        console.line("local mode: loopback only, no login. Pass --bootstrap-file to require one.");
+    if state.auth_optional() {
+        console.line("local mode: loopback only, no password. Provision a credential to require one.");
     } else if state.auth.has_owner() {
         console.line("sign in with the owner password for this installation");
+    } else if let Some(secret) = state.auth.ensure_bootstrap() {
+        // Printed, not written: this is the one moment it is readable, and it is readable
+        // only to whoever can already see this process's console.
+        console.line(&format!(
+            "no owner yet — open the page and claim this installation with:\n  {secret}"
+        ));
     } else {
         console.line("no owner yet — open the page and claim it with the --bootstrap-file secret");
     }

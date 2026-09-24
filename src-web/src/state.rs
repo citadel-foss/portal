@@ -49,13 +49,11 @@ impl WebState {
         }
     }
 
-    /// Whether this request path authenticates. False only for a plain local run that has
-    /// never been claimed: loopback, development profile, nothing provisioned, no owner on
-    /// disk. Once an owner exists the password is honoured for the rest of the install's
-    /// life — a restart without `--bootstrap-file` must not quietly drop protection from a
-    /// server the user deliberately secured.
-    pub fn open_local(&self) -> bool {
-        self.config.open_local() && !self.auth.has_owner()
+    /// Whether this run hands out sessions instead of requiring a password. Once an owner has
+    /// been claimed the password is honoured for the rest of the install's life, so a restart
+    /// cannot quietly drop protection from a server someone deliberately secured.
+    pub fn auth_optional(&self) -> bool {
+        self.config.auth_optional() && !self.auth.has_owner()
     }
 
     /// Cached enough to answer a readiness probe without touching a wallet lock or the chain.
