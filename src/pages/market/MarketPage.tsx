@@ -8,7 +8,7 @@ import type { Router } from "../../api/types";
 import { Card, IndeterminateBar, Modal, SatsAmount, StatStrip, Tooltip } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { estimateRouterFee, routerName } from "../../lib/market-format";
-import { explorerTxUrl } from "../../lib/wallet-format";
+import { explorerTxUrl, formatNumber } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
 type RouterStatus = "good" | "bad" | "unresponsive";
@@ -137,7 +137,7 @@ function FidelityBondModal({ router, onClose }: { router: Router; onClose: () =>
         </div>
         <div className="rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Unlocks At</span>
-          <strong className="font-mono text-[13px] text-foreground">Block {bond.bondLocktimeHeight.toLocaleString()}</strong>
+          <strong className="font-mono text-[13px] text-foreground">Block {formatNumber(bond.bondLocktimeHeight)}</strong>
         </div>
         <div className="col-span-2 rounded-xl border border-line p-3.5">
           <span className="mb-2 block text-[11px] text-subtle">Bond Txid</span>
@@ -634,7 +634,7 @@ export function MarketPage() {
                     </div>
                     {showAllColumns && (
                       <div className="text-right font-semibold text-primary">
-                        {(offer?.baseFee ?? 0).toLocaleString()}
+                        {formatNumber(offer?.baseFee ?? 0)}
                       </div>
                     )}
                     {showAllColumns && (
@@ -648,13 +648,13 @@ export function MarketPage() {
                       </div>
                     )}
                     <div className="text-right font-semibold text-subtle">
-                      {(offer?.minSize ?? 0).toLocaleString()}
+                      {formatNumber(offer?.minSize ?? 0)}
                     </div>
                     <div className="text-right font-semibold text-subtle">
-                      {(offer?.maxSize ?? 0).toLocaleString()}
+                      {formatNumber(offer?.maxSize ?? 0)}
                     </div>
                     <div className="flex items-center justify-end gap-2 font-semibold text-foreground">
-                      <span>{offer && offer.bondAmountSats > 0 ? offer.bondAmountSats.toLocaleString() : "N/A"}</span>
+                      <span>{offer && offer.bondAmountSats > 0 ? formatNumber(offer.bondAmountSats) : "N/A"}</span>
                       {offer && offer.bondAmountSats > 0 && (
                         <button
                           type="button"

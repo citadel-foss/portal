@@ -6,6 +6,7 @@ import type {
   Balances,
   BackendStatus,
   ChainBackendConfig,
+  ElectrumPreset,
   FeeEstimate,
   FidelityBond,
   InitConfig,
@@ -47,6 +48,10 @@ import type {
 /** What a new router starts with, straight from the protocol crate's defaults. */
 export function getRouterDefaults(): Promise<RouterDefaults> {
   return invoke("get_router_defaults");
+}
+
+export function getElectrumPresets(): Promise<ElectrumPreset[]> {
+  return invoke("get_electrum_presets");
 }
 
 export function getChainBackend(): Promise<ChainBackendConfig> {

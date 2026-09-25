@@ -125,10 +125,7 @@ pub struct TorStatus {
     /// Tor's own one-line description of the phase it is in, e.g. "Loading relay descriptors".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_summary: Option<String>,
-    /// Why Tor itself says the bootstrap is struggling, present only when it reports a problem.
-    /// Distinct from `error`, which is Portal failing to reach or authenticate against Tor.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bootstrap_warning: Option<String>,
+    /// Portal failing to reach or authenticate against Tor — not Tor failing to connect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Loopback ports Portal's own Tor was started on; freshly chosen each run.
@@ -984,9 +981,21 @@ pub struct LogLine {
     pub line: String,
 }
 
+/// One server the picker offers. Reference data, not configuration: the list is fixed at
+/// compile time and the choice is never persisted, same as everything else on the gate.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectrumPresetDto {
+    /// Short name for the picker — the URL is shown beside it, not in place of it.
+    pub label: String,
+    pub url: String,
+    /// "bitcoin" or "signet". The picker colours by this: one of them spends real money.
+    pub network: String,
+}
+
 /// Seeded on every launch and held in memory only: an edit is deliberately forgotten so a
 /// node's RPC password is never at rest.
-const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.citadelfoss.xyz:50002";
+pub(crate) const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.citadelfoss.xyz:50002";
 const DEFAULT_NODE_HOST: &str = "127.0.0.1";
 const DEFAULT_NODE_RPC_PORT: u16 = 38332;
 const DEFAULT_NODE_ZMQ_PORT: u16 = 28332;

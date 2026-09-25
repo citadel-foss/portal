@@ -14,6 +14,11 @@ pub fn get_chain_backend() -> ChainBackendView {
 }
 
 #[tauri::command]
+pub fn get_electrum_presets() -> Vec<ElectrumPresetDto> {
+    chain_backend::electrum_presets()
+}
+
+#[tauri::command]
 pub fn set_chain_backend(config: ChainBackendConfig) -> Result<(), AppError> {
     chain_backend::set_chain_backend(config)
 }

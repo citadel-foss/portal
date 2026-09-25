@@ -28,6 +28,7 @@ fn main() {
         "check_tor",
         "restart_tor_bootstrap",
         "get_chain_backend",
+        "get_electrum_presets",
         "set_chain_backend",
         "check_backend",
         "list_wallets",

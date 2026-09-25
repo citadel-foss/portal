@@ -20,20 +20,15 @@ import {
   classifySpendType,
   classifyTransactionType,
   explorerTxUrl,
+  formatNumber,
   formatRelativeTime,
   getTransactionKind,
-  scriptTypeFromAddress,
 } from "../../lib/wallet-format";
 
 type UtxoFilter = "all" | "regular" | "contract" | "swap";
 type TxFilter = "all" | "received" | "sent" | "swap";
 type TxSortKey = "newest" | "amount";
 type SortDir = "asc" | "desc";
-
-const SCRIPT_PILL_CLASS: Record<string, string> = {
-  Taproot: "text-router border-router/35 bg-router/10",
-  SegWit: "text-primary border-primary/35 bg-primary/[0.12]",
-};
 
 const TYPE_PILL_CLASS: Record<string, string> = {
   Swap: "text-primary border-primary/35 bg-primary/[0.12]",
@@ -307,8 +302,8 @@ export function WalletPage() {
                 out of line down the list. */}
             <div className="grid grid-cols-[minmax(0,1fr)_92px_92px_124px_44px] gap-3 px-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
               <span>Address</span>
-              <span>Script</span>
               <span>Type</span>
+              <span className="text-right">Confirms</span>
               <span className="text-right">Amount</span>
               <span />
             </div>
@@ -318,7 +313,6 @@ export function WalletPage() {
               )}
               {filteredUtxos.map((u) => {
                 const bucket = classifySpendType(u.spendType);
-                const script = scriptTypeFromAddress(u.address);
                 return (
                   <div
                     key={`${u.txid}:${u.vout}`}
@@ -329,8 +323,10 @@ export function WalletPage() {
                     ) : (
                       <span className="font-mono text-[11.5px] text-subtle">No address</span>
                     )}
-                    <Pill label={script.toUpperCase()} className={SCRIPT_PILL_CLASS[script]} />
                     <Pill label={bucket.toUpperCase()} className={TYPE_PILL_CLASS[bucket]} />
+                    <span className="justify-self-end font-numeric text-[11.5px] text-muted">
+                      {formatNumber(u.confirmations)}
+                    </span>
                     <SatsAmount sats={u.amountSats} className="justify-self-end text-[13px] font-semibold text-success" />
                     <ExternalLinkButton txid={u.txid} />
                   </div>

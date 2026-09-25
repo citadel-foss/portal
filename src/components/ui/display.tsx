@@ -14,12 +14,7 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { HTMLAttributes, ReactNode } from "react";
 import type { LogLine } from "../../api/types";
-import {
-  explorerAddressUrl,
-  explorerTxUrl,
-  LOG_LEVEL_TONE,
-  logLevel,
-} from "../../lib/wallet-format";
+import { explorerAddressUrl, explorerTxUrl, formatNumber, LOG_LEVEL_TONE, logLevel } from "../../lib/wallet-format";
 import { copyText } from "../../lib/clipboard";
 import { walletIdentity } from "../../lib/wallet-identity";
 
@@ -217,7 +212,7 @@ export function SatsAmount({
     <span
       className={`inline-flex items-baseline gap-1.5 font-numeric tabular-nums ${className}`}
     >
-      <span>{Math.round(sats).toLocaleString()}</span>
+      <span>{formatNumber(Math.round(sats))}</span>
       <SatsGlyph className="text-subtle" scale={glyphScale} />
     </span>
   );

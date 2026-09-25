@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { explorerTxUrl } from "../../../lib/wallet-format";
+import { explorerTxUrl, formatNumber } from "../../../lib/wallet-format";
 import { EDGE_STAGE_LABEL, type CircuitView } from "./useSwapCircuit";
 
 /**
@@ -72,7 +72,7 @@ export function NowPanel({ view }: { view: CircuitView }) {
           {edge.contractCount > 1 && ` · ${edge.contractCount} Splits`}
           {" · "}
           {EDGE_STAGE_LABEL[edge.stage]}
-          {edge.amountSats !== undefined && ` · ${edge.amountSats.toLocaleString()} sats`}
+          {edge.amountSats !== undefined && ` · ${formatNumber(edge.amountSats)} sats`}
         </p>
       )}
       {/* One line per contract: a leg carries several, and run together they read as one

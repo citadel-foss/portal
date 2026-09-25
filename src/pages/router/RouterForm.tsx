@@ -5,6 +5,7 @@ import type { RouterInitConfig, RouterPortCheck } from "../../api/types";
 import { Disclosure } from "../../components/ui/display";
 import { SummaryGroup, SummaryRow, TextField } from "../../components/ui/inputs";
 import { ROUTER_ID_PATTERN, timelockDays } from "./router-defaults";
+import { formatNumber } from "../../lib/wallet-format";
 
 // Long enough that editing a port digit-by-digit doesn't fire a check per keystroke.
 const CHECK_DEBOUNCE_MS = 400;
@@ -178,7 +179,7 @@ function sats(value: string) {
   // "0 sats" fee for the moment before the crate's defaults arrive.
   if (value.trim() === "") return "…";
   const n = Number(value);
-  return Number.isFinite(n) ? n.toLocaleString() : value;
+  return Number.isFinite(n) ? formatNumber(n) : value;
 }
 
 /**

@@ -5,6 +5,7 @@ import type { BackendStatus } from "../../api/types";
 import { Card } from "../../components/ui/display";
 import { Button, PasswordField } from "../../components/ui/inputs";
 import { useToastStore } from "../../store/toast";
+import { formatNumber } from "../../lib/wallet-format";
 
 const MIN_BACKUP_PASSWORD = 8;
 
@@ -93,7 +94,7 @@ export function WalletFooterCard() {
           {status === null
             ? "Checking"
             : status.reachable
-              ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · ${status.blocks.toLocaleString()}` : ""}`
+              ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · ${formatNumber(status.blocks)}` : ""}`
               : "Not connected"}
         </span>
       </div>

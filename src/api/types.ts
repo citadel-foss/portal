@@ -18,6 +18,14 @@ export interface NodeBackend {
   zmqPort: number;
 }
 
+/** One server the connection gate offers. Fixed in Rust; the choice is never persisted. */
+export interface ElectrumPreset {
+  label: string;
+  url: string;
+  /** "bitcoin" or "signet" — the picker colours by this, since one spends real money. */
+  network: string;
+}
+
 export interface ChainBackendConfig {
   kind: ChainBackendKind;
   electrum: ElectrumBackend;
@@ -61,9 +69,6 @@ export interface TorStatus {
   bootstrapProgress?: number;
   /** Tor's own name for the phase it is in, e.g. "Loading relay descriptors". */
   bootstrapSummary?: string;
-  /** Why Tor says its own bootstrap is struggling. Distinct from `error`, which is Portal
-   * failing to reach or authenticate against Tor rather than Tor failing to connect. */
-  bootstrapWarning?: string;
   error?: string;
   /** Loopback ports Portal's own Tor was started on; freshly chosen each run. */
   socksPort?: number;

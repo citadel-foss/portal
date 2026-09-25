@@ -296,6 +296,20 @@ fn tor_dir() -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Where Tor keeps the consensus and microdescriptors, shared across launches.
+///
+/// This is deliberately *not* under `tor_dir()`. That one is per-process and swept when the
+/// process is gone, which meant every launch handed Tor an empty directory and it re-fetched
+/// the whole directory — around 40MB over a half-bootstrapped circuit, which is most of what
+/// a cold start spends its time on. Only `DataDirectory` needs to be private: it holds the
+/// lock, the keys and the state. The cache is exactly what Tor's `CacheDirectory` is for.
+#[cfg(feature = "embedded-tor")]
+fn tor_cache_dir() -> Result<PathBuf, String> {
+    openswap::utill::get_taker_dir()
+        .map(|dir| dir.join("tor-cache"))
+        .map_err(|e| e.to_string())
+}
+
 /// Removes `tor-manager` directories left by processes that are no longer running.
 ///
 /// Each run gets its own, so without this they accumulate — one per launch, each holding a
@@ -435,8 +449,10 @@ fn start_embedded_tor(
     use libtor::{Tor, TorFlag};
 
     let data_dir = tor_dir.join("data");
+    let cache_dir = tor_cache_dir()?;
     crate::security::fs::ensure_private_dir(tor_dir).map_err(|e| e.message)?;
     crate::security::fs::ensure_private_dir(&data_dir).map_err(|e| e.message)?;
+    crate::security::fs::ensure_private_dir(&cache_dir).map_err(|e| e.message)?;
 
     let handle = Tor::new()
         // Tor writes its startup notices straight to the console before any Log config is
@@ -445,6 +461,11 @@ fn start_embedded_tor(
         .flag(TorFlag::Quiet())
         .flag(TorFlag::DataDirectory(
             data_dir.to_string_lossy().to_string(),
+        ))
+        // Survives the per-process data directory, so a relaunch starts from a warm consensus
+        // instead of downloading one.
+        .flag(TorFlag::CacheDirectory(
+            cache_dir.to_string_lossy().to_string(),
         ))
         .flag(TorFlag::SocksPort(socks_port))
         .flag(TorFlag::ControlPort(control_port))

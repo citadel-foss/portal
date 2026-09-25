@@ -22,6 +22,7 @@ import {
   identifiedAddress,
   satsToBtc,
 } from "../../components/ui/report";
+import { formatNumber } from "../../lib/wallet-format";
 
 export function SwapReportPage() {
   const { swapId } = useParams<{ swapId: string }>();
@@ -359,7 +360,7 @@ export function SwapReportPage() {
                   <Row label="Bond amount">
                     <SatsAmount sats={bond.bondAmountSats} />
                   </Row>
-                  <Row label="Locktime height">Block {bond.bondLocktimeHeight.toLocaleString()}</Row>
+                  <Row label="Locktime height">Block {formatNumber(bond.bondLocktimeHeight)}</Row>
                   <Row label="Status">{bond.bondIsSpent ? "Spent" : "Unspent"}</Row>
                   <TxidRow label="Bond Transaction" txid={bond.bondTxid} />
                 </div>

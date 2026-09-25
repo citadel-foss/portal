@@ -23,7 +23,7 @@ import {
   TxArtifact,
   satsToBtc,
 } from "../../components/ui/report";
-import { formatDuration } from "../../lib/wallet-format";
+import { formatDuration, formatNumber } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
 export function RouterSwapReportPage() {
@@ -170,7 +170,7 @@ export function RouterSwapReportPage() {
           </SectionCard>
 
           <SectionCard title="Contract Terms">
-            <Row label="Timelock">{report.timelock.toLocaleString()} blocks</Row>
+            <Row label="Timelock">{formatNumber(report.timelock)} blocks</Row>
             <Row label="Duration">{formatDuration(report.swapDurationSeconds)}</Row>
             <Row label="Network">{report.network}</Row>
           </SectionCard>

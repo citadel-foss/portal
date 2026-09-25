@@ -30,6 +30,7 @@
     "allow-get-balances",
     "allow-get-btc-price",
     "allow-get-chain-backend",
+    "allow-get-electrum-presets",
     "allow-get-incoming-swap-utxo",
     "allow-get-logs",
     "allow-get-maker-balances",

@@ -4,7 +4,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Globe, KeyRound, Wallet } from "lucide-react";
 
 import { routerName } from "../../../lib/market-format";
-import { explorerTxUrl } from "../../../lib/wallet-format";
+import { explorerTxUrl, formatNumber } from "../../../lib/wallet-format";
 import { buildCircuit, edgeStrands, labelAnchor, type CircuitGeometry } from "./geometry";
 import {
   EDGE_STAGE_LABEL,
@@ -232,7 +232,7 @@ function EdgeLabel({ x, y, view }: { x: number; y: number; view: EdgeView }) {
           className="fill-muted"
           style={{ font: "500 9px var(--font-numeric)" }}
         >
-          {view.amountSats.toLocaleString()}
+          {formatNumber(view.amountSats)}
         </text>
       )}
       {/* The strands themselves are deliberately thin, so the count is spelled out rather
@@ -530,20 +530,20 @@ function StageBody({ view }: { view: CircuitView }) {
 
       <div className="mt-3 w-full border-t border-line pt-2">
         {view.sendAmountSats !== undefined && (
-          <Row label="Sent" value={`${view.sendAmountSats.toLocaleString()} sats`} />
+          <Row label="Sent" value={`${formatNumber(view.sendAmountSats)} sats`} />
         )}
         {view.paymentAmountSats !== undefined ? (
-          <Row label="Receiver gets" value={`${view.paymentAmountSats.toLocaleString()} sats`} />
+          <Row label="Receiver gets" value={`${formatNumber(view.paymentAmountSats)} sats`} />
         ) : (
           view.receiveAmountSats !== undefined && (
-            <Row label="Receiving" value={`${view.receiveAmountSats.toLocaleString()} sats`} />
+            <Row label="Receiving" value={`${formatNumber(view.receiveAmountSats)} sats`} />
           )
         )}
         {view.routerFeeSats !== undefined && (
-          <Row label="Router fees" value={`${view.routerFeeSats.toLocaleString()} sats`} />
+          <Row label="Router fees" value={`${formatNumber(view.routerFeeSats)} sats`} />
         )}
         {view.miningFeeSats !== undefined && (
-          <Row label="Mining fees" value={`${view.miningFeeSats.toLocaleString()} sats`} />
+          <Row label="Mining fees" value={`${formatNumber(view.miningFeeSats)} sats`} />
         )}
       </div>
 
@@ -569,7 +569,7 @@ function NodeBody({ hop, view }: { hop: HopView; view: CircuitView }) {
       </span>
       {hop.fee && (
         <div className="mt-1 w-full border-t border-line pt-2">
-          <Row label="Fee" value={`${hop.fee.estimatedFeeSats.toLocaleString()} sats`} />
+          <Row label="Fee" value={`${formatNumber(hop.fee.estimatedFeeSats)} sats`} />
           <Row label="Locktime" value={`${hop.fee.locktime} blocks`} />
           <Row
             label="Offer"
@@ -592,7 +592,7 @@ function EdgeBody({ edge, view }: { edge: EdgeView; view: CircuitView }) {
       </Sub>
       <div className="mt-2 w-full border-t border-line pt-2">
         {edge.amountSats !== undefined && (
-          <Row label="Amount" value={`${edge.amountSats.toLocaleString()} sats`} />
+          <Row label="Amount" value={`${formatNumber(edge.amountSats)} sats`} />
         )}
         <Row label="Status" value={EDGE_STAGE_LABEL[edge.stage]} />
         {edge.contractCount > 1 && <Row label="Splits" value={`${edge.contractCount}`} />}
@@ -638,15 +638,15 @@ function WalletBody({ view }: { view: CircuitView }) {
       <Sub>Funds leave the out-port and return to the in-port of this same wallet</Sub>
       <div className="mt-2 w-full border-t border-line pt-2">
         {view.sendAmountSats !== undefined && (
-          <Row label="Out" value={`${view.sendAmountSats.toLocaleString()} sats`} />
+          <Row label="Out" value={`${formatNumber(view.sendAmountSats)} sats`} />
         )}
         {view.receiveAmountSats !== undefined && (
-          <Row label="In" value={`${view.receiveAmountSats.toLocaleString()} sats`} />
+          <Row label="In" value={`${formatNumber(view.receiveAmountSats)} sats`} />
         )}
         {view.totalFeeSats !== undefined && (
-          <Row label="Fees" value={`${view.totalFeeSats.toLocaleString()} sats`} />
+          <Row label="Fees" value={`${formatNumber(view.totalFeeSats)} sats`} />
         )}
-        {net !== undefined && <Row label="Net" value={`${net.toLocaleString()} sats`} />}
+        {net !== undefined && <Row label="Net" value={`${formatNumber(net)} sats`} />}
       </div>
     </>
   );

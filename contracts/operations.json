@@ -30,6 +30,15 @@
       "note": "Return the existing safe DTO; bound response size and redact internal details."
     },
     {
+      "name": "get_electrum_presets",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Compile-time constants; no wallet, no chain, no caller input."
+    },
+    {
       "name": "set_chain_backend",
       "executionClass": "transient",
       "desktop": true,

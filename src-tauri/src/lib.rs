@@ -78,6 +78,7 @@ pub fn run() {
             setup::restart_tor_bootstrap,
             // chain backend selection
             chain_backend::get_chain_backend,
+            chain_backend::get_electrum_presets,
             chain_backend::set_chain_backend,
             chain_backend::check_backend,
             // taker wallet lifecycle

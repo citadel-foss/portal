@@ -62,17 +62,7 @@ import {
   estimateRouteRouterFees,
   routerName,
 } from "../../lib/market-format";
-import {
-  classifySpendType,
-  scriptTypeFromAddress,
-  formatDuration,
-  formatFeeRate,
-  formatUnitAmount,
-  satsToUnitString,
-  SATS_PER_BTC,
-  unitStringToSats,
-  type Unit,
-} from "../../lib/wallet-format";
+import { classifySpendType, formatDuration, formatFeeRate, formatNumber, formatUnitAmount, SATS_PER_BTC, satsToUnitString, type Unit, unitStringToSats } from "../../lib/wallet-format";
 import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
@@ -799,7 +789,7 @@ export function SwapPage() {
               </div>
               <div className="mt-1 font-mono text-[13px] font-semibold text-foreground">
                 {displaySendAmountSats !== undefined
-                  ? displaySendAmountSats.toLocaleString()
+                  ? formatNumber(displaySendAmountSats)
                   : "—"}
               </div>
             </div>
@@ -1194,10 +1184,10 @@ export function SwapPage() {
                             />
                           )}
                           <span className="rounded-control border border-line px-1.5 py-0.5 text-center text-[9px] text-subtle">
-                            {scriptTypeFromAddress(u.address)}
-                          </span>
-                          <span className="rounded-control border border-line px-1.5 py-0.5 text-center text-[9px] text-subtle">
                             {classifySpendType(u.spendType)}
+                          </span>
+                          <span className="text-right font-numeric text-[10px] text-subtle">
+                            {formatNumber(u.confirmations)} conf
                           </span>
                           <SatsAmount
                             sats={u.amountSats}

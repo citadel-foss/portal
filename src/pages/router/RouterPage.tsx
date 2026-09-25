@@ -45,6 +45,7 @@ import { RouterIntro } from "./RouterIntro";
 import { useToastStore } from "../../store/toast";
 import { DashboardImport } from "./DashboardImport";
 import { copyText } from "../../lib/clipboard";
+import { formatNumber } from "../../lib/wallet-format";
 
 interface OwnedRouter {
   settings: RouterSettings;
@@ -453,8 +454,8 @@ export function RouterPage() {
         <StatStrip
           className="mt-6"
           items={[
-            { label: "Routers", value: routers.length.toLocaleString(), detail: `${stats.running} running` },
-            { label: "Running", value: stats.running.toLocaleString(), detail: `${stats.stopped} stopped`, tone: "success" },
+            { label: "Routers", value: formatNumber(routers.length), detail: `${stats.running} running` },
+            { label: "Running", value: formatNumber(stats.running), detail: `${stats.stopped} stopped`, tone: "success" },
             { label: "Spendable", value: <SatsAmount sats={stats.spendable} />, detail: "across router wallets" },
             { label: "Net earnings", value: <SatsAmount sats={stats.earnings} />, detail: "from saved reports", tone: "success" },
           ]}

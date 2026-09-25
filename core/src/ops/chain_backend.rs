@@ -22,7 +22,7 @@ use openswap::wallet::{BackendConfig, Blockchain, CoreRpcConfig, Electrum, Elect
 use crate::error::{AppError, ErrorCode};
 use crate::types::{
     BackendStatus, ChainBackendConfig, ChainBackendKind, ChainBackendView, ElectrumBackendDto,
-    NodeBackendDto, NodeBackendViewDto,
+    ElectrumPresetDto, NodeBackendDto, NodeBackendViewDto,
 };
 
 /// One bounded attempt is enough for a probe. The backend's own defaults (a 120s proxied
@@ -36,6 +36,32 @@ const LEGACY_FILE_NAME: &str = "backend.json";
 static SESSION: Mutex<Option<ChainBackendConfig>> = Mutex::new(None);
 
 /// Cached by complete endpoint/route fingerprint, never by process first-use.
+/// The servers the gate offers, newest verified list. Every mainnet entry was probed against
+/// the live chain before landing and agreed on the same tip; a preset that does not answer is
+/// worse than no preset, so `fulcrum.sethforprivacy.com` was dropped for timing out.
+///
+/// Reference data, deliberately not configuration: nothing here is written to disk and the
+/// choice is not remembered between launches. The signet entry is `DEFAULT_ELECTRUM_URL`
+/// itself rather than a second copy of the same string.
+const ELECTRUM_PRESETS: &[(&str, &str, &str)] = &[
+    ("Portal signet", crate::types::DEFAULT_ELECTRUM_URL, "signet"),
+    ("Blockstream", "ssl://electrum.blockstream.info:50002", "bitcoin"),
+    ("Emzy", "ssl://electrum.emzy.de:50002", "bitcoin"),
+    ("Bitaroo", "ssl://electrum.bitaroo.net:50002", "bitcoin"),
+    ("DIY Nodes", "ssl://electrum.diynodes.com:50002", "bitcoin"),
+];
+
+pub fn electrum_presets() -> Vec<ElectrumPresetDto> {
+    ELECTRUM_PRESETS
+        .iter()
+        .map(|(label, url, network)| ElectrumPresetDto {
+            label: (*label).to_string(),
+            url: (*url).to_string(),
+            network: (*network).to_string(),
+        })
+        .collect()
+}
+
 static ELECTRUM_NETWORK: Mutex<Option<(String, Option<Network>)>> = Mutex::new(None);
 
 

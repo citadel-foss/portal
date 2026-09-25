@@ -115,6 +115,10 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::taker_wallet::get_btc_price().await?)
         })
     }),
+    op("get_electrum_presets", false, |rt, args| {
+        let _ = (&rt, &args);
+        Box::pin(async move { encode(&ops::chain_backend::electrum_presets()) })
+    }),
     op("get_chain_backend", false, |rt, args| {
         let _ = (&rt, &args);
         Box::pin(async move {

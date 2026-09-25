@@ -1,13 +1,20 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { ChevronDown } from "lucide-react";
 import {
   checkBackend,
   checkTor,
   getChainBackend,
+  getElectrumPresets,
   restartTorBootstrap,
   setChainBackend,
 } from "../../api/commands";
-import type { ChainBackendConfig, ChainBackendKind, NodeBackend } from "../../api/types";
+import type {
+  ChainBackendConfig,
+  ChainBackendKind,
+  ElectrumPreset,
+  NodeBackend,
+} from "../../api/types";
 import {
   SettingsSection,
   TestResultRows,
@@ -24,15 +31,108 @@ import {
 import { IntroStage } from "../../components/ui/IntroStage";
 import { wait } from "../../lib/timing";
 import { useSessionStore } from "../../store/session";
+import { formatDuration, formatNumber } from "../../lib/wallet-format";
 
 const TOR_POLL_MS = 1_200;
 // Watches for progress stopping rather than capping total time: an absolute ceiling fails a slow
-// bootstrap that would have finished seconds later. Four minutes because a healthy bootstrap goes
-// quiet for up to ~76s between phases, and anything near that reports a stall on a working Tor.
-const TOR_STALL_MS = 240_000;
+// bootstrap that would have finished seconds later.
+//
+// Ten minutes, not four. A first bootstrap on a fresh install downloads the whole consensus and
+// relay directory, and one unroutable guard costs a ninety-second retry before Tor moves to the
+// next — a real run here sat at 10% for 90s and then finished in 70. Anything that calls that a
+// stall teaches people to hit Restart on a Tor that was about to succeed, which throws the work
+// away and starts the same download again.
+const TOR_STALL_MS = 600_000;
 // Consecutive probe misses tolerated before the panel reports trouble. A miss against a busy,
 // still-bootstrapping Tor is routine, so this is about a run of them, not a single one.
 const TOR_MAX_CONSECUTIVE_FAILURES = 6;
+
+/** Signet coins are worthless and mainnet coins are not, so the network leads each row. */
+const PRESET_TONE: Record<string, string> = {
+  bitcoin: "border-success/40 bg-success/[0.08] text-success",
+  signet: "border-warning/40 bg-warning/[0.08] text-warning",
+};
+
+/**
+ * Picks one of the servers Rust ships, or leaves the URL alone.
+ *
+ * A menu rather than a native `<select>`: the monospace shell cannot style one, and WKWebView
+ * renders it as a platform control that looks nothing like the rest of the gate. The URL field
+ * below stays authoritative — this only writes into it, so a hand-typed server is never a
+ * second-class citizen.
+ */
+function ServerPicker({
+  presets,
+  value,
+  onPick,
+}: {
+  presets: ElectrumPreset[];
+  value: string;
+  onPick: (url: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = presets.find((p) => p.url === value.trim());
+
+  if (presets.length === 0) return null;
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-3 text-left outline-none focus-visible:shadow-ring"
+      >
+        <span className="flex min-w-0 items-center gap-2.5">
+          <span className="font-mono text-[13px] text-foreground">
+            {selected?.label ?? "Custom server"}
+          </span>
+          {selected && (
+            <span
+              className={`rounded-pill border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] ${
+                PRESET_TONE[selected.network] ?? "border-line text-subtle"
+              }`}
+            >
+              {selected.network}
+            </span>
+          )}
+        </span>
+        <ChevronDown
+          size={15}
+          strokeWidth={2}
+          className={`flex-none text-subtle transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 flex flex-col overflow-hidden rounded-control border border-line-strong bg-surface-raised shadow-[0_16px_32px_-16px_rgba(0,0,0,0.8)]">
+          {presets.map((preset) => (
+            <button
+              key={preset.url}
+              type="button"
+              onClick={() => {
+                onPick(preset.url);
+                setOpen(false);
+              }}
+              className={`flex flex-col gap-0.5 px-3.5 py-2.5 text-left outline-none hover:bg-[var(--color-hover)] focus-visible:bg-[var(--color-hover)] ${
+                preset.url === selected?.url ? "bg-[var(--color-hover)]" : ""
+              }`}
+            >
+              <span className="flex items-center gap-2.5">
+                <span className="font-mono text-[12.5px] text-foreground">{preset.label}</span>
+                <span
+                  className={`rounded-pill border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.12em] ${
+                    PRESET_TONE[preset.network] ?? "border-line text-subtle"
+                  }`}
+                >
+                  {preset.network}
+                </span>
+              </span>
+              <span className="font-mono text-[10.5px] text-subtle">{preset.url}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * The first screen of every launch, ahead of the role picker, because a wallet and a router
@@ -49,17 +149,18 @@ export function ConnectPage() {
   const [kind, setKind] = useState<ChainBackendKind>("electrum");
   const [electrumUrl, setElectrumUrl] = useState("");
   const [electrumUseTor, setElectrumUseTor] = useState(false);
+  const [presets, setPresets] = useState<ElectrumPreset[]>([]);
   const [node, setNode] = useState<NodeBackend | null>(null);
 
   const [torProgress, setTorProgress] = useState<number | null>(null);
   // Tor's own account of itself: the phase it is in, and why it says it is struggling. Kept
   // apart from `torError`, which is Portal failing to reach Tor rather than Tor failing.
   const [torPhase, setTorPhase] = useState<string | null>(null);
-  const [torWarning, setTorWarning] = useState<string | null>(null);
   const [torError, setTorError] = useState<string | null>(null);
   // Set when the percentage stops climbing. Not a terminal state — the poll keeps running
   // underneath it, so a bootstrap that recovers on its own clears this without being asked to.
   const [torStalled, setTorStalled] = useState(false);
+  const [torElapsed, setTorElapsed] = useState(0);
   const [torChecks, setTorChecks] = useState(0);
   const [torRestarting, setTorRestarting] = useState(false);
   const [torRestarts, setTorRestarts] = useState(0);
@@ -114,9 +215,11 @@ export function ConnectPage() {
       // on every call, so a single miss against a busy, still-bootstrapping Tor is routine.
       let consecutiveFailures = 0;
       let best = -1;
-      let lastProgressAt = Date.now();
+      const startedAt = Date.now();
+      let lastProgressAt = startedAt;
       for (;;) {
         if (cancelled) return;
+        setTorElapsed(Math.floor((Date.now() - startedAt) / 1000));
         try {
           const status = await checkTor();
           if (cancelled) return;
@@ -129,7 +232,6 @@ export function ConnectPage() {
           const progress = status.bootstrapProgress ?? 0;
           setTorProgress(progress);
           setTorPhase(status.bootstrapSummary ?? null);
-          setTorWarning(status.bootstrapWarning ?? null);
           if (progress === 100) {
             setTorStalled(false);
             return;
@@ -167,7 +269,6 @@ export function ConnectPage() {
       await restartTorBootstrap();
       setTorRestarts((n) => n + 1);
       setTorError(null);
-      setTorWarning(null);
       setTorPhase(null);
       setTorProgress(null);
     } catch (e) {
@@ -211,7 +312,7 @@ export function ConnectPage() {
         label,
         state: status.reachable ? "ok" : "failed",
         message: status.reachable
-          ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · block ${status.blocks.toLocaleString()}` : ""}`
+          ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · block ${formatNumber(status.blocks)}` : ""}`
           : (status.error ?? "No answer."),
       });
       setVerified(status.reachable ? JSON.stringify(config) : null);
@@ -258,6 +359,12 @@ export function ConnectPage() {
 
   // An edit retires the standing pass and the result reporting it, which is what brings the
   // Test button back: nothing on screen describes the config the user now has.
+  useEffect(() => {
+    void getElectrumPresets()
+      .then(setPresets)
+      .catch(() => setPresets([]));
+  }, []);
+
   function invalidate() {
     setBackendRow(null);
     setVerified(null);
@@ -303,6 +410,14 @@ export function ConnectPage() {
             {kind === "electrum" ? (
               <>
                 <SummaryGroup title="Server">
+                  <ServerPicker
+                    presets={presets}
+                    value={electrumUrl}
+                    onPick={(url) => {
+                      setElectrumUrl(url);
+                      invalidate();
+                    }}
+                  />
                   <SummaryRow
                     label="Server URL"
                     value={electrumUrl}
@@ -408,24 +523,22 @@ export function ConnectPage() {
                       ? "Bootstrap complete — Tor is ready"
                       : torProgress === null
                         ? "Starting…"
-                        : // Tor's own phase text, so a long wait says which step it is on
-                          // rather than only that the number has not moved.
-                          `${torProgress}%${torPhase ? ` · ${torPhase}` : ""}`,
+                        : // Tor's own phase text plus the clock, so a long wait says which
+                          // step it is on and how long it has been going, rather than only
+                          // that the number has not moved.
+                          `${torProgress}%${torPhase ? ` · ${torPhase}` : ""}${
+                            torElapsed >= 20 ? ` · ${formatDuration(torElapsed)}` : ""
+                          }`,
                 },
               ]}
             />
-            {!torReady && (torStalled || torWarning || torError) && (
+            {!torReady && (torStalled || torError) && (
               <div className="flex flex-col gap-1.5 rounded-control border border-warning/30 bg-warning/[0.06] p-4">
-                {torWarning && (
-                  <p className="text-[12px] leading-5 text-foreground">
-                    Tor reports: {torWarning}
-                  </p>
-                )}
                 {torStalled && (
                   <p className="text-[12px] leading-5 text-foreground">
-                    Stuck at {torProgress}% for over {Math.round(TOR_STALL_MS / 60_000)} minutes.
-                    Usually a slow or filtered network. Portal is still watching — this clears
-                    itself if Tor gets through.
+                    No progress past {torProgress}% for {Math.round(TOR_STALL_MS / 60_000)}{" "}
+                    minutes. Usually a slow or filtered network. Portal is still watching —
+                    this clears itself if Tor gets through.
                   </p>
                 )}
                 <p className="text-[11.5px] text-subtle">
@@ -435,7 +548,7 @@ export function ConnectPage() {
                 </p>
               </div>
             )}
-            {!torReady && (
+            {!torReady && (torStalled || torError) && (
               <div>
                 <Button
                   size="sm"
