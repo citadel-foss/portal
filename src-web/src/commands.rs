@@ -11,12 +11,25 @@ use std::sync::Arc;
 
 use portal_core::error::{AppError, ErrorCode};
 use portal_core::ops;
-use portal_core::state::AppState;
+use portal_core::state::{AppState, SessionId, TakerInstance};
 use portal_core::types::*;
 use serde_json::Value;
 use uuid::Uuid;
 
-type Run = fn(Arc<AppState>, Value) -> Pin<Box<dyn Future<Output = Result<Value, AppError>> + Send>>;
+type Run = fn(Ctx, Value) -> Pin<Box<dyn Future<Output = Result<Value, AppError>> + Send>>;
+
+/// What every operation runs against: the shared runtime, and the session asking. Wallet
+/// operations act on that session's own wallet, never on whichever one happens to be open.
+pub struct Ctx {
+    pub rt: Arc<AppState>,
+    pub session: SessionId,
+}
+
+impl Ctx {
+    fn taker(&self) -> Result<Arc<TakerInstance>, AppError> {
+        self.rt.taker_for(&self.session)
+    }
+}
 
 pub struct Operation {
     pub name: &'static str,
@@ -56,8 +69,8 @@ pub fn lookup(name: &str) -> Option<&'static Operation> {
 }
 
 pub static OPERATIONS: &[Operation] = &[
-    op("check_backend", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("check_backend", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -66,11 +79,11 @@ pub static OPERATIONS: &[Operation] = &[
             socks_port: Option<u16>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::chain_backend::check_backend(body.config, body.socks_port).await?)
+            encode(&ops::chain_backend::check_backend(&ctx.session, body.config, body.socks_port).await?)
         })
     }),
-    op("check_maker_ports", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("check_maker_ports", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -82,14 +95,14 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::maker_settings::check_maker_ports(body.network_port, body.rpc_port)?)
         })
     }),
-    op("estimate_fees", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("estimate_fees", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             encode(&ops::taker_wallet::estimate_fees().await?)
         })
     }),
-    op("estimate_swap_funding", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("estimate_swap_funding", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,33 +113,33 @@ pub static OPERATIONS: &[Operation] = &[
             tx_count: Option<u32>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::estimate_swap_funding(&rt, body.amount_sats, body.protocol, body.outpoints, body.tx_count).await?)
+            encode(&ops::taker_swap::estimate_swap_funding(&*ctx.taker()?, body.amount_sats, body.protocol, body.outpoints, body.tx_count).await?)
         })
     }),
-    op("get_balances", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_balances", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_wallet::get_balances(&rt).await?)
+            encode(&ops::taker_wallet::get_balances(&*ctx.taker()?).await?)
         })
     }),
-    op("get_btc_price", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_btc_price", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             encode(&ops::taker_wallet::get_btc_price().await?)
         })
     }),
-    op("get_electrum_presets", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_electrum_presets", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move { encode(&ops::chain_backend::electrum_presets()) })
     }),
-    op("get_chain_backend", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_chain_backend", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::chain_backend::get_chain_backend())
+            encode(&ops::chain_backend::get_chain_backend(&ctx.session))
         })
     }),
-    op("get_incoming_swap_utxo", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_incoming_swap_utxo", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -134,11 +147,11 @@ pub static OPERATIONS: &[Operation] = &[
             swap_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_reports::get_incoming_swap_utxo(&rt, body.swap_id).await?)
+            encode(&ops::taker_reports::get_incoming_swap_utxo(&*ctx.taker()?, body.swap_id).await?)
         })
     }),
-    op("get_logs", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_logs", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -146,11 +159,11 @@ pub static OPERATIONS: &[Operation] = &[
             lines: Option<usize>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::logs::get_logs(&rt, body.lines).await?)
+            encode(&ops::logs::get_logs(&*ctx.taker()?, body.lines).await?)
         })
     }),
-    op("get_maker_balances", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_maker_balances", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -158,11 +171,11 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_wallet::get_maker_balances(&rt, body.router_id).await?)
+            encode(&ops::maker_wallet::get_maker_balances(&ctx.rt, body.router_id).await?)
         })
     }),
-    op("get_maker_info", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_maker_info", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -170,11 +183,11 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::get_maker_info(&rt, body.router_id)?)
+            encode(&ops::maker::get_maker_info(&ctx.rt, body.router_id)?)
         })
     }),
-    op("get_maker_logs", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_maker_logs", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -183,11 +196,11 @@ pub static OPERATIONS: &[Operation] = &[
             lines: Option<usize>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::logs::get_maker_logs(&rt, body.router_id, body.lines).await?)
+            encode(&ops::logs::get_maker_logs(&ctx.rt, body.router_id, body.lines).await?)
         })
     }),
-    op("get_maker_status", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_maker_status", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -195,11 +208,11 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::get_maker_status(&rt, body.router_id)?)
+            encode(&ops::maker::get_maker_status(&ctx.rt, body.router_id)?)
         })
     }),
-    op("get_maker_swap_report", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_maker_swap_report", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -208,11 +221,11 @@ pub static OPERATIONS: &[Operation] = &[
             swap_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_reports::get_maker_swap_report(&rt, body.router_id, body.swap_id).await?)
+            encode(&ops::maker_reports::get_maker_swap_report(&ctx.rt, body.router_id, body.swap_id).await?)
         })
     }),
-    op("get_maker_transactions", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_maker_transactions", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -222,17 +235,17 @@ pub static OPERATIONS: &[Operation] = &[
             skip: Option<usize>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_wallet::get_maker_transactions(&rt, body.router_id, body.count, body.skip).await?)
+            encode(&ops::maker_wallet::get_maker_transactions(&ctx.rt, body.router_id, body.count, body.skip).await?)
         })
     }),
-    op("get_offers", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_offers", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::market::get_offers(&rt)?)
+            encode(&ops::market::get_offers(&*ctx.taker()?)?)
         })
     }),
-    op("get_recovery_status", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_recovery_status", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -240,11 +253,11 @@ pub static OPERATIONS: &[Operation] = &[
             swap_id: Option<String>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::get_recovery_status(&rt, body.swap_id).await?)
+            encode(&ops::taker_swap::get_recovery_status(&*ctx.taker()?, body.swap_id).await?)
         })
     }),
-    op("get_saved_maker_settings", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_saved_maker_settings", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -255,18 +268,18 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::maker_settings::get_saved_maker_settings(body.router_id)?)
         })
     }),
-    op("get_router_defaults", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_router_defaults", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move { encode(&ops::maker::router_defaults()) })
     }),
-    op("get_suggested_maker_ports", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_suggested_maker_ports", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             encode(&ops::maker_settings::get_suggested_maker_ports()?)
         })
     }),
-    op("get_swap_preparation", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_swap_preparation", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -274,17 +287,17 @@ pub static OPERATIONS: &[Operation] = &[
             since: u64,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::get_swap_preparation(&rt, body.since).await?)
+            encode(&ops::taker_swap::get_swap_preparation(&*ctx.taker()?, body.since).await?)
         })
     }),
-    op("get_swap_progress", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_swap_progress", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_swap::get_swap_progress(&rt)?)
+            encode(&ops::taker_swap::get_swap_progress(&*ctx.taker()?)?)
         })
     }),
-    op("get_swap_report", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_swap_report", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -292,11 +305,11 @@ pub static OPERATIONS: &[Operation] = &[
             swap_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_reports::get_swap_report(&rt, body.swap_id).await?)
+            encode(&ops::taker_reports::get_swap_report(&*ctx.taker()?, body.swap_id).await?)
         })
     }),
-    op("get_swap_tracker", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_swap_tracker", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -304,11 +317,11 @@ pub static OPERATIONS: &[Operation] = &[
             swap_id: Option<String>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::get_swap_tracker(&rt, body.swap_id).await?)
+            encode(&ops::taker_swap::get_swap_tracker(&*ctx.taker()?, body.swap_id).await?)
         })
     }),
-    op("get_transactions", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_transactions", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -317,39 +330,27 @@ pub static OPERATIONS: &[Operation] = &[
             skip: Option<usize>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::get_transactions(&rt, body.count, body.skip).await?)
+            encode(&ops::taker_wallet::get_transactions(&*ctx.taker()?, body.count, body.skip).await?)
         })
     }),
-    op("get_session_state", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_session_state", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             // Desktop shows the path because the user chose it; a browser has no business
             // learning where the server keeps its files, and nothing in the web UI reads it.
-            let mut state = ops::taker_wallet::get_session_state(&rt);
+            let mut state = ops::taker_wallet::get_session_state(&ctx.rt, &ctx.session);
             state.data_dir = None;
             encode(&state)
         })
     }),
-    op("get_wallet_info", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_wallet_info", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_wallet::get_wallet_info(&rt)?)
+            encode(&ops::taker_wallet::get_wallet_info(&*ctx.taker()?)?)
         })
     }),
-    op("list_maker_fidelity_bonds", false, |rt, args| {
-        let _ = (&rt, &args);
-        Box::pin(async move {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct Args {
-            router_id: String,
-            }
-            let body: Args = parse(args)?;
-            encode(&ops::maker_wallet::list_maker_fidelity_bonds(&rt, body.router_id).await?)
-        })
-    }),
-    op("list_maker_swap_reports", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("list_maker_fidelity_bonds", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -357,11 +358,11 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_reports::list_maker_swap_reports(&rt, body.router_id).await?)
+            encode(&ops::maker_wallet::list_maker_fidelity_bonds(&ctx.rt, body.router_id).await?)
         })
     }),
-    op("list_maker_utxos", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("list_maker_swap_reports", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -369,35 +370,47 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_wallet::list_maker_utxos(&rt, body.router_id).await?)
+            encode(&ops::maker_reports::list_maker_swap_reports(&ctx.rt, body.router_id).await?)
         })
     }),
-    op("list_makers", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("list_maker_utxos", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+            router_id: String,
+            }
+            let body: Args = parse(args)?;
+            encode(&ops::maker_wallet::list_maker_utxos(&ctx.rt, body.router_id).await?)
+        })
+    }),
+    op("list_makers", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             encode(&ops::maker_settings::list_makers()?)
         })
     }),
-    op("list_recoveries", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("list_recoveries", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_swap::list_recoveries(&rt).await?)
+            encode(&ops::taker_swap::list_recoveries(&*ctx.taker()?).await?)
         })
     }),
-    op("list_swap_reports", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("list_swap_reports", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_reports::list_swap_reports(&rt).await?)
+            encode(&ops::taker_reports::list_swap_reports(&*ctx.taker()?).await?)
         })
     }),
-    op("list_utxos", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("list_utxos", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_wallet::list_utxos(&rt).await?)
+            encode(&ops::taker_wallet::list_utxos(&*ctx.taker()?).await?)
         })
     }),
-    op("list_wallets", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("list_wallets", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -412,8 +425,8 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::taker_wallet::list_wallets(None)?)
         })
     }),
-    op("poll_maker", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("poll_maker", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -421,11 +434,11 @@ pub static OPERATIONS: &[Operation] = &[
             address: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::market::poll_maker(&rt, body.address).await?)
+            encode(&ops::market::poll_maker(&*ctx.taker()?, body.address).await?)
         })
     }),
-    op("validate_address", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("validate_address", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -436,8 +449,8 @@ pub static OPERATIONS: &[Operation] = &[
             encode(&ops::taker_wallet::validate_address(body.address))
         })
     }),
-    op("verify_deniability", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("verify_deniability", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -445,11 +458,11 @@ pub static OPERATIONS: &[Operation] = &[
             swap_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_reports::verify_deniability(&rt, body.swap_id).await?)
+            encode(&ops::taker_reports::verify_deniability(&*ctx.taker()?, body.swap_id).await?)
         })
     }),
-    op("verify_last_address", false, |rt, args| {
-        let _ = (&rt, &args);
+    op("verify_last_address", false, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -457,11 +470,11 @@ pub static OPERATIONS: &[Operation] = &[
             address_type: AddressTypeDto,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::verify_last_address(&rt, body.address_type).await?)
+            encode(&ops::taker_wallet::verify_last_address(&*ctx.taker()?, body.address_type).await?)
         })
     }),
-    op("verify_maker_deniability", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("verify_maker_deniability", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -470,23 +483,23 @@ pub static OPERATIONS: &[Operation] = &[
             swap_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_reports::verify_maker_deniability(&rt, body.router_id, body.swap_id).await?)
+            encode(&ops::maker_reports::verify_maker_deniability(&ctx.rt, body.router_id, body.swap_id).await?)
         })
     }),
-    op("check_tor", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("check_tor", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             encode(&ops::setup::check_tor().await?)
         })
     }),
-    op("restart_tor_bootstrap", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("restart_tor_bootstrap", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             encode(&ops::setup::restart_tor_bootstrap().await?)
         })
     }),
-    op("set_chain_backend", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("set_chain_backend", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -494,11 +507,11 @@ pub static OPERATIONS: &[Operation] = &[
             config: ChainBackendConfig,
             }
             let body: Args = parse(args)?;
-            encode(&ops::chain_backend::set_chain_backend(body.config)?)
+            encode(&ops::chain_backend::set_chain_backend(&ctx.session, body.config)?)
         })
     }),
-    op("sync_maker_wallet", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("sync_maker_wallet", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -506,23 +519,26 @@ pub static OPERATIONS: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_wallet::sync_maker_wallet(&rt, body.router_id).await?)
+            encode(&ops::maker_wallet::sync_maker_wallet(&ctx.rt, body.router_id).await?)
         })
     }),
-    op("shutdown_taker", true, |rt, args| {
-        let _ = (&rt, &args);
-        Box::pin(async move { encode(&ops::taker_wallet::shutdown_async(&rt).await?) })
-    }),
-    op("sync_offerbook", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("shutdown_taker", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::market::sync_offerbook(&rt).await?)
+            ops::taker_wallet::release_session(&ctx.rt, &ctx.session);
+            encode(&())
         })
     }),
-    op("sync_wallet", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("sync_offerbook", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_wallet::sync_wallet(&rt).await?)
+            encode(&ops::market::sync_offerbook(&*ctx.taker()?).await?)
+        })
+    }),
+    op("sync_wallet", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            encode(&ops::taker_wallet::sync_wallet(&*ctx.taker()?).await?)
         })
     }),
 ];
@@ -531,8 +547,8 @@ pub static OPERATIONS: &[Operation] = &[
 /// admitted to the journal first, so a lost response can be reconciled by the key the client
 /// already holds rather than resubmitted blind.
 pub static DURABLE: &[Operation] = &[
-    op("clear_maker_settings", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("clear_maker_settings", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -540,11 +556,11 @@ pub static DURABLE: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_settings::clear_maker_settings(&rt, body.router_id)?)
+            encode(&ops::maker_settings::clear_maker_settings(&ctx.rt, body.router_id)?)
         })
     }),
-    op("get_maker_new_address", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_maker_new_address", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -553,11 +569,11 @@ pub static DURABLE: &[Operation] = &[
             address_type: AddressTypeDto,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker_wallet::get_maker_new_address(&rt, body.router_id, body.address_type).await?)
+            encode(&ops::maker_wallet::get_maker_new_address(&ctx.rt, body.router_id, body.address_type).await?)
         })
     }),
-    op("get_new_address", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("get_new_address", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -565,11 +581,11 @@ pub static DURABLE: &[Operation] = &[
             address_type: AddressTypeDto,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::get_new_address(&rt, body.address_type).await?)
+            encode(&ops::taker_wallet::get_new_address(&*ctx.taker()?, body.address_type).await?)
         })
     }),
-    op("init_maker", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("init_maker", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -581,11 +597,11 @@ pub static DURABLE: &[Operation] = &[
             // directory that does not exist yet is created, so this would write a wallet and
             // a Tor data dir wherever the caller pointed.
             body.config.data_dir = None;
-            encode(&ops::maker::init_maker(&rt, body.config).await?)
+            encode(&ops::maker::init_maker(&ctx.rt, &ctx.session, body.config).await?)
         })
     }),
-    op("init_taker", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("init_taker", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -595,11 +611,11 @@ pub static DURABLE: &[Operation] = &[
             let mut body: Args = parse(args)?;
             // Also repoints the debug log at the given directory, so it must be ours.
             body.config.data_dir = None;
-            encode(&without_server_path(ops::taker_wallet::init_taker(&rt, body.config).await?))
+            encode(&without_server_path(ops::taker_wallet::init_taker(&ctx.rt, &ctx.session, body.config).await?))
         })
     }),
-    op("prepare_swap", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("prepare_swap", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -607,17 +623,17 @@ pub static DURABLE: &[Operation] = &[
             request: SwapRequest,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::prepare_swap(&rt, body.request).await?)
+            encode(&ops::taker_swap::prepare_swap(&*ctx.taker()?, body.request).await?)
         })
     }),
-    op("recover_swap", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("recover_swap", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_swap::recover_swap(&rt).await?)
+            encode(&ops::taker_swap::recover_swap(&*ctx.taker()?).await?)
         })
     }),
-    op("remove_maker", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("remove_maker", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -625,11 +641,11 @@ pub static DURABLE: &[Operation] = &[
             address: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::market::remove_maker(&rt, body.address).await?)
+            encode(&ops::market::remove_maker(&*ctx.taker()?, body.address).await?)
         })
     }),
-    op("restore_wallet", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("restore_wallet", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -644,10 +660,10 @@ pub static DURABLE: &[Operation] = &[
             password: Option<String>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::restore_wallet(&rt, None, body.wallet_name, body.socks_port, body.selection_id, body.password).await?)
+            encode(&ops::taker_wallet::restore_wallet(&ctx.rt, &ctx.session, None, body.wallet_name, body.socks_port, body.selection_id, body.password).await?)
         })
     }),
-    op("send_maker_to_address", true, |rt, args| {
+    op("send_maker_to_address", true, |ctx, args| {
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -661,7 +677,7 @@ pub static DURABLE: &[Operation] = &[
             let body: Args = parse(args)?;
             encode(
                 &ops::maker_wallet::send_maker_to_address(
-                    &rt,
+                    &ctx.rt,
                     body.router_id,
                     body.address,
                     body.amount_sats,
@@ -672,8 +688,8 @@ pub static DURABLE: &[Operation] = &[
             )
         })
     }),
-    op("send_to_address", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("send_to_address", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -684,11 +700,11 @@ pub static DURABLE: &[Operation] = &[
             outpoints: Option<Vec<Outpoint>>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::send_to_address(&rt, body.address, body.amount_sats, body.fee_rate, body.outpoints).await?)
+            encode(&ops::taker_wallet::send_to_address(&ctx.rt, &*ctx.taker()?, body.address, body.amount_sats, body.fee_rate, body.outpoints).await?)
         })
     }),
-    op("start_maker", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("start_maker", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -697,11 +713,11 @@ pub static DURABLE: &[Operation] = &[
             wallet_password: Option<String>,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::start_maker(&rt, body.router_id, body.wallet_password).await?)
+            encode(&ops::maker::start_maker(&ctx.rt, &ctx.session, body.router_id, body.wallet_password).await?)
         })
     }),
-    op("start_swap", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("start_swap", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -709,11 +725,11 @@ pub static DURABLE: &[Operation] = &[
             swap_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_swap::start_swap(&rt, body.swap_id).await?)
+            encode(&ops::taker_swap::start_swap(&ctx.rt, &ctx.taker()?, body.swap_id).await?)
         })
     }),
-    op("stop_maker", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("stop_maker", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -721,11 +737,11 @@ pub static DURABLE: &[Operation] = &[
             router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::stop_maker(&rt, body.router_id).await?)
+            encode(&ops::maker::stop_maker(&ctx.rt, body.router_id).await?)
         })
     }),
-    op("update_maker_settings", true, |rt, args| {
-        let _ = (&rt, &args);
+    op("update_maker_settings", true, |ctx, args| {
+        let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -734,7 +750,7 @@ pub static DURABLE: &[Operation] = &[
             settings: MakerSettingsDto,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::update_maker_settings(&rt, body.router_id, body.settings)?)
+            encode(&ops::maker::update_maker_settings(&ctx.rt, body.router_id, body.settings)?)
         })
     }),
 ];

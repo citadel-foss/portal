@@ -3,6 +3,42 @@
   "version": 1,
   "operations": [
     {
+      "name": "auth_session",
+      "executionClass": "read",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Whether the desktop app is signed in and whether an owner password exists. The web host answers the same question at GET /session."
+    },
+    {
+      "name": "auth_claim",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Sets the owner password on a desktop install that has none. The web host's equivalent is POST /auth/claim."
+    },
+    {
+      "name": "auth_login",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Signs the desktop app in with the owner password. The web host's equivalent is POST /auth/login."
+    },
+    {
+      "name": "auth_logout",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Signs the desktop app out and takes the window off its wallet. The web host's equivalent is POST /auth/logout."
+    },
+    {
       "name": "check_tor",
       "executionClass": "transient",
       "desktop": true,

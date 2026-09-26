@@ -24,7 +24,7 @@ import { getSessionState } from "./api/commands";
 import { refreshWalletCache } from "./lib/wallet-sync";
 import { watchUnresolved } from "./store/unresolved";
 import { useSessionStore } from "./store/session";
-import { capabilities, session } from "./platform";
+import { session } from "./platform";
 import { ServerUnreachable } from "./pages/auth/ServerUnreachable";
 import { REFRESH_INTERVAL_MS } from "./store/wallet-cache";
 
@@ -158,11 +158,7 @@ function App() {
           that render before a wallet exists, and the access warning belongs on all of them. */}
       <QuitShutdown />
       <Routes>
-        {/* Registered on any host that could need it. Whether a user ever reaches it is
-            decided by the session restore below, not by the route table. */}
-        {capabilities.requiresLogin && (
-          <Route path="/login" element={<LoginPage />} />
-        )}
+        <Route path="/login" element={<LoginPage />} />
 
         <Route element={<RequireSession />}>
           <Route element={<RestoreRuntime />}>

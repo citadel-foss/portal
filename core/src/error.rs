@@ -31,6 +31,10 @@ pub enum ErrorCode {
     WalletNotFound,
     WalletWrongPassword,
     WalletLoadFailed,
+    /// Another process on the same files holds this wallet.
+    WalletOpenElsewhere,
+    /// A browser asked to join a running wallet over a backend on a different chain.
+    WalletNetworkMismatch,
     // runtime
     NotInitialized,
     SwapInProgress,
@@ -97,6 +101,8 @@ impl ErrorCode {
             | Self::ZmqUnreachable
             | Self::WalletNotFound
             | Self::WalletLoadFailed
+            | Self::WalletOpenElsewhere
+            | Self::WalletNetworkMismatch
             | Self::InsufficientFunds
             | Self::NotEnoughMakers
             | Self::InvalidInput

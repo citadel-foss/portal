@@ -404,15 +404,17 @@ impl Journal {
             .is_ok_and(|index| index.values().any(is_unsettled))
     }
 
-    /// Unresolved work that could actually conflict with a new spend. Empty is the normal
-    /// case, including right after a crash.
-    pub fn blocking_conflicts(&self) -> Vec<OperationRecord> {
+    /// Unresolved work that could actually conflict with a new spend from `wallet_id`. Empty
+    /// is the normal case, including right after a crash. A record with no wallet recorded
+    /// conflicts with every wallet, since nothing says which one it spent from.
+    pub fn blocking_conflicts(&self, wallet_id: Option<&str>) -> Vec<OperationRecord> {
         let Ok(index) = self.index.lock() else {
             return Vec::new();
         };
         index
             .values()
             .filter(|r| moves_funds(&r.kind) && is_unsettled(r) && !r.acknowledged)
+            .filter(|r| r.wallet_id.is_none() || r.wallet_id.as_deref() == wallet_id)
             .cloned()
             .collect()
     }
@@ -577,7 +579,7 @@ mod tests {
 
         let reopened = Journal::open(&root).unwrap();
         assert_eq!(reopened.get(&id).unwrap().state, OperationState::Failed);
-        assert!(reopened.blocking_conflicts().is_empty());
+        assert!(reopened.blocking_conflicts(None).is_empty());
     }
 
     #[test]
@@ -590,7 +592,7 @@ mod tests {
 
         let reopened = Journal::open(&root).unwrap();
         assert_eq!(reopened.get(&id).unwrap().state, OperationState::Indeterminate);
-        assert_eq!(reopened.blocking_conflicts().len(), 1);
+        assert_eq!(reopened.blocking_conflicts(None).len(), 1);
     }
 
     /// The lockout came from gating on operations that cannot conflict with a spend.
@@ -603,7 +605,7 @@ mod tests {
             .unwrap();
         assert!(j.has_unsettled());
         assert!(
-            j.blocking_conflicts().is_empty(),
+            j.blocking_conflicts(None).is_empty(),
             "an unresolved unlock cannot conflict with a spend"
         );
 
@@ -611,7 +613,20 @@ mod tests {
         j.admit(&send, "send_to_address", None, 1, &request()).unwrap();
         j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "connection lost"))
             .unwrap();
-        assert_eq!(j.blocking_conflicts().len(), 1);
+        assert_eq!(j.blocking_conflicts(None).len(), 1);
+    }
+
+    /// A stuck payment holds up its own wallet's spends, not another wallet's: they share no
+    /// coins, so neither can double-spend the other's.
+    #[test]
+    fn an_unresolved_spend_blocks_only_its_own_wallet() {
+        let (j, _) = journal();
+        let send = key();
+        j.admit(&send, "send_to_address", Some("a".into()), 1, &request()).unwrap();
+        j.mark_indeterminate(&send, AppError::new(ErrorCode::Io, "connection lost"))
+            .unwrap();
+        assert_eq!(j.blocking_conflicts(Some("a")).len(), 1);
+        assert!(j.blocking_conflicts(Some("b")).is_empty());
     }
 
     /// Recovery is the remedy for a stuck swap. Blocking it would strand the funds it exists
@@ -640,7 +655,7 @@ mod tests {
 
         let settled = j.reconcile(&id, &["abc".to_string()]).unwrap();
         assert_eq!(settled.state, OperationState::Succeeded);
-        assert!(j.blocking_conflicts().is_empty());
+        assert!(j.blocking_conflicts(None).is_empty());
     }
 
     /// Acknowledgement must not claim an outcome nobody can prove.
@@ -651,17 +666,17 @@ mod tests {
         j.admit(&id, "send_to_address", None, 1, &request()).unwrap();
         j.mark_running(&id).unwrap();
         j.mark_indeterminate(&id, AppError::new(ErrorCode::Io, "lost")).unwrap();
-        assert_eq!(j.blocking_conflicts().len(), 1);
+        assert_eq!(j.blocking_conflicts(None).len(), 1);
 
         let acknowledged = j.acknowledge(&id).unwrap();
         assert_eq!(acknowledged.state, OperationState::Indeterminate);
         assert!(acknowledged.acknowledged);
-        assert!(j.blocking_conflicts().is_empty());
+        assert!(j.blocking_conflicts(None).is_empty());
 
         // And it survives a restart, so the gate does not come back.
         drop(j);
         let reopened = Journal::open(&root).unwrap();
-        assert!(reopened.blocking_conflicts().is_empty());
+        assert!(reopened.blocking_conflicts(None).is_empty());
     }
 
     #[test]
@@ -778,13 +793,13 @@ mod tests {
         journal
             .mark_indeterminate(&record.operation_id, AppError::internal("no answer"))
             .unwrap();
-        assert_eq!(journal.blocking_conflicts().len(), 1);
+        assert_eq!(journal.blocking_conflicts(None).len(), 1);
 
         block_persist(&root);
         assert!(journal.acknowledge(&record.operation_id).is_err());
         assert!(!journal.get(&record.operation_id).unwrap().acknowledged);
         assert_eq!(
-            journal.blocking_conflicts().len(),
+            journal.blocking_conflicts(None).len(),
             1,
             "the block must hold while the acknowledgement is not on disk"
         );

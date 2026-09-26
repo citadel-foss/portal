@@ -23,15 +23,13 @@ than one host wants `trusted-tls-proxy` and a real proxy instead.
 ## First run
 
 ```sh
-head -c 32 /dev/urandom | base64 > deploy/container/bootstrap.secret
-chmod 600 deploy/container/bootstrap.secret
-
 PORTAL_PUBLIC_ORIGIN=https://portal.example docker compose -f deploy/container/compose.yaml up -d
 ```
 
-Open the origin, enter the contents of `bootstrap.secret` and choose an owner password. The
-secret is consumed on first use: it cannot claim the installation twice, and it is not the
-login password.
+Open the origin and choose the owner password; every later visit signs in with it. Until that
+first visit, whoever reaches the page first sets it, so open it yourself straight after the
+first start. Forgot it? Stop the container, delete `/data/home/.openswap/taker/portal/auth/owner`
+and start it again — wallets are untouched, each still behind its own wallet password.
 
 ## What is where
 

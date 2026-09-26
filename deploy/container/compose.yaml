@@ -14,20 +14,13 @@ services:
       PORTAL_ACCESS_PROFILE: trusted-tls-proxy
       # Exactly the origin the browser uses. Host, Origin and cookie policy derive from it.
       PORTAL_PUBLIC_ORIGIN: ${PORTAL_PUBLIC_ORIGIN:?set the https origin your proxy serves}
-      PORTAL_BOOTSTRAP_FILE: /run/secrets/portal_bootstrap
       PORTAL_SHUTDOWN_TIMEOUT_SECS: "110"
-    secrets:
-      - portal_bootstrap
     # Longer than the application deadline above, so the app records what it was doing rather
     # than being killed mid-write.
     stop_grace_period: 120s
     # No published port: reachable only from the proxy on this network.
     expose:
       - "3000"
-
-secrets:
-  portal_bootstrap:
-    file: ./bootstrap.secret
 
 volumes:
   portal-data:

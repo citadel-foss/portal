@@ -94,6 +94,10 @@ export interface InitConfig {
 export interface InitResult {
   walletName: string;
   dataDir: string;
+  /** The wallet was already open in another browser and this one joined it. */
+  joined: boolean;
+  /** Something worth telling the user about how they joined. */
+  note?: string;
 }
 
 /** Whether a wallet is open. Never an error — "nothing open" is the ordinary answer. */
@@ -152,6 +156,8 @@ export type ErrorCode =
   | "WALLET_NOT_FOUND"
   | "WALLET_WRONG_PASSWORD"
   | "WALLET_LOAD_FAILED"
+  | "WALLET_OPEN_ELSEWHERE"
+  | "WALLET_NETWORK_MISMATCH"
   | "NOT_INITIALIZED"
   | "SWAP_IN_PROGRESS"
   | "INSUFFICIENT_FUNDS"

@@ -9,6 +9,7 @@
 //! connection gate; an edit lives for the session only, so a node's RPC password is never at
 //! rest. `remove_legacy_config` deletes the file earlier versions did persist.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -32,8 +33,9 @@ const PROBE_TIMEOUT_SECS: u8 = 15;
 /// Written by versions that persisted the backend, including a node's RPC password.
 const LEGACY_FILE_NAME: &str = "backend.json";
 
-/// This session's backend. `None` until first read, then seeded from the defaults.
-static SESSION: Mutex<Option<ChainBackendConfig>> = Mutex::new(None);
+/// Each session's backend, seeded from the defaults on first read. Per session so one browser
+/// passing the gate with a different backend never repoints another's.
+static SESSIONS: Mutex<Option<HashMap<String, ChainBackendConfig>>> = Mutex::new(None);
 
 /// Cached by complete endpoint/route fingerprint, never by process first-use.
 /// The servers the gate offers, newest verified list. Every mainnet entry was probed against
@@ -78,15 +80,28 @@ pub fn remove_legacy_config() {
 }
 
 /// This session's backend, seeded from the code defaults on first read.
-pub(crate) fn load() -> ChainBackendConfig {
-    let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-    session
-        .get_or_insert_with(ChainBackendConfig::default)
+pub(crate) fn load(session: &str) -> ChainBackendConfig {
+    let mut sessions = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    sessions
+        .get_or_insert_with(HashMap::new)
+        .entry(session.to_string())
+        .or_default()
         .clone()
 }
 
-fn store(config: ChainBackendConfig) {
-    *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(config);
+fn store(session: &str, config: ChainBackendConfig) {
+    SESSIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(session.to_string(), config);
+}
+
+/// Drops an ended session's choice, including any node password it held.
+pub fn forget_session(session: &str) {
+    if let Some(sessions) = SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        sessions.remove(session);
+    }
 }
 
 /// The crate cannot resolve an onion host without a proxy, so Tor is not optional there
@@ -128,10 +143,11 @@ fn core_rpc_config(dto: &NodeBackendDto, wallet_name: &str) -> CoreRpcConfig {
 /// Build the wallet backend the user selected. `wallet_name` names the watch-only
 /// wallet on their node; Electrum has no server-side wallet so it ignores it.
 pub(crate) fn resolve(
+    session: &str,
     wallet_name: &str,
     socks_port: Option<u16>,
 ) -> Result<BackendConfig, AppError> {
-    let config = load();
+    let config = load(session);
     resolve_from(&config, wallet_name, socks_port)
 }
 
@@ -222,13 +238,19 @@ pub(crate) fn fingerprint(config: &ChainBackendConfig, socks_port: Option<u16>) 
     }
 }
 
-pub(crate) async fn preflight_active(state: &crate::state::AppState) -> Result<String, AppError> {
-    let config = state
-        .active_chain_backend
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let socks_port = *state.active_socks_port.read()?;
+/// Names a backend for a sentence shown to the user. Never includes a credential.
+pub(crate) fn describe(config: &ChainBackendConfig) -> String {
+    match (&config.kind, &config.node) {
+        (ChainBackendKind::CoreRpc, Some(node)) => format!("node {}:{}", node.host, node.port),
+        _ => config.electrum.url.clone(),
+    }
+}
+
+pub(crate) async fn preflight_active(
+    taker: &crate::state::TakerInstance,
+) -> Result<String, AppError> {
+    let config = taker.chain_backend.clone();
+    let socks_port = Some(taker.socks_port);
     let route_fingerprint = fingerprint(&config, socks_port);
     let status = tokio::task::spawn_blocking(move || match config.kind {
         ChainBackendKind::Electrum => probe_electrum(&config.electrum, socks_port),
@@ -269,10 +291,10 @@ fn to_view(config: ChainBackendConfig) -> ChainBackendView {
 /// against. Matching on identity is the whole point: without it, a caller can name any host
 /// and leave the password blank, and the saved credential is handed to that host instead
 /// — in the clear, since Core RPC is plaintext Basic auth.
-fn merge_preserved_password(mut config: ChainBackendConfig) -> ChainBackendConfig {
+fn merge_preserved_password(session: &str, mut config: ChainBackendConfig) -> ChainBackendConfig {
     if let Some(node) = config.node.as_mut() {
         if node.password.is_empty() {
-            if let Some(saved) = load().node {
+            if let Some(saved) = load(session).node {
                 if saved.host == node.host && saved.port == node.port && saved.username == node.username {
                     node.password = saved.password;
                 }
@@ -282,23 +304,27 @@ fn merge_preserved_password(mut config: ChainBackendConfig) -> ChainBackendConfi
     config
 }
 
-pub fn get_chain_backend() -> ChainBackendView {
-    to_view(load())
+pub fn get_chain_backend(session: &str) -> ChainBackendView {
+    to_view(load(session))
 }
 
 /// Adopts a backend for this session.
-pub fn set_chain_backend(config: ChainBackendConfig) -> Result<(), AppError> {
-    let config = merge_preserved_password(config);
+pub fn set_chain_backend(session: &str, config: ChainBackendConfig) -> Result<(), AppError> {
+    let config = merge_preserved_password(session, config);
     validate(&config)?;
-    store(config);
+    store(session, config);
     Ok(())
 }
 
 pub async fn check_backend(
+    session: &str,
     config: Option<ChainBackendConfig>,
     socks_port: Option<u16>,
 ) -> Result<BackendStatus, AppError> {
-    let config = config.map(merge_preserved_password).unwrap_or_else(load);
+    let config = match config {
+        Some(config) => merge_preserved_password(session, config),
+        None => load(session),
+    };
     // The same rules `set_chain_backend` applies. Probing reaches the network with a
     // credential attached, so it cannot be the lenient path — a caller-chosen host would
     // otherwise receive the saved RPC password, and the reachability of arbitrary addresses
@@ -420,12 +446,13 @@ fn signet_challenge(client: &Client, chain: Network) -> Option<String> {
 /// wallet's UTXOs would otherwise have no address at all.
 pub(crate) fn utxo_address(
     entry: &ListUnspentResultEntry,
+    backend: &ChainBackendConfig,
     socks_port: Option<u16>,
 ) -> Option<String> {
     if let Some(address) = &entry.address {
         return Some(address.clone().assume_checked().to_string());
     }
-    let network = electrum_network(socks_port)?;
+    let network = electrum_network(backend, socks_port)?;
     Address::from_script(&entry.script_pub_key, network)
         .ok()
         .map(|a| a.to_string())
@@ -434,12 +461,11 @@ pub(crate) fn utxo_address(
 /// `Wallet` keeps its network private, so it comes from the Electrum handshake. Successful
 /// route-specific probes are cached; failures are retried on the next UTXO listing so a
 /// temporary Electrum outage does not leave addresses blank until process restart.
-fn electrum_network(socks_port: Option<u16>) -> Option<Network> {
-    let config = load();
+fn electrum_network(config: &ChainBackendConfig, socks_port: Option<u16>) -> Option<Network> {
     if config.kind != ChainBackendKind::Electrum {
         return None;
     }
-    let route = fingerprint(&config, socks_port);
+    let route = fingerprint(config, socks_port);
     if let Ok(cache) = ELECTRUM_NETWORK.lock() {
         if let Some((cached_route, network)) = cache.as_ref() {
             if cached_route == &route {
@@ -496,9 +522,9 @@ mod tests {
     /// correct for the node it was given for.
     #[test]
     fn a_saved_password_never_follows_a_changed_destination() {
-        store(node("127.0.0.1", 8332, "alice", "s3cret-node-pw"));
+        store("t", node("127.0.0.1", 8332, "alice", "s3cret-node-pw"));
 
-        let same = merge_preserved_password(node("127.0.0.1", 8332, "alice", ""));
+        let same = merge_preserved_password("t", node("127.0.0.1", 8332, "alice", ""));
         assert_eq!(same.node.unwrap().password, "s3cret-node-pw");
 
         for changed in [
@@ -507,11 +533,18 @@ mod tests {
             node("127.0.0.1", 8332, "mallory", ""),
         ] {
             assert_eq!(
-                merge_preserved_password(changed).node.unwrap().password,
+                merge_preserved_password("t", changed).node.unwrap().password,
                 "",
                 "the saved credential must not follow a different node"
             );
         }
+    }
+
+    #[test]
+    fn a_saved_password_never_crosses_sessions() {
+        store("a", node("127.0.0.1", 8332, "alice", "s3cret-node-pw"));
+        let other = merge_preserved_password("b", node("127.0.0.1", 8332, "alice", ""));
+        assert_eq!(other.node.unwrap().password, "");
     }
 
     #[test]

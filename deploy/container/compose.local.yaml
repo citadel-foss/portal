@@ -19,18 +19,11 @@ services:
       # `PORTAL_LOCAL_PORT=3100 docker compose -f ... up`.
       PORTAL_PUBLIC_ORIGIN: http://localhost:${PORTAL_LOCAL_PORT:-3000}
       PORTAL_SHUTDOWN_TIMEOUT_SECS: "110"
-      PORTAL_BOOTSTRAP_FILE: /run/secrets/portal_bootstrap
-    secrets:
-      - portal_bootstrap
     ports:
       - "127.0.0.1:${PORTAL_LOCAL_PORT:-3000}:3000"
     # Matches the production grace period, so a Ctrl+C here exercises the same ordered
     # teardown the supervisor will allow.
     stop_grace_period: 120s
-
-secrets:
-  portal_bootstrap:
-    file: ./bootstrap.local.secret
 
 volumes:
   portal-local-data:

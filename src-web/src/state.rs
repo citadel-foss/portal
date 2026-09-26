@@ -33,11 +33,12 @@ impl WebState {
         journal: Journal,
         data_root: PathBuf,
     ) -> Self {
+        let ended = runtime.clone();
         let auth = Auth::load(
             config.owner_credential_file.as_deref(),
-            config.bootstrap_file.as_deref(),
-            Some(data_root.join("portal").join("auth").join("owner")),
-        );
+            Some(portal_core::security::owner::owner_file(&data_root)),
+        )
+        .on_session_end(move |session| portal_core::ops::taker_wallet::end_session(&ended, session));
         WebState {
             config: Arc::new(config),
             auth: Arc::new(auth),
@@ -49,11 +50,11 @@ impl WebState {
         }
     }
 
-    /// Whether this run hands out sessions instead of requiring a password. Once an owner has
-    /// been claimed the password is honoured for the rest of the install's life, so a restart
-    /// cannot quietly drop protection from a server someone deliberately secured.
-    pub fn auth_optional(&self) -> bool {
-        self.config.auth_optional() && !self.auth.has_owner()
+    pub fn ctx(&self, caller: &crate::routes::Caller) -> crate::commands::Ctx {
+        crate::commands::Ctx {
+            rt: self.runtime.clone(),
+            session: caller.session.clone(),
+        }
     }
 
     /// Cached enough to answer a readiness probe without touching a wallet lock or the chain.

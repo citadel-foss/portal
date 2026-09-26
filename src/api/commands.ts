@@ -96,8 +96,9 @@ export function initWallet(config: InitConfig): Promise<InitResult> {
   return invoke("init_taker", { config });
 }
 
-/** Releases the wallet so a different one can be unlocked, without stopping Portal. Refused
- *  while a swap is running; routers keep running either way. */
+/** Takes this session off its wallet so a different one can be unlocked, without stopping
+ *  Portal. Returns at once; the wallet closes in the background once nobody is on it and no
+ *  swap is running. Routers keep running either way. */
 export function lockWallet(): Promise<void> {
   return invoke("shutdown_taker");
 }
@@ -130,12 +131,6 @@ export function restoreWallet(
     selectionId,
     password,
   });
-}
-
-export function backupWallet(
-  password: string,
-): Promise<string> {
-  return invoke("backup_wallet", { password });
 }
 
 // ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ use crate::events::AppEvent;
 
 use crate::error::{AppError, ErrorCode};
 use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
-use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle};
+use crate::state::{try_lock_taker, ActiveSwap, AppState, SwapLifecycle, TakerInstance};
 use crate::types::{
     ProtocolVersionDto, RecoveredContractDto, RecoveryContractDto, RecoveryStatus, RecoverySummary,
     RecoveryHandoff,
@@ -31,8 +31,6 @@ use crate::types::{
     RouterProgressDto, RouterStageDto, SwapFundingEstimateDto, SwapProgressDto, SwapRequest,
     SwapSummaryDto, SwapTrackerDto,
 };
-
-use super::taker_wallet::get_wallet_handle;
 
 fn protocol_label(p: ProtocolVersion) -> &'static str {
     match p {
@@ -218,13 +216,13 @@ fn to_tracker_dto(r: &SwapRecord) -> SwapTrackerDto {
 /// come in under it. The fee rate, split count and input budget all come from `SwapParams`
 /// rather than being restated here, since `prepare_swap` sends it the same defaults.
 pub async fn estimate_swap_funding(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     amount_sats: u64,
     protocol: ProtocolVersionDto,
     outpoints: Option<Vec<crate::types::Outpoint>>,
     tx_count: Option<u32>,
 ) -> Result<SwapFundingEstimateDto, AppError> {
-    let wallet = get_wallet_handle(state)?;
+    let wallet = taker.wallet.clone();
     let protocol = match protocol {
         ProtocolVersionDto::Legacy => ProtocolVersion::Legacy,
         ProtocolVersionDto::Taproot => ProtocolVersion::Taproot,
@@ -325,10 +323,10 @@ fn validate_tx_count(count: u32) -> Result<u32, AppError> {
 /// Phase 1: maker discovery + negotiation, no funds committed. Summary is
 /// for a confirmation screen before calling start_swap.
 pub async fn prepare_swap(
-    state: &Arc<AppState>,
+    instance: &TakerInstance,
     request: SwapRequest,
 ) -> Result<SwapSummaryDto, AppError> {
-    if let Some(active) = state.active_swap.lock()?.as_ref() {
+    if let Some(active) = instance.active_swap.lock()?.as_ref() {
         if active.phase == SwapLifecycle::Running {
             return Err(AppError::swap_in_progress());
         }
@@ -373,7 +371,7 @@ pub async fn prepare_swap(
         params = params.with_payment_address(parsed);
     }
 
-    let taker = state.taker.clone();
+    let taker = instance.taker.clone();
     let summary = tokio::task::spawn_blocking(move || -> Result<SwapSummary, AppError> {
         let mut guard = try_lock_taker(&taker)?;
         let taker = guard.as_mut().ok_or_else(AppError::not_initialized)?;
@@ -383,19 +381,13 @@ pub async fn prepare_swap(
     .map_err(AppError::internal)??;
 
     let dto = to_summary_dto(&summary);
-    let active_backend = state
-        .active_chain_backend
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let active_socks_port = *state.active_socks_port.read()?;
-    *state.active_swap.lock()? = Some(ActiveSwap {
+    *instance.active_swap.lock()? = Some(ActiveSwap {
         swap_id: summary.swap_id,
         summary: dto.clone(),
         phase: SwapLifecycle::Prepared,
         backend_fingerprint: crate::ops::chain_backend::fingerprint(
-            &active_backend,
-            active_socks_port,
+            &instance.chain_backend,
+            Some(instance.socks_port),
         ),
         started_at: None,
         error: None,
@@ -409,14 +401,10 @@ pub async fn prepare_swap(
 /// while preparation blocks. `since` is the second the caller started preparing, which is what
 /// separates this preparation's record from an older incomplete swap's.
 pub async fn get_swap_preparation(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     since: u64,
 ) -> Result<Option<SwapPreparationDto>, AppError> {
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+    let data_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<Option<SwapPreparationDto>, AppError> {
         let tracker = SwapTracker::load_or_create(&data_dir)?;
         Ok(tracker
@@ -436,7 +424,11 @@ pub async fn get_swap_preparation(
 
 /// Phase 2: commits funds, can run for hours — dedicated thread, not
 /// spawn_blocking. Result via swap://finished / swap://failed events.
-pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), AppError> {
+pub async fn start_swap(
+    state: &Arc<AppState>,
+    instance: &Arc<TakerInstance>,
+    swap_id: String,
+) -> Result<(), AppError> {
     let _operation = SensitiveOperationGuard::acquire(
         &state.sensitive_operation_active,
         SensitiveOperation::StartSwap,
@@ -444,7 +436,7 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
     // Checked before the preflight below, which is a network round trip: a stale or missing
     // swap id should fail immediately rather than after one.
     {
-        let guard = state.active_swap.lock()?;
+        let guard = instance.active_swap.lock()?;
         match guard.as_ref() {
             Some(active)
                 if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared => {}
@@ -459,8 +451,8 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
             }
         }
     }
-    let preflight_fingerprint = crate::ops::chain_backend::preflight_active(state).await?;
-    let expected_fingerprint = state
+    let preflight_fingerprint = crate::ops::chain_backend::preflight_active(instance).await?;
+    let expected_fingerprint = instance
         .active_swap
         .lock()?
         .as_ref()
@@ -473,7 +465,7 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
         ));
     }
     {
-        let mut guard = state.active_swap.lock()?;
+        let mut guard = instance.active_swap.lock()?;
         match guard.as_mut() {
             Some(active)
                 if active.swap_id == swap_id && active.phase == SwapLifecycle::Prepared =>
@@ -499,9 +491,10 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
         }
     }
 
-    let taker = state.taker.clone();
-    // The thread outlives this request, so it owns a handle rather than borrowing one.
+    let taker = instance.taker.clone();
+    // The thread outlives this request, so it owns handles rather than borrowing them.
     let swap_state = Arc::clone(state);
+    let swap_instance = Arc::clone(instance);
     std::thread::spawn(move || {
         let result = {
             let mut guard = match taker.lock() {
@@ -515,7 +508,8 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
         };
 
         let app_state = &swap_state;
-        let mut active_guard = match app_state.active_swap.lock() {
+        let wallet = swap_instance.data_dir.as_path();
+        let mut active_guard = match swap_instance.active_swap.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
@@ -527,7 +521,7 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
                 }
                 app_state
                     .events
-                    .publish(AppEvent::SwapFinished(swap_id.clone()));
+                    .publish_for(wallet, AppEvent::SwapFinished(swap_id.clone()));
             }
             Err(e) => {
                 let app_err = AppError::from(e);
@@ -535,11 +529,11 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
                 // a handoff rather than a failure: the swap slot is released outright — recovery
                 // has its own page and its own disk-backed status, and leaving it parked here
                 // would keep the Swap page pinned to a swap that is over.
-                if recovery_started(app_state, &swap_id) {
+                if recovery_started(wallet, &swap_id) {
                     *active_guard = None;
                     app_state
                         .events
-                        .publish(AppEvent::SwapRecovering(RecoveryHandoff {
+                        .publish_for(wallet, AppEvent::SwapRecovering(RecoveryHandoff {
                             swap_id: swap_id.clone(),
                             reason: app_err.message.clone(),
                         }));
@@ -548,19 +542,25 @@ pub async fn start_swap(state: &Arc<AppState>, swap_id: String) -> Result<(), Ap
                         active.phase = SwapLifecycle::Failed;
                         active.error = Some(app_err.message.clone());
                     }
-                    app_state.events.publish(AppEvent::SwapFailed(app_err));
+                    app_state
+                        .events
+                        .publish_for(wallet, AppEvent::SwapFailed(app_err));
                 }
             }
         }
+        drop(active_guard);
+        // Settled either way, and recovery does not keep a wallet open: if every session left
+        // while this ran, the wallet goes now, and its recovery resumes at the next unlock.
+        crate::ops::taker_wallet::release_if_unused(app_state, wallet);
     });
 
     Ok(())
 }
 
 pub fn get_swap_progress(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
 ) -> Result<Option<SwapProgressDto>, AppError> {
-    let guard = state.active_swap.lock()?;
+    let guard = taker.active_swap.lock()?;
     // Only Running is worth reconciling after a remount — a terminal phase is stale by definition
     // and would otherwise resurrect the last outcome indefinitely. Recovery is deliberately not
     // here: it has its own page and its own disk-backed status, and reporting it as swap progress
@@ -586,12 +586,12 @@ pub fn get_swap_progress(
 /// recovery releases the active-swap slot, and the route it was taking is still what the recovery
 /// view draws.
 pub async fn get_swap_tracker(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     swap_id: Option<String>,
 ) -> Result<Option<SwapTrackerDto>, AppError> {
     let swap_id = match swap_id {
         Some(id) => Some(id),
-        None => state
+        None => taker
             .active_swap
             .lock()?
             .as_ref()
@@ -600,11 +600,7 @@ pub async fn get_swap_tracker(
     let Some(swap_id) = swap_id else {
         return Ok(None);
     };
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+    let data_dir = taker.data_dir.clone();
 
     tokio::task::spawn_blocking(move || -> Result<Option<SwapTrackerDto>, AppError> {
         let tracker = SwapTracker::load_or_create(&data_dir)?;
@@ -621,8 +617,8 @@ pub async fn get_swap_tracker(
 /// `recovery_loop`, and dropping the old one joins its thread mid-pass, which would hold the taker
 /// mutex for the length of a chain round trip for no gain — the running loop already retries every
 /// minute.
-pub async fn recover_swap(state: &Arc<AppState>) -> Result<(), AppError> {
-    let taker = state.taker.clone();
+pub async fn recover_swap(instance: &TakerInstance) -> Result<(), AppError> {
+    let taker = instance.taker.clone();
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut guard = try_lock_taker(&taker)?;
         let taker = guard.as_mut().ok_or_else(AppError::not_initialized)?;
@@ -652,11 +648,8 @@ fn refund_locktime_blocks(router_count: usize) -> u32 {
 /// The tracker record is the authority: the crate removes it entirely for a failure before
 /// `FundsBroadcast` (nothing on-chain, nothing to recover) and marks it `Failed` once it has
 /// spawned a recovery loop.
-fn recovery_started(state: &Arc<AppState>, swap_id: &str) -> bool {
-    let Ok(Some(data_dir)) = state.data_dir.read().map(|d| d.clone()) else {
-        return false;
-    };
-    let Ok(tracker) = SwapTracker::load_or_create(&data_dir) else {
+fn recovery_started(data_dir: &std::path::Path, swap_id: &str) -> bool {
+    let Ok(tracker) = SwapTracker::load_or_create(data_dir) else {
         return false;
     };
     tracker
@@ -674,13 +667,9 @@ fn recovery_started(state: &Arc<AppState>, swap_id: &str) -> bool {
 /// contracts as one pool, and the crate keeps the swap-to-swapcoin maps `pub(crate)`, so there is
 /// no honest way to split them per swap from out here. The detail view shows the pool.
 pub async fn list_recoveries(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
 ) -> Result<Vec<RecoverySummary>, AppError> {
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+    let data_dir = taker.data_dir.clone();
 
     tokio::task::spawn_blocking(move || -> Result<Vec<RecoverySummary>, AppError> {
         let tracker = SwapTracker::load_or_create(&data_dir)?;
@@ -717,22 +706,14 @@ pub async fn list_recoveries(
 /// Never takes the taker mutex: a running swap holds that for hours, and this is exactly when the
 /// user most needs to see whether an earlier swap's funds have come back.
 pub async fn get_recovery_status(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     swap_id: Option<String>,
 ) -> Result<RecoveryStatus, AppError> {
-    let wallet = get_wallet_handle(state)?;
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+    let wallet = taker.wallet.clone();
+    let data_dir = taker.data_dir.clone();
     // A healthy swap in flight holds its funds in contracts too, so a live contract UTXO is not
     // on its own evidence of recovery.
-    let swap_running = state
-        .active_swap
-        .lock()?
-        .as_ref()
-        .is_some_and(|a| matches!(a.phase, SwapLifecycle::Running));
+    let swap_running = taker.swap_running();
 
     tokio::task::spawn_blocking(move || -> Result<RecoveryStatus, AppError> {
         let (live, locked_sats) = {

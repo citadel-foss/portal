@@ -9,9 +9,8 @@ use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AccessProfile {
-    /// Loopback only, plain HTTP. No password: reaching 127.0.0.1 already means holding the
-    /// user's OS account, which is the same boundary the desktop app runs under. Sessions are
-    /// still issued per browser — see `auth_optional`.
+    /// Loopback only, plain HTTP. The owner password is still required: another account on
+    /// the same machine can reach 127.0.0.1 too.
     DevelopmentLoopback,
     /// A TLS-terminating proxy in front; the backend port must not be reachable directly.
     TrustedTlsProxy,
@@ -63,9 +62,6 @@ pub struct Config {
     #[arg(long, env = "PORTAL_OWNER_CREDENTIAL_FILE")]
     pub owner_credential_file: Option<PathBuf>,
 
-    /// One-time setup secret, used only when no owner exists and invalidated after bootstrap.
-    #[arg(long, env = "PORTAL_BOOTSTRAP_FILE")]
-    pub bootstrap_file: Option<PathBuf>,
 
     /// Probe the liveness endpoint of an already-running instance and exit 0 or 1, then
     /// stop. Exists so the container can health-check itself without shipping curl into a
@@ -132,19 +128,6 @@ impl Config {
         Ok(())
     }
 
-    /// True when a password would protect nothing the OS account does not: loopback-bound,
-    /// development profile, no credential provisioned.
-    ///
-    /// A browser still gets its own session here — it is simply handed one rather than having
-    /// to earn it. That distinction is the whole point: the sessionless version of this let
-    /// every browser be the same caller, so one open wallet was reachable from all of them.
-    /// Provisioning either credential file, or any other profile, requires a password again.
-    pub fn auth_optional(&self) -> bool {
-        self.access_profile == AccessProfile::DevelopmentLoopback
-            && self.owner_credential_file.is_none()
-            && self.bootstrap_file.is_none()
-    }
-
     /// Cookies are marked `Secure` wherever the browser is actually on HTTPS. An onion origin
     /// is already authenticated and encrypted by Tor, and browsers do not treat plain-HTTP
     /// onion pages as secure contexts for cookie purposes, so it is excluded here.
@@ -193,7 +176,6 @@ mod tests {
             access_profile: profile,
             trusted_proxy: vec![],
             owner_credential_file: None,
-            bootstrap_file: None,
             shutdown_timeout_secs: 110,
             healthcheck: false,
         }

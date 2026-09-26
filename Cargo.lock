@@ -3575,6 +3575,7 @@ dependencies = [
 name = "portal-core"
 version = "0.1.0"
 dependencies = [
+ "argon2",
  "dirs 6.0.0",
  "libc",
  "libtor",
@@ -3593,7 +3594,6 @@ dependencies = [
 name = "portal-web"
 version = "0.1.0"
 dependencies = [
- "argon2",
  "async-stream",
  "axum",
  "clap",

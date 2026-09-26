@@ -167,7 +167,16 @@ pub struct InitConfig {
 #[serde(rename_all = "camelCase")]
 pub struct InitResult {
     pub wallet_name: String,
+    /// The root the wallet was listed under, not its own data dir: the frontend keys its caches
+    /// by the pair of this and the name.
     pub data_dir: String,
+    /// The wallet was already open for another session and this one joined it rather than
+    /// starting a second Taker.
+    pub joined: bool,
+    /// Something the user should know about how they joined, e.g. that the running wallet
+    /// uses a different server than the one they picked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Whether a wallet is open, asked on every page load.

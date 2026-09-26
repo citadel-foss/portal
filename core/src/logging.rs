@@ -214,30 +214,51 @@ impl InitPhase {
 }
 
 struct InitPhaseWatch {
+    /// The thread running this `Taker::init`. Several wallets can initialize at once, and the
+    /// thread is what tells their log lines apart.
+    thread: std::thread::ThreadId,
+    wallet: PathBuf,
     sink: EventSink,
     at: InitPhase,
 }
 
-static INIT_PHASE: Mutex<Option<InitPhaseWatch>> = Mutex::new(None);
+static INIT_PHASE: Mutex<Vec<InitPhaseWatch>> = Mutex::new(Vec::new());
 
-/// Report `Taker::init`'s phase through `sink` until [`stop_watching_init_phases`].
-pub fn watch_init_phases(sink: EventSink) {
+/// Stops the watch when dropped, so an init that panics — a wrong password can — does not leave
+/// its thread's watch behind.
+pub struct InitPhaseWatchGuard {
+    thread: std::thread::ThreadId,
+}
+
+impl Drop for InitPhaseWatchGuard {
+    fn drop(&mut self) {
+        if let Ok(mut watches) = INIT_PHASE.lock() {
+            watches.retain(|watch| watch.thread != self.thread);
+        }
+    }
+}
+
+/// Report the phase of the `Taker::init` about to run on this thread, as an event for `wallet`,
+/// for as long as the returned guard lives.
+#[must_use]
+pub fn watch_init_phases(sink: EventSink, wallet: PathBuf) -> InitPhaseWatchGuard {
     // Phase 0 is announced here rather than by a marker: it begins when `Taker::init` is
     // called, and a restore needs that edge to know its own step has finished.
     let at = InitPhase {
         phase: 0,
         note: None,
     };
-    sink.publish(AppEvent::WalletInitPhase(at));
-    if let Ok(mut guard) = INIT_PHASE.lock() {
-        *guard = Some(InitPhaseWatch { sink, at });
+    sink.publish_for(&wallet, AppEvent::WalletInitPhase(at));
+    let thread = std::thread::current().id();
+    if let Ok(mut watches) = INIT_PHASE.lock() {
+        watches.push(InitPhaseWatch {
+            thread,
+            wallet,
+            sink,
+            at,
+        });
     }
-}
-
-pub fn stop_watching_init_phases() {
-    if let Ok(mut guard) = INIT_PHASE.lock() {
-        *guard = None;
-    }
+    InitPhaseWatchGuard { thread }
 }
 
 #[derive(Debug)]
@@ -251,14 +272,21 @@ impl log::Log for InitPhaseWatcher {
     fn log(&self, record: &log::Record<'_>) {
         // `try_lock`, so a record logged from inside `emit` cannot deadlock against the guard
         // this call already holds.
-        let Ok(mut guard) = INIT_PHASE.try_lock() else {
+        let Ok(mut watches) = INIT_PHASE.try_lock() else {
             return;
         };
-        let Some(watch) = guard.as_mut() else {
-            return;
+        // Some markers are logged by threads the crate spawns during init, not by the init
+        // thread itself. Those can only be attributed while a single init is running; with
+        // several, a skipped phase beats one ticked on the wrong wallet's checklist.
+        let thread = std::thread::current().id();
+        let index = match watches.iter().position(|watch| watch.thread == thread) {
+            Some(index) => index,
+            None if watches.len() == 1 => 0,
+            None => return,
         };
+        let watch = &mut watches[index];
         if watch.at.advance(&record.args().to_string()) {
-            watch.sink.publish(AppEvent::WalletInitPhase(watch.at));
+            watch.sink.publish_for(&watch.wallet, AppEvent::WalletInitPhase(watch.at));
         }
     }
 

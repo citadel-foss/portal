@@ -9,3 +9,4 @@ export const openExternal = host.openExternal;
 export const pickDirectory = host.pickDirectory;
 export const pickFile = host.pickFile;
 export const selectBackup = host.selectBackup;
+export const createBackup = host.createBackup;

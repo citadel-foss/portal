@@ -25,6 +25,10 @@ fn main() {
     // here gets no generated permission, so `capabilities/default.json` cannot grant it and
     // every call is rejected at the IPC boundary — see the sync test in `lib.rs`.
     const COMMANDS: &[&str] = &[
+        "auth_session",
+        "auth_claim",
+        "auth_login",
+        "auth_logout",
         "check_tor",
         "restart_tor_bootstrap",
         "get_chain_backend",

@@ -165,12 +165,10 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   async function loadWalletFile() {
     const path = await pickFile(dataDir ?? (await getDefaultWalletsDir()));
     if (path === null) return;
-    // Wallet files live at <data_dir>/wallets/<name> — if this file is
-    // outside the current data dir, adopt its parent as the new data dir.
-    // Wallet files live at <data_dir>/wallets/<name>; both hosts hand back a POSIX-or-Windows
-    // path, so the split is done here rather than through a native path API.
-    const walletsDir = parentDir(path);
-    const newDataDir = parentDir(walletsDir);
+    // Wallet files live at <root>/wallet-data/<name>/wallets/<name>, so the root is four levels
+    // up. Both hosts hand back a POSIX-or-Windows path, so the split is done here rather than
+    // through a native path API.
+    const newDataDir = parentDir(parentDir(parentDir(parentDir(path))));
     setDataDir(newDataDir);
     saveDataDir(newDataDir);
     selectWallet(basename(path));
@@ -494,8 +492,8 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
                   {/* The exact file about to be opened. Cheap reassurance in a wallet, and it is
                       the only place the user can confirm which folder they are pointed at. */}
                   {dataDir && (
-                    <p className="mt-1.5 truncate text-center font-mono text-[11px] text-subtle" title={`${dataDir}/wallets/${selectedWallet}`}>
-                      {dataDir}/wallets/{selectedWallet}
+                    <p className="mt-1.5 truncate text-center font-mono text-[11px] text-subtle" title={`${dataDir}/wallet-data/${selectedWallet}`}>
+                      {dataDir}/wallet-data/{selectedWallet}
                     </p>
                   )}
 
@@ -572,7 +570,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           </Card>
 
           {viewMode === "grid" && dataDir && (
-            <p className="mt-3 text-center text-[11.5px] text-subtle">{dataDir}/wallets</p>
+            <p className="mt-3 text-center text-[11.5px] text-subtle">{dataDir}/wallet-data</p>
           )}
         </div>
       </IntroStage>

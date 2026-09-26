@@ -63,11 +63,17 @@ pub async fn list_maker_utxos(
     router_id: String,
 ) -> Result<Vec<UtxoEntry>, AppError> {
     let wallet = get_maker_wallet_handle(state, &router_id)?;
-    let socks_port = state
-        .makers
-        .lock()?
-        .get(&router_id)
-        .map(|maker| maker.settings.socks_port);
+    let (socks_port, backend) = {
+        let makers = state.makers.lock()?;
+        let maker = makers.get(&router_id);
+        (
+            maker.map(|maker| maker.settings.socks_port),
+            maker
+                .and_then(|maker| maker.runtime.as_ref())
+                .map(|runtime| runtime.chain_backend.clone())
+                .ok_or_else(AppError::maker_not_initialized)?,
+        )
+    };
     tokio::task::spawn_blocking(move || -> Result<Vec<UtxoEntry>, AppError> {
         let utxos = wallet.read()?.list_all_utxo_spend_info();
         Ok(utxos
@@ -77,7 +83,7 @@ pub async fn list_maker_utxos(
                 vout: entry.vout,
                 amount_sats: entry.amount.to_sat(),
                 confirmations: entry.confirmations,
-                address: chain_backend::utxo_address(&entry, socks_port),
+                address: chain_backend::utxo_address(&entry, &backend, socks_port),
                 spendable: entry.spendable,
                 solvable: entry.solvable,
                 spend_type: spend_info.to_string(),

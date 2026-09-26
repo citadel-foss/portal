@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use portal_core::error::AppError;
 use portal_core::ops::maker;
-use portal_core::state::AppState;
+use portal_core::state::{AppState, DESKTOP_SESSION};
 use portal_core::types::{MakerInitConfig, MakerSettingsDto, MakerStatusDto, RouterDefaultsDto, WalletInfo};
 
 #[tauri::command]
@@ -21,7 +21,7 @@ pub async fn init_maker(
     state: tauri::State<'_, Arc<AppState>>,
     config: MakerInitConfig,
 ) -> Result<MakerStatusDto, AppError> {
-    maker::init_maker(&state, config).await
+    maker::init_maker(&state, DESKTOP_SESSION, config).await
 }
 
 #[tauri::command]
@@ -39,7 +39,7 @@ pub async fn start_maker(
     router_id: String,
     wallet_password: Option<String>,
 ) -> Result<(), AppError> {
-    maker::start_maker(&state, router_id, wallet_password).await
+    maker::start_maker(&state, DESKTOP_SESSION, router_id, wallet_password).await
 }
 
 #[tauri::command]

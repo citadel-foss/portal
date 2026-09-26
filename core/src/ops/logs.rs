@@ -1,8 +1,6 @@
 //! Tail of each role's `debug.log`, written by our own dual-role logger
-//! (see `logging.rs`, wired up in `commands::taker_wallet::init_taker` /
-//! `commands::maker::init_maker`). One function per role, not worth two
-//! files for — both are a three-line tail against a different `AppState`
-//! field.
+//! (see `logging.rs`, wired up in `ops::taker_wallet::init_taker` /
+//! `ops::maker::init_maker`). One function per role, not worth two files for.
 
 use std::sync::Arc;
 
@@ -10,16 +8,13 @@ use crate::error::AppError;
 use crate::state::AppState;
 use crate::types::LogLine;
 
+/// The taker log is one file per root, not per wallet: the crate's own threads carry no wallet
+/// in their names, so lines from several open wallets cannot be told apart.
 pub async fn get_logs(
-    state: &Arc<AppState>,
+    taker: &crate::state::TakerInstance,
     lines: Option<usize>,
 ) -> Result<Vec<LogLine>, AppError> {
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let path = data_dir.join("debug.log");
+    let path = taker.root.join("debug.log");
     let want = lines.unwrap_or(100).min(1000);
 
     tokio::task::spawn_blocking(move || -> Result<Vec<LogLine>, AppError> {

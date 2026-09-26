@@ -156,7 +156,11 @@ export function WalletPage() {
     if (txSort === "amount") {
       rows.sort((a, b) => (Math.abs(a.amountSats) - Math.abs(b.amountSats)) * dir);
     } else {
-      rows.sort((a, b) => (a.time - b.time) * dir);
+      // A transaction still in the mempool has no time — the Electrum backend reports 0 until
+      // a block carries it — but it is the newest thing there is, so it sorts after any real
+      // timestamp rather than before 1970.
+      const at = (time: number) => time || Number.POSITIVE_INFINITY;
+      rows.sort((a, b) => (at(a.time) === at(b.time) ? 0 : at(a.time) < at(b.time) ? -1 : 1) * dir);
     }
     return rows;
   }, [transactions, txFilter, txSort, sortDir]);
@@ -444,7 +448,9 @@ export function WalletPage() {
                         label={classifyTransactionType(tx.category, tx.label).toUpperCase()}
                         className={TYPE_PILL_CLASS[classifyTransactionType(tx.category, tx.label)]}
                       />
-                      <span className="font-mono text-[10.5px] text-subtle">{formatRelativeTime(tx.time)}</span>
+                      {tx.time > 0 && (
+                        <span className="font-mono text-[10.5px] text-subtle">{formatRelativeTime(tx.time)}</span>
+                      )}
                     </span>
                     <SatsAmount
                       sats={Math.abs(tx.amountSats)}

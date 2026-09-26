@@ -2,14 +2,14 @@ mod commands;
 mod native;
 
 use commands::{
-    chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet, market, setup,
+    auth, chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet, market, setup,
     shutdown, taker_reports, taker_swap, taker_wallet,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use std::sync::Arc;
 
-use portal_core::events::AppEvent;
+use portal_core::events::Envelope;
 use portal_core::state::AppState;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tokio::sync::broadcast::error::RecvError;
@@ -28,12 +28,13 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 
 /// Forwards core's domain events onto Tauri's per-window event channel. Core publishes without
 /// knowing which host is listening; this is the desktop half of that contract.
-fn bridge_events(app: AppHandle, mut events: Receiver<AppEvent>) {
+fn bridge_events(app: AppHandle, mut events: Receiver<Envelope>) {
     tauri::async_runtime::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(event) => {
-                    let _ = app.emit(event.name(), event.payload());
+                // One window, one session: every wallet event is this window's.
+                Ok(envelope) => {
+                    let _ = app.emit(envelope.event.name(), envelope.event.payload());
                 }
                 // Keep serving: a lagging bridge has missed notifications, not the state
                 // itself, and every page reconciles from a fresh read on its next poll.
@@ -44,6 +45,27 @@ fn bridge_events(app: AppHandle, mut events: Receiver<AppEvent>) {
             }
         }
     });
+}
+
+/// Commands that run before signing in: the sign-in itself, and quitting.
+const OPEN_COMMANDS: &[&str] = &["auth_session", "auth_claim", "auth_login", "quit_app"];
+
+/// Refuses every other command until the owner password has been given, in Rust rather than
+/// only by hiding screens — the same line the web host draws with its session check.
+fn require_sign_in<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let open = OPEN_COMMANDS.contains(&invoke.message.command());
+        if !open && !invoke.message.webview().state::<Arc<auth::DesktopAuth>>().signed_in() {
+            invoke.resolver.reject(portal_core::error::AppError::new(
+                portal_core::error::ErrorCode::AuthorizationDenied,
+                "sign in first",
+            ));
+            return true;
+        }
+        handler(invoke)
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -72,7 +94,13 @@ pub fn run() {
         // can own a handle that outlives the request. Managing the wrong shape compiles and
         // then fails every stateful command at runtime.
         .manage(Arc::new(portal_core::state::AppState::default()))
-        .invoke_handler(tauri::generate_handler![
+        .manage(Arc::new(auth::DesktopAuth::load()))
+        .invoke_handler(require_sign_in(tauri::generate_handler![
+            // signing in with the owner password
+            auth::auth_session,
+            auth::auth_claim,
+            auth::auth_login,
+            auth::auth_logout,
             // setup / connectivity
             setup::check_tor,
             setup::restart_tor_bootstrap,
@@ -156,7 +184,7 @@ pub fn run() {
             logs::get_maker_logs,
             // app lifecycle
             shutdown::quit_app,
-        ])
+        ]))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the UI must not tear down a running swap or an active maker,
@@ -171,9 +199,6 @@ pub fn run() {
             // command has been able to emit yet and the bridge cannot miss a startup event.
             bridge_events(app.handle().clone(), app.state::<Arc<AppState>>().events.subscribe());
 
-            // Ahead of everything else: Tor, the wallet and the config cleanup below all
-            // resolve paths under the data dir, and Tor in particular creates part of it.
-            portal_core::storage::migrate_legacy_data_dir();
             portal_core::tor::sweep_stale_tor_dirs();
 
             // Earlier versions persisted the backend, RPC password included. Ceasing to

@@ -31,12 +31,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Unprivileged, with a home the protocol crate resolves its own data root under. Set before
 # the process starts rather than mutated afterwards: the crate reads it during init, and
 # changing HOME once threads are running splits the tree.
-RUN useradd --system --create-home --home-dir /data/home --uid 10001 portal
+#
+# 1000:1000 specifically, not an arbitrary high UID: Umbrel creates every app's data
+# directory owned by 1000:1000 and bind-mounts it in, so any other UID cannot write to its
+# own data. `portal-web` calls `create_dir_all` on the data root at startup, so the home
+# directory does not need to pre-exist inside the mount.
+RUN groupadd --gid 1000 portal \
+ && useradd --system --create-home --home-dir /data/home --uid 1000 --gid 1000 portal
 COPY --from=backend /build/target/release/portal-web /usr/local/bin/portal-web
 COPY --from=frontend /build/dist/web /opt/portal/web
 USER portal
 ENV HOME=/data/home
-VOLUME ["/data"]
+# No VOLUME: an image-declared volume would shadow a bind mount's ownership and leave an
+# anonymous volume behind on every `docker run`. The compose file decides where /data lives.
 EXPOSE 3000
 # Probes the real endpoint: `--help` exits zero even when the server is wedged, which would
 # report healthy forever. Public, cached and side-effect free by design — it never starts Tor

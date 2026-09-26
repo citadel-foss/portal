@@ -18,6 +18,13 @@ export function setCsrfToken(token: string | null) {
 /** Normalizes a failed response into the same raw shape `isAppError` accepts, so callers
  *  switch on `code` exactly as they do on desktop rather than unwrapping a JS `Error`. */
 async function toAppError(response: Response): Promise<unknown> {
+  // A command refused for want of a session means it expired or the server restarted. The
+  // page holds nothing worth keeping past that, so it starts over from the login screen.
+  // Not for the login routes themselves, where a 401 is a wrong password.
+  if (response.status === 401 && !/\/(session|auth\/\w+)$/.test(new URL(response.url).pathname)) {
+    window.location.hash = "#/login";
+    window.location.reload();
+  }
   const body = await response.json().catch(() => null);
   if (body && typeof body === "object" && "error" in body) return (body as { error: unknown }).error;
   return {
@@ -221,17 +228,10 @@ async function runRestore(): Promise<{
   const body = (await response.json()) as {
     csrfToken: string;
     hasOwner: boolean;
-    requiresLogin: boolean;
   };
   setCsrfToken(body.csrfToken);
-  // A local run with no credential configured answers this without a session, and the
-  // UI then matches the desktop app exactly — no login, straight to the connection gate.
-  host.capabilities.requiresLogin = body.requiresLogin;
   return { authenticated: true, hasOwner: body.hasOwner };
 }
-
-let restoring: Promise<{ authenticated: boolean; hasOwner: boolean }> | null =
-  null;
 
 export const host: Host = {
   invoke: call,
@@ -250,7 +250,6 @@ export const host: Host = {
     // The server has no user's Router Dashboard to read; the command is desktop-only.
     localDashboardImport: false,
     canQuit: false,
-    requiresLogin: true,
   },
   operations: {
     blocking: async () => {
@@ -272,22 +271,15 @@ export const host: Host = {
     },
   },
   session: {
-    // Coalesced, because two concurrent restores are two *different* sessions on a run that
-    // hands them out: neither has a cookie yet, so each is minted one, and the second then
-    // loses the single-client hold to the first. StrictMode double-invokes the effect that
-    // calls this, so in development that race is not a rarity — it is every first load.
-    restore: () =>
-      (restoring ??= runRestore().finally(() => {
-        restoring = null;
-      })),
+    restore: runRestore,
     login: async (password) => {
       const response = await post("/auth/login", { password });
       if (!response.ok) throw await toAppError(response);
       const body = (await response.json()) as { csrfToken: string };
       setCsrfToken(body.csrfToken);
     },
-    claim: async (secret, password) => {
-      const claimed = await post("/auth/bootstrap", { secret, password });
+    claim: async (password) => {
+      const claimed = await post("/auth/claim", { password });
       if (!claimed.ok) throw await toAppError(claimed);
       await host.session.login(password);
     },
@@ -321,6 +313,25 @@ export const host: Host = {
     });
     if (!response.ok) throw await toAppError(response);
     return (await response.json()) as RestoreSelection;
+  },
+  // Two steps because the server only hands a backup over once: producing it returns an id,
+  // and the download consumes and deletes it, so a retry means producing a fresh one.
+  createBackup: async (password) => {
+    const created = await post("/backups", { password });
+    if (!created.ok) throw await toAppError(created);
+    const { artifactId } = (await created.json()) as { artifactId: string };
+    const download = await post(`/backups/${artifactId}/download`, {});
+    if (!download.ok) throw await toAppError(download);
+    const name = `portal-wallet-backup-${Math.floor(Date.now() / 1000)}.json`;
+    const url = URL.createObjectURL(await download.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+    // Revoked on the next turn, not immediately: some browsers read the URL after `click`
+    // returns, and a revoked one downloads nothing.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return name;
   },
 };
 

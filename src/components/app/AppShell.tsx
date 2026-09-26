@@ -14,6 +14,7 @@ import { getSwapProgress } from "../../api/commands";
 import { formatDuration } from "../../lib/wallet-format";
 import { IconButton, SatsAmount } from "../ui/display";
 import { SwitchWallet } from "./SwitchWallet";
+import { SignOut } from "./SignOut";
 
 /** Signet and testnet coins are worthless; mainnet coins are not. Which chain you are on is the
  *  most consequential fact about the session, so it leads and it is coloured. */
@@ -302,6 +303,7 @@ function TopNav({
             </NavLink>
           </>
         )}
+        <SignOut />
       </div>
     </header>
   );

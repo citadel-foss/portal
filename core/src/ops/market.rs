@@ -1,15 +1,13 @@
 //! Market / offerbook commands. Sync goes through the cached OfferSyncClient
 //! so it never contends with a running swap.
 
-use std::sync::Arc;
-
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBookHandle};
 
 use crate::error::{AppError, ErrorCode};
-use crate::state::{try_lock_taker, AppState};
+use crate::state::{try_lock_taker, TakerInstance};
 use crate::types::{MakerDto, OfferBookView, OfferDto};
 
 fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
@@ -54,7 +52,7 @@ fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
 /// Falls back to the offerbook file when a running swap holds the taker: the sync service
 /// writes it after every poll, so the market stays readable for the hours a swap owns the
 /// mutex instead of going blank for the whole of it.
-pub fn get_offers(state: &Arc<AppState>) -> Result<OfferBookView, AppError> {
+pub fn get_offers(state: &TakerInstance) -> Result<OfferBookView, AppError> {
     let makers = match try_lock_taker(&state.taker) {
         Ok(guard) => guard
             .as_ref()
@@ -62,11 +60,7 @@ pub fn get_offers(state: &Arc<AppState>) -> Result<OfferBookView, AppError> {
             .fetch_offers()?
             .all_makers(),
         Err(busy) if busy.code == ErrorCode::SwapInProgress => {
-            let data_dir = state
-                .data_dir
-                .read()?
-                .clone()
-                .ok_or_else(AppError::not_initialized)?;
+            let data_dir = state.data_dir.clone();
             // A fresh handle each time, never a cached one: the handle loads the file once at
             // construction, so a long-lived one would answer with whatever was on disk at init.
             OfferBookHandle::load_or_create(&data_dir)?.all_makers()?
@@ -97,12 +91,8 @@ pub fn get_offers(state: &Arc<AppState>) -> Result<OfferBookView, AppError> {
 /// Maker discovery over Nostr + Tor; can take 30-60s+. `syncing`/`last_sync_ts`
 /// in get_offers are our own bookkeeping (the crate doesn't expose them on
 /// the public client) and only reflect syncs triggered here.
-pub async fn sync_offerbook(state: &Arc<AppState>) -> Result<(), AppError> {
-    let client = state
-        .offer_sync
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+pub async fn sync_offerbook(state: &TakerInstance) -> Result<(), AppError> {
+    let client = state.offer_sync.clone();
 
     state.is_offerbook_syncing.store(true, Ordering::Relaxed);
     let result = tokio::task::spawn_blocking(move || client.sync_and_wait())
@@ -122,7 +112,7 @@ pub async fn sync_offerbook(state: &Arc<AppState>) -> Result<(), AppError> {
 }
 
 pub async fn poll_maker(
-    state: &Arc<AppState>,
+    state: &TakerInstance,
     address: String,
 ) -> Result<MakerDto, AppError> {
     let taker = state.taker.clone();
@@ -136,7 +126,7 @@ pub async fn poll_maker(
 }
 
 pub async fn remove_maker(
-    state: &Arc<AppState>,
+    state: &TakerInstance,
     address: String,
 ) -> Result<bool, AppError> {
     let taker = state.taker.clone();

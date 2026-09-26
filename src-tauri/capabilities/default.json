@@ -16,9 +16,19 @@
         },
         {
           "url": "https://github.com/citadel-tech/coinswap/*"
+        },
+        {
+          "url": "https://faucet.citadelfoss.xyz"
+        },
+        {
+          "url": "https://faucet.citadelfoss.xyz/*"
         }
       ]
     },
+    "allow-auth-session",
+    "allow-auth-claim",
+    "allow-auth-login",
+    "allow-auth-logout",
     "allow-backup-wallet",
     "allow-check-backend",
     "allow-check-maker-ports",

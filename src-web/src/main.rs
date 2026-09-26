@@ -98,6 +98,17 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let app = routes::router(state.clone()).merge(assets::router(&state).with_state(state.clone()));
 
+    // Expiry has a side effect — the session's wallet may close — so it cannot wait for the
+    // session's own next request, which for a closed tab never comes.
+    let reaper = state.auth.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            reaper.reap();
+        }
+    });
+
     // Tor comes up first and goes down last: everything that carries swap traffic binds to
     // its ports, and the teardown below halts it only after the routers and wallet are done
     // with it. Started here rather than on the first page view so a server left running has
@@ -112,18 +123,10 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     log::info!("portal-web listening on {bind}");
-    if state.auth_optional() {
-        console.line("local mode: loopback only, no password. Provision a credential to require one.");
-    } else if state.auth.has_owner() {
+    if state.auth.has_owner() {
         console.line("sign in with the owner password for this installation");
-    } else if let Some(secret) = state.auth.ensure_bootstrap() {
-        // Printed, not written: this is the one moment it is readable, and it is readable
-        // only to whoever can already see this process's console.
-        console.line(&format!(
-            "no owner yet — open the page and claim this installation with:\n  {secret}"
-        ));
     } else {
-        console.line("no owner yet — open the page and claim it with the --bootstrap-file secret");
+        console.line("no owner yet — open the page and choose the owner password");
     }
     // Deliberately last, and nothing may print after it: closing the tab does not stop the
     // server, so hours later this is the line someone scrolls back to in order to return.
@@ -166,8 +169,8 @@ async fn await_signal() {
 /// Ordered teardown, matching the desktop host.
 ///
 /// Routers first: each finishes its in-flight connections and a closing wallet sync, and all
-/// of that traffic is still riding on Tor. Then the wallet, whose `Drop` flushes the swap
-/// tracker and stops the recovery loop. Tor last, so nothing that still needs it is cut off.
+/// of that traffic is still riding on Tor. Then the wallets, whose `Drop` flushes each swap
+/// tracker and stops each recovery loop. Tor last, so nothing that still needs it is cut off.
 ///
 /// Every phase is logged, and bounded: the whole sequence must finish inside the supervisor's
 /// stop grace, or the platform kills the process mid-write instead of letting it record what
@@ -195,14 +198,10 @@ async fn teardown(state: &WebState, budget: Duration) {
     )
     .await;
 
-    let wallet = state.runtime.clone();
+    let wallets = state.runtime.clone();
     phase(
-        "wallet",
-        Box::new(move || {
-            if let Err(e) = portal_core::ops::taker_wallet::shutdown(&wallet) {
-                log::warn!("wallet did not shut down cleanly: {e:?}");
-            }
-        }),
+        "wallets",
+        Box::new(move || portal_core::ops::taker_wallet::shutdown_all(&wallets)),
         remaining(deadline),
     )
     .await;
