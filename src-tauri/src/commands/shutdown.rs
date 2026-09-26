@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 
 use portal_core::error::AppError;
-use portal_core::state::{AppState, SwapLifecycle};
+use portal_core::state::AppState;
 use portal_core::types::{MakerPhase, QuitBlockers};
 
 /// Latched by whichever path starts the teardown, so a second Quit while one is already
@@ -18,19 +18,16 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Work that a quit would interrupt rather than finish, so the user is asked first.
 fn quit_blockers(state: &AppState) -> QuitBlockers {
-    let swap_running = state.active_swap.lock().is_ok_and(|swap| {
-        swap.as_ref()
-            .is_some_and(|swap| matches!(swap.phase, SwapLifecycle::Running))
-    });
+    let takers = state.open_takers();
+    let swap_running = takers.iter().any(|taker| taker.swap_running());
     // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
     // and survives a restart, and quitting mid-recovery is the one thing that actually stalls it.
-    let recovery_running = state
-        .wallet
-        .read()
-        .ok()
-        .and_then(|handle| handle.clone())
-        .and_then(|wallet| wallet.read().ok().map(|w| !w.list_live_contract_spend_info().is_empty()))
-        .unwrap_or(false);
+    let recovery_running = takers.iter().any(|taker| {
+        taker
+            .wallet
+            .read()
+            .is_ok_and(|w| !w.list_live_contract_spend_info().is_empty())
+    });
     // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
     // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
     // about a maker that finished long ago.
@@ -115,15 +112,14 @@ fn shutdown_runtime(app: &AppHandle) {
     portal_core::ops::maker::shutdown_all(&state);
     log::info!("shutdown phase done: routers");
 
-    // Then the taker. Dropping it is the graceful path: the crate's `Drop` flushes the swap
-    // tracker and stops the recovery loop and breach detector. A running swap holds the
-    // taker mutex for its whole duration, so this cannot take it — the swap's own per-phase
-    // writes are what the next launch recovers from.
+    // Then the wallets, waiting for each one's final save. Dropping a Taker is the graceful
+    // path: the crate's `Drop` flushes the swap tracker and stops the recovery loop and breach
+    // detector. A running swap holds its taker mutex for the whole swap, so that wallet is left
+    // to the swap thread — the swap's own per-phase writes are what the next launch recovers
+    // from.
     let _ = app.emit("app://quit-progress", "Stopping wallet");
     log::info!("shutdown phase start: wallet");
-    if let Err(e) = portal_core::ops::taker_wallet::shutdown(&state) {
-        log::warn!("wallet did not shut down cleanly: {e:?}");
-    }
+    portal_core::ops::taker_wallet::shutdown_all(&state);
     log::info!("shutdown phase done: wallet");
 
     let _ = app.emit("app://quit-progress", "Stopping Tor");

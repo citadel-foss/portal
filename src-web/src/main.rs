@@ -65,11 +65,8 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         None => default_root,
     };
     std::fs::create_dir_all(&data_root)?;
-    // Held for the life of the process. Two Portals on one root share wallets, the journal
-    // and the Tor identity directory; the second to start would otherwise report a confusing
-    // Tor bootstrap failure instead of the conflict that actually caused it.
-    let _root_lock = portal_core::storage::lock_data_root(&data_root).map_err(|e| e.message)?;
-    portal_core::logging::set_taker_dir(data_root.clone());
+    portal_core::logging::set_log_dir(data_root.clone());
+    portal_core::tor::sweep_stale_tor_dirs();
 
     // The protocol crate dumps a whole swap report to stdout when a swap ends, which buries
     // the URL below and shows nothing the app does not already render from the saved report.
@@ -89,17 +86,31 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let runtime = Arc::new(AppState::default());
-    // Opened before the listener binds: a corrupt or newer-schema journal must stop startup,
-    // not surface once someone is already trying to spend.
-    let journal = portal_core::operations::Journal::open(&data_root).map_err(|e| e.message)?;
-    if journal.has_unsettled() {
-        log::warn!("some operations from a previous run have unknown outcomes; only conflicting spends are held");
-    }
-    let state = WebState::new(config, runtime, journal, data_root.clone());
+    // Earlier versions kept the operation journal on disk — every send's address and amount,
+    // in the clear. It is memory-only now, so whatever an older run left behind goes.
+    let _ = std::fs::remove_dir_all(data_root.join("portal").join("operations"));
+    // Staged backups are the whole encrypted wallet and only ever needed for seconds; anything
+    // a previous run left there is an orphan.
+    let _ = std::fs::remove_dir_all(data_root.join("portal").join("transfers"));
+    let state = WebState::new(config, runtime, portal_core::operations::Journal::default(), data_root.clone());
     let bind = state.config.bind;
     let shutdown_timeout = state.config.shutdown_timeout_secs;
 
     let app = routes::router(state.clone()).merge(assets::router(&state).with_state(state.clone()));
+
+    // Expiry has a side effect — the session's wallet may close — so it cannot wait for the
+    // session's own next request, which for a closed tab never comes. The same tick clears
+    // staged backups nobody came back for: a download never fetched, an upload never restored.
+    let reaper = state.auth.clone();
+    let transfers_root = data_root.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            reaper.reap();
+            portal_core::storage::sweep_stale_transfers(&transfers_root, Duration::from_secs(300));
+        }
+    });
 
     // Tor comes up first and goes down last: everything that carries swap traffic binds to
     // its ports, and the teardown below halts it only after the routers and wallet are done
@@ -115,12 +126,10 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     log::info!("portal-web listening on {bind}");
-    if state.open_local() {
-        console.line("local mode: loopback only, no login. Pass --bootstrap-file to require one.");
-    } else if state.auth.has_owner() {
+    if state.auth.has_owner() {
         console.line("sign in with the owner password for this installation");
     } else {
-        console.line("no owner yet — open the page and claim it with the --bootstrap-file secret");
+        console.line("no owner yet — open the page and choose the owner password");
     }
     // Deliberately last, and nothing may print after it: closing the tab does not stop the
     // server, so hours later this is the line someone scrolls back to in order to return.
@@ -163,8 +172,8 @@ async fn await_signal() {
 /// Ordered teardown, matching the desktop host.
 ///
 /// Routers first: each finishes its in-flight connections and a closing wallet sync, and all
-/// of that traffic is still riding on Tor. Then the wallet, whose `Drop` flushes the swap
-/// tracker and stops the recovery loop. Tor last, so nothing that still needs it is cut off.
+/// of that traffic is still riding on Tor. Then the wallets, whose `Drop` flushes each swap
+/// tracker and stops each recovery loop. Tor last, so nothing that still needs it is cut off.
 ///
 /// Every phase is logged, and bounded: the whole sequence must finish inside the supervisor's
 /// stop grace, or the platform kills the process mid-write instead of letting it record what
@@ -192,14 +201,10 @@ async fn teardown(state: &WebState, budget: Duration) {
     )
     .await;
 
-    let wallet = state.runtime.clone();
+    let wallets = state.runtime.clone();
     phase(
-        "wallet",
-        Box::new(move || {
-            if let Err(e) = portal_core::ops::taker_wallet::shutdown(&wallet) {
-                log::warn!("wallet did not shut down cleanly: {e:?}");
-            }
-        }),
+        "wallets",
+        Box::new(move || portal_core::ops::taker_wallet::shutdown_all(&wallets)),
         remaining(deadline),
     )
     .await;

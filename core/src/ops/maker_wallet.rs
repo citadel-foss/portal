@@ -13,9 +13,14 @@ use openswap::wallet::{AddressType, Wallet};
 use crate::ops::chain_backend;
 use crate::error::AppError;
 use crate::state::AppState;
+use crate::error::ErrorCode;
+use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
 use crate::types::{
-    AddressTypeDto, BalancesDto, FidelityBondDto, NewAddress, Outpoint, TxSummary, UtxoEntry,
+    AddressTypeDto, BalancesDto, FidelityBondDto, NewAddress, Outpoint, SendResult, TxSummary,
+    UtxoEntry,
 };
+use openswap::bitcoin::{OutPoint, Txid};
+use std::str::FromStr;
 
 /// Cloning the Arc (not the Wallet) keeps this independent of the maker
 /// mutex — same reasoning as `commands::taker_wallet::get_wallet_handle`.
@@ -58,11 +63,17 @@ pub async fn list_maker_utxos(
     router_id: String,
 ) -> Result<Vec<UtxoEntry>, AppError> {
     let wallet = get_maker_wallet_handle(state, &router_id)?;
-    let socks_port = state
-        .makers
-        .lock()?
-        .get(&router_id)
-        .map(|maker| maker.settings.socks_port);
+    let (socks_port, backend) = {
+        let makers = state.makers.lock()?;
+        let maker = makers.get(&router_id);
+        (
+            maker.map(|maker| maker.settings.socks_port),
+            maker
+                .and_then(|maker| maker.runtime.as_ref())
+                .map(|runtime| runtime.chain_backend.clone())
+                .ok_or_else(AppError::maker_not_initialized)?,
+        )
+    };
     tokio::task::spawn_blocking(move || -> Result<Vec<UtxoEntry>, AppError> {
         let utxos = wallet.read()?.list_all_utxo_spend_info();
         Ok(utxos
@@ -72,7 +83,7 @@ pub async fn list_maker_utxos(
                 vout: entry.vout,
                 amount_sats: entry.amount.to_sat(),
                 confirmations: entry.confirmations,
-                address: chain_backend::utxo_address(&entry, socks_port),
+                address: chain_backend::utxo_address(&entry, &backend, socks_port),
                 spendable: entry.spendable,
                 solvable: entry.solvable,
                 spend_type: spend_info.to_string(),
@@ -196,6 +207,70 @@ pub async fn list_maker_fidelity_bonds(
                 }
             })
             .collect())
+    })
+    .await
+    .map_err(AppError::internal)?
+}
+
+/// Spend from a router's own wallet.
+///
+/// The same `Wallet::send_to_address` the taker uses — a router's wallet is not a different
+/// kind of wallet, it is one this process happens to be running a server against. Its funds
+/// are still the operator's to move, and before this there was no way to get them out short
+/// of stopping the router and loading the file elsewhere.
+pub async fn send_maker_to_address(
+    state: &Arc<AppState>,
+    router_id: String,
+    address: String,
+    amount_sats: u64,
+    fee_rate: Option<f64>,
+    outpoints: Option<Vec<Outpoint>>,
+) -> Result<SendResult, AppError> {
+    let address = address.trim().to_string();
+    if address.is_empty() {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "recipient address cannot be empty",
+        ));
+    }
+    if amount_sats == 0 {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "send amount must be greater than zero",
+        ));
+    }
+    if fee_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0 || rate > 10_000.0) {
+        return Err(AppError::new(
+            ErrorCode::InvalidInput,
+            "fee rate must be finite and between 0 and 10,000 sat/vB",
+        ));
+    }
+    // The same guard the taker spend takes: one fund-moving operation at a time, whichever
+    // wallet it is moving them out of.
+    let _operation = SensitiveOperationGuard::acquire(
+        &state.sensitive_operation_active,
+        SensitiveOperation::SendTakerFunds,
+    )?;
+    let wallet = get_maker_wallet_handle(state, &router_id)?;
+    let outpoints = outpoints
+        .map(|list| {
+            list.into_iter()
+                .map(|o| -> Result<OutPoint, AppError> {
+                    let txid = Txid::from_str(&o.txid)
+                        .map_err(|e| AppError::new(ErrorCode::InvalidInput, e.to_string()))?;
+                    Ok(OutPoint::new(txid, o.vout))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+
+    tokio::task::spawn_blocking(move || -> Result<SendResult, AppError> {
+        let txid = wallet
+            .write()?
+            .send_to_address(amount_sats, address, fee_rate, outpoints)?;
+        Ok(SendResult {
+            txid: txid.to_string(),
+        })
     })
     .await
     .map_err(AppError::internal)?

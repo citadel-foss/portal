@@ -60,6 +60,24 @@ pub struct ChainBackendView {
     pub node: Option<NodeBackendViewDto>,
 }
 
+/// The economics a new router starts with, read straight off the protocol crate's own
+/// `MakerServerConfig::default()`.
+///
+/// Served rather than restated in the frontend so there is exactly one source of truth: the
+/// app had drifted to ten times core's figures on every one of these, which a UI constant can
+/// do silently and a crate bump will never correct.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterDefaultsDto {
+    pub min_swap_amount: u64,
+    pub fidelity_amount: u64,
+    pub fidelity_timelock: u32,
+    pub required_confirms: u32,
+    pub base_fee: u64,
+    pub amount_relative_fee_pct: f64,
+    pub time_relative_fee_pct: f64,
+}
+
 /// Result of probing a chain backend. Electrum answers the height/chain questions
 /// from its tip subscription, so both backends fill the same shape; `subversion`
 /// is the one field only Core can report.
@@ -85,6 +103,12 @@ pub struct BackendStatus {
     /// [0..1] estimate of chain verification progress.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_progress: Option<f64>,
+    /// Hex of the signet challenge script, on signet only. Every signet shares one genesis
+    /// hash and differs solely in this script, so it is the only thing that names *which*
+    /// signet. Core reports it; Electrum synthesizes its chain info from the header tip and
+    /// cannot, which is why callers must tolerate `None` on a signet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signet_challenge: Option<String>,
 }
 
 /// bootstrapProgress is informational only — init doesn't gate on it.
@@ -101,10 +125,7 @@ pub struct TorStatus {
     /// Tor's own one-line description of the phase it is in, e.g. "Loading relay descriptors".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap_summary: Option<String>,
-    /// Why Tor itself says the bootstrap is struggling, present only when it reports a problem.
-    /// Distinct from `error`, which is Portal failing to reach or authenticate against Tor.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bootstrap_warning: Option<String>,
+    /// Portal failing to reach or authenticate against Tor — not Tor failing to connect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Loopback ports Portal's own Tor was started on; freshly chosen each run.
@@ -146,7 +167,16 @@ pub struct InitConfig {
 #[serde(rename_all = "camelCase")]
 pub struct InitResult {
     pub wallet_name: String,
+    /// The root the wallet was listed under, not its own data dir: the frontend keys its caches
+    /// by the pair of this and the name.
     pub data_dir: String,
+    /// The wallet was already open for another session and this one joined it rather than
+    /// starting a second Taker.
+    pub joined: bool,
+    /// Something the user should know about how they joined, e.g. that the running wallet
+    /// uses a different server than the one they picked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Whether a wallet is open, asked on every page load.
@@ -381,6 +411,13 @@ pub struct SwapRequest {
     pub outpoints: Option<Vec<Outpoint>>,
     #[serde(default)]
     pub preferred_routers: Option<Vec<String>>,
+    /// Funding transactions per hop. `None` keeps the crate's own default.
+    #[serde(default)]
+    pub tx_count: Option<u32>,
+    /// PaySwap receiver. When set, `amount_sats` is what the receiver gets, not what leaves
+    /// the wallet — the crate solves the gross route amount backward from it.
+    #[serde(default)]
+    pub payment_address: Option<String>,
 }
 
 fn default_router_count() -> usize {
@@ -395,6 +432,12 @@ pub struct SwapFundingEstimateDto {
     pub input_count: usize,
     pub vbytes: u64,
     pub fee_sats: u64,
+    /// Wallet UTXOs the funding transactions consume.
+    pub outgoing_utxo_count: usize,
+    /// Contracts the last hop can pay us back through — the sweep spends each one separately,
+    /// so one UTXO each. A ceiling, not a count: `tx_count` is the most any hop may forward,
+    /// and a router short of liquidity commits to fewer, which then carries down the route.
+    pub incoming_utxo_count: usize,
     /// The swap feerate every transaction in the route is priced at. Reported because it is
     /// the `SwapParams` default and nothing here overrides it, so a swap cannot be sped up or
     /// slowed down by paying more.
@@ -429,7 +472,25 @@ pub struct SwapSummaryDto {
     /// maximum, and the taker's own funding tx. The settled cost can only come in under it.
     pub total_estimated_fee_sats: u64,
     /// What the taker gets back if every cost hits its ceiling, so a floor, not a forecast.
+    /// Zero on a PaySwap: the receiver is paid and nothing comes back.
     pub estimated_receive_amount_sats: u64,
+    /// `total_estimated_fee_sats` split the way the summary panel and the report already
+    /// split it, so the live circuit cannot disagree with either about what a mining fee is.
+    pub router_fee_sats: u64,
+    pub mining_fee_sats: u64,
+    /// Present only when this swap pays a third-party receiver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment: Option<PaymentQuoteDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentQuoteDto {
+    pub address: String,
+    /// Exact amount the receiver gets.
+    pub amount_sats: u64,
+    /// Reserved on the final hop to settle the receiver's output.
+    pub settlement_budget_sats: u64,
 }
 
 /// Coarse in-memory lifecycle snapshot (survives across commands via `AppState.active_swap`).
@@ -503,14 +564,20 @@ pub struct SwapTrackerDto {
     pub failure_reason: Option<String>,
     pub routers: Vec<RouterProgressDto>,
     /// Contract transactions recorded so far on each kind of leg. A hop is funded by up to
-    /// `tx_count` splits rather than one transaction, so these are how many strands a leg
-    /// actually carries, and they fill in as the swap records each txid.
+    /// `tx_count` splits rather than one transaction, so these are the strands a leg actually
+    /// carries, and they fill in as the swap records each txid.
     ///
     /// `watchonly` covers every leg between two routers as one flat list — the crate keeps no
     /// per-hop grouping — so it only attributes to a leg when it divides evenly across them.
-    pub outgoing_contract_count: usize,
-    pub incoming_contract_count: usize,
-    pub watchonly_contract_count: usize,
+    pub outgoing_contract_txids: Vec<String>,
+    pub incoming_contract_txids: Vec<String>,
+    pub watchonly_contract_txids: Vec<String>,
+    /// PaySwap receiver, echoed from the tracker so a remounted page still knows where the
+    /// coins are going without the prepared quote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_amount_sats: Option<u64>,
 }
 
 /// How far `prepare_swap` has got, for a progress readout while it blocks.
@@ -923,9 +990,21 @@ pub struct LogLine {
     pub line: String,
 }
 
+/// One server the picker offers. Reference data, not configuration: the list is fixed at
+/// compile time and the choice is never persisted, same as everything else on the gate.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectrumPresetDto {
+    /// Short name for the picker — the URL is shown beside it, not in place of it.
+    pub label: String,
+    pub url: String,
+    /// "bitcoin" or "signet". The picker colours by this: one of them spends real money.
+    pub network: String,
+}
+
 /// Seeded on every launch and held in memory only: an edit is deliberately forgotten so a
 /// node's RPC password is never at rest.
-const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.citadelfoss.xyz:50002";
+pub(crate) const DEFAULT_ELECTRUM_URL: &str = "ssl://electrum.citadelfoss.xyz:50002";
 const DEFAULT_NODE_HOST: &str = "127.0.0.1";
 const DEFAULT_NODE_RPC_PORT: u16 = 38332;
 const DEFAULT_NODE_ZMQ_PORT: u16 = 28332;

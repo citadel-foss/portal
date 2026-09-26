@@ -3,6 +3,42 @@
   "version": 1,
   "operations": [
     {
+      "name": "auth_session",
+      "executionClass": "read",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Whether the desktop app is signed in and whether an owner password exists. The web host answers the same question at GET /session."
+    },
+    {
+      "name": "auth_claim",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Sets the owner password on a desktop install that has none. The web host's equivalent is POST /auth/claim."
+    },
+    {
+      "name": "auth_login",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Signs the desktop app in with the owner password. The web host's equivalent is POST /auth/login."
+    },
+    {
+      "name": "auth_logout",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Signs the desktop app out and takes the window off its wallet. The web host's equivalent is POST /auth/logout."
+    },
+    {
       "name": "check_tor",
       "executionClass": "transient",
       "desktop": true,
@@ -28,6 +64,15 @@
       "webAdaptation": "none",
       "retryClass": "none",
       "note": "Return the existing safe DTO; bound response size and redact internal details."
+    },
+    {
+      "name": "get_electrum_presets",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Compile-time constants; no wallet, no chain, no caller input."
     },
     {
       "name": "set_chain_backend",
@@ -498,6 +543,15 @@
       "note": "Return the existing safe DTO; bound response size and redact internal details."
     },
     {
+      "name": "send_maker_to_address",
+      "executionClass": "durable",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "shared",
+      "retryClass": "idempotent-key",
+      "note": "Moves funds out of a router's wallet. Durable like the taker spend: the effect may land even if the response does not, so it must never be resubmitted blind."
+    },
+    {
       "name": "sync_maker_wallet",
       "executionClass": "transient",
       "desktop": true,
@@ -559,6 +613,15 @@
       "webAdaptation": "specialized",
       "retryClass": "idempotent-key",
       "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
+    },
+    {
+      "name": "get_router_defaults",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "shared",
+      "retryClass": "none",
+      "note": "Reads the protocol crate's own MakerServerConfig::default(); constant for the build, touches no wallet and no network."
     },
     {
       "name": "get_suggested_maker_ports",

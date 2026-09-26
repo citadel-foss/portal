@@ -3,6 +3,8 @@
 //! Payloads are owned and cloneable so a publisher can be an OS swap thread or a logging
 //! callback holding no relation to the request that started the work.
 
+use std::path::{Path, PathBuf};
+
 use tokio::sync::broadcast;
 
 use crate::error::AppError;
@@ -56,12 +58,20 @@ impl AppEvent {
     }
 }
 
+/// An event plus the wallet it concerns. `None` is everyone's business: routers, the process.
+/// A host with several viewers delivers a wallet's events only to the sessions on that wallet.
+#[derive(Debug, Clone)]
+pub struct Envelope {
+    pub wallet: Option<PathBuf>,
+    pub event: AppEvent,
+}
+
 /// Bounded fan-out. Publishing never blocks and never fails the work that produced the event:
 /// with no subscribers, or a subscriber too far behind, the send is dropped rather than
 /// propagated. A lagging receiver learns about the gap from its own `RecvError::Lagged`.
 #[derive(Debug, Clone)]
 pub struct EventSink {
-    tx: broadcast::Sender<AppEvent>,
+    tx: broadcast::Sender<Envelope>,
 }
 
 impl EventSink {
@@ -72,10 +82,18 @@ impl EventSink {
     }
 
     pub fn publish(&self, event: AppEvent) {
-        let _ = self.tx.send(event);
+        let _ = self.tx.send(Envelope { wallet: None, event });
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
+    /// Publishes an event that belongs to one wallet, keyed by its data dir.
+    pub fn publish_for(&self, wallet: &Path, event: AppEvent) {
+        let _ = self.tx.send(Envelope {
+            wallet: Some(wallet.to_path_buf()),
+            event,
+        });
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Envelope> {
         self.tx.subscribe()
     }
 }
@@ -103,8 +121,9 @@ mod tests {
             phase: 2,
             note: None,
         }));
-        let event = rx.try_recv().expect("event was published before the read");
-        assert_eq!(event.name(), "wallet://init-phase");
+        let envelope = rx.try_recv().expect("event was published before the read");
+        assert_eq!(envelope.event.name(), "wallet://init-phase");
+        assert!(envelope.wallet.is_none());
     }
 
     /// The names and payload shapes are what the frontend subscribes to and parses; changing

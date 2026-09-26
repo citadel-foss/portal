@@ -1,21 +1,21 @@
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Link2, RefreshCw, ScrollText, Server, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowDownLeft, ArrowLeft, ArrowUpRight, Check, CheckCircle2, RefreshCw, ScrollText, Server, X, XCircle } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { checkBackend, getChainBackend } from "../../api/commands";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { chainName, useConnectionStore, watchConnection } from "../../store/connection";
+import logoUrl from "../../assets/logo.png";
 import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
 import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
 import { useSessionStore } from "../../store/session";
 import { useToastStore, type Toast } from "../../store/toast";
-import { IconButton } from "../ui/display";
+import { useTxNoticeStore } from "../../store/tx-notifications";
+import { getSwapProgress } from "../../api/commands";
+import { formatDuration } from "../../lib/wallet-format";
+import { IconButton, SatsAmount } from "../ui/display";
 import { SwitchWallet } from "./SwitchWallet";
+import { SignOut } from "./SignOut";
 
-/**
- * Read-only, because the backend is adopted at the connection gate and held for the session.
- * Past that gate nothing else in the app says what it is connected to, which is the half of the
- * old Electron settings page that was actually missing.
- */
 /** Signet and testnet coins are worthless; mainnet coins are not. Which chain you are on is the
  *  most consequential fact about the session, so it leads and it is coloured. */
 const NETWORK_TONE: Record<string, string> = {
@@ -26,52 +26,82 @@ const NETWORK_TONE: Record<string, string> = {
   regtest: "border-line-strong bg-white/[0.04] text-muted",
 };
 
+/** The liveness half of both chips. Deliberately separate from the network tone above: that
+ *  says which chain you are on, this says whether anything is answering on it. */
+/** A badge, not a progress view — the Swap page itself polls far harder than this. */
+const ACTIVE_SWAP_POLL_MS = 5_000;
+
+const LIVE_GLOW =
+  "shadow-[0_0_10px_-1px_color-mix(in_oklab,var(--color-success)_55%,transparent)]";
+
+function LiveDot({ live }: { live: boolean | null }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`h-1.5 w-1.5 flex-none rounded-full ${
+        live === null
+          ? "bg-subtle"
+          : live
+            ? "animate-pulse bg-success shadow-[0_0_6px_1px_var(--color-success)]"
+            : "bg-danger"
+      }`}
+    />
+  );
+}
+
+/**
+ * Which chain this session is on and whether it is still answering. The backend itself is
+ * read-only — adopted at the connection gate and held for the session — but its liveness is
+ * not, so the status half is re-probed rather than resolved once at mount.
+ */
 function ConnectionChip() {
-  const [network, setNetwork] = useState<string | null>(null);
-  const [backend, setBackend] = useState<string | null>(null);
-  const [detail, setDetail] = useState("");
+  const config = useConnectionStore((s) => s.config);
+  const status = useConnectionStore((s) => s.status);
 
-  useEffect(() => {
-    void getChainBackend()
-      .then((config) => {
-        // A node you run yourself has no Tor/clearnet axis, so only Electrum carries a route.
-        setBackend(
-          config.kind === "coreRpc"
-            ? "Bitcoin Core"
-            : `Electrum · ${config.electrum.useTor ? "Tor" : "Clearnet"}`,
-        );
-        setDetail(
-          config.kind === "coreRpc" && config.node
-            ? `${config.node.host}:${config.node.port}`
-            : config.electrum.url,
-        );
-      })
-      .catch(() => setBackend(null));
-    // Asked of the chain rather than inferred from the endpoint: the URL says nothing about
-    // which network the server is actually serving.
-    void checkBackend()
-      .then((status) => setNetwork(status.chain ?? null))
-      .catch(() => setNetwork(null));
-  }, []);
+  useEffect(watchConnection, []);
 
-  if (!network && !backend) return null;
+  const network = chainName(status);
+  // null until the first probe lands, so "not asked yet" never renders as "down".
+  const live = status === null ? null : status.reachable;
+
+  if (!network && !config) return null;
+
+  // A node you run yourself has no Tor/clearnet axis, so only Electrum carries a route.
+  const backend = !config
+    ? null
+    : config.kind === "coreRpc"
+      ? "Bitcoin Core"
+      : `Electrum · ${config.electrum.useTor ? "Tor" : "Clearnet"}`;
+  const detail = !config
+    ? undefined
+    : config.kind === "coreRpc" && config.node
+      ? `${config.node.host}:${config.node.port}`
+      : config.electrum.url;
+  const downTitle = live === false ? "Not answering" : undefined;
+
   return (
     <span className="hidden items-center gap-1.5 md:inline-flex">
       {network && (
         <span
-          className={`rounded-pill border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest ${
+          title={downTitle}
+          className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-pill border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest ${
             NETWORK_TONE[network] ?? NETWORK_TONE.regtest
-          }`}
+          } ${live ? LIVE_GLOW : "opacity-55"}`}
         >
+          <LiveDot live={live} />
           {network === "bitcoin" ? "mainnet" : network}
         </span>
       )}
       {backend && (
         <span
-          title={detail}
-          className="inline-flex items-center gap-1.5 rounded-pill border border-line bg-surface-raised px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-subtle"
+          title={downTitle ?? detail}
+          className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-pill border px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest ${
+            live
+              ? `border-success/40 bg-success/[0.08] text-success ${LIVE_GLOW}`
+              : "border-line bg-surface-raised text-subtle opacity-55"
+          }`}
         >
-          <Link2 size={11} strokeWidth={2} />
+          <LiveDot live={live} />
           {backend}
         </span>
       )}
@@ -82,10 +112,14 @@ function ConnectionChip() {
 const WALLET_NAV_ITEMS: { path: string; label: string; d: string }[] = [
   { path: "/", label: "Wallet", d: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><path d="M16 14h2"/>' },
   { path: "/market", label: "Market", d: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V8"/>' },
-  { path: "/send", label: "Send", d: '<path d="M7 17L17 7M9 7h8v8"/>' },
+  { path: "/send", label: "Tx", d: '<path d="M8 20V4"/><path d="m4 8 4-4 4 4"/><path d="M16 4v16"/><path d="m12 16 4 4 4-4"/>' },
   { path: "/swap", label: "Swap", d: '<path d="M17 4l4 4-4 4M21 8H8M7 20l-4-4 4-4M3 16h13"/>' },
 ];
 
+/**
+ * The mark sits on a white plate because it is a two-tone logo: its black half and its outline
+ * both vanish straight into this app's dark surfaces without one.
+ */
 function Logo({
   routerMode,
   atRouterRoot,
@@ -118,7 +152,12 @@ function Logo({
         </span>
       ) : (
         <>
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary font-header text-[15px] font-bold text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.24),0_6px_16px_-8px_color-mix(in_oklab,var(--color-primary)_60%,transparent)]">P</div>
+          <img
+            src={logoUrl}
+            alt=""
+            aria-hidden="true"
+            className="h-9 w-9 flex-none rounded-full bg-white p-0.5 shadow-[0_6px_16px_-8px_rgba(0,0,0,0.9)]"
+          />
           <div className="min-w-0 leading-tight">
             <div className="font-header text-[15px] font-bold text-foreground">Portal</div>
             <div className="text-[11px] text-subtle">Wallet</div>
@@ -264,6 +303,7 @@ function TopNav({
             </NavLink>
           </>
         )}
+        <SignOut />
       </div>
     </header>
   );
@@ -308,10 +348,10 @@ function ToastRow({ toast }: { toast: Toast }) {
     >
       <span className={`absolute inset-y-0 left-0 w-0.5 ${tone.rail}`} aria-hidden="true" />
       <Icon size={16} strokeWidth={2} className={`mt-px flex-none ${tone.icon}`} />
-      <span
-        className="min-w-0 flex-1 break-words text-[12.5px] leading-5 text-foreground line-clamp-3"
-        title={toast.message}
-      >
+      {/* Never clamped: an error that explains itself in four lines is more use than three
+          lines and an ellipsis, and the one that gets cut is always the long specific one. The
+          stack is capped instead, and the strip scrolls if a single message is enormous. */}
+      <span className="max-h-[40vh] min-w-0 flex-1 overflow-y-auto break-words text-[12.5px] leading-5 text-foreground">
         {toast.message}
       </span>
       <button
@@ -346,10 +386,7 @@ function ToastStack() {
   const hidden = toasts.length - visible.length;
 
   return (
-    <div
-      className="pointer-events-none fixed right-4 top-[68px] z-50 flex flex-col items-end gap-2"
-      aria-live="polite"
-    >
+    <div className="flex flex-col items-end gap-2" aria-live="polite">
       <AnimatePresence initial={false}>
         {visible.map((t) => (
           <ToastRow key={t.id} toast={t} />
@@ -360,6 +397,134 @@ function ToastStack() {
           +{hidden} more
         </span>
       )}
+    </div>
+  );
+}
+
+
+/**
+ * Money that moved while the app was open, opposite the toast stack so a payment landing never
+ * covers an error about the payment you are making. Opens the wallet, which is the page that
+ * can say anything more about it.
+ */
+/**
+ * A running swap, visible wherever you navigate. It holds the wallet for as long as it takes —
+ * hours, on a bad day — so leaving the Swap page has to leave a way back rather than hiding the
+ * one thing the wallet is busy doing.
+ *
+ * Polls rather than listening: the swap publishes only its terminal events, and this has to be
+ * right after a reload too, when no event is coming.
+ */
+function ActiveSwapBadge() {
+  const initialized = useSessionStore((s) => s.initialized);
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [running, setRunning] = useState(false);
+  const [, tick] = useState(0);
+
+  useEffect(() => {
+    if (!initialized) {
+      setRunning(false);
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      void getSwapProgress()
+        .then((progress) => {
+          if (cancelled) return;
+          setRunning(progress !== null);
+          setStartedAt(progress?.startedAt ?? null);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, ACTIVE_SWAP_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [initialized]);
+
+  // Only while it is actually on screen, so an idle app isn't re-rendering once a second.
+  const shown = running && !pathname.startsWith("/swap");
+  useEffect(() => {
+    if (!shown) return;
+    const id = setInterval(() => tick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [shown]);
+
+  if (!shown) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => navigate("/swap")}
+      className="lift pointer-events-auto flex items-center gap-2.5 rounded-control border border-primary/45 bg-surface-raised py-2 pl-3 pr-3.5 text-left shadow-[0_1px_2px_rgba(0,0,0,0.5),0_16px_32px_-16px_rgba(0,0,0,0.7)] outline-none focus-visible:shadow-ring"
+    >
+      <RefreshCw size={14} strokeWidth={2} className="animate-spin text-primary" />
+      <span className="flex flex-col">
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-subtle">
+          Swap in progress
+        </span>
+        <span className="font-numeric text-[12px] text-foreground">
+          {startedAt ? formatDuration(Date.now() / 1000 - startedAt) : "0s"} elapsed
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function TxNoticeStack() {
+  const notices = useTxNoticeStore((s) => s.notices);
+  const dismiss = useTxNoticeStore((s) => s.dismiss);
+  const navigate = useNavigate();
+
+  return (
+    <div className="pointer-events-none fixed left-4 top-[68px] z-50 flex flex-col items-start gap-2">
+      <AnimatePresence initial={false}>
+        {notices.map((n) => (
+          <motion.button
+            key={n.id}
+            layout
+            type="button"
+            initial={{ opacity: 0, x: -18, scale: 0.98 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: -12, scale: 0.98 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            onClick={() => {
+              dismiss(n.id);
+              navigate("/");
+            }}
+            className="lift pointer-events-auto relative flex w-[320px] max-w-[calc(100vw-2rem)] items-start gap-2.5 overflow-hidden rounded-control border border-line-strong bg-surface-raised py-3 pl-4 pr-3 text-left shadow-[0_1px_2px_rgba(0,0,0,0.5),0_16px_32px_-16px_rgba(0,0,0,0.7)] outline-none focus-visible:shadow-ring"
+          >
+            <span
+              className={`absolute inset-y-0 left-0 w-0.5 ${n.incoming ? "bg-success" : "bg-danger"}`}
+              aria-hidden="true"
+            />
+            <span
+              className={`mt-px flex h-[26px] w-[26px] flex-none items-center justify-center rounded-control border ${
+                n.incoming
+                  ? "border-success/45 bg-success/[0.08] text-success"
+                  : "border-danger/45 bg-danger/[0.08] text-danger"
+              }`}
+            >
+              {n.incoming ? <ArrowDownLeft size={15} strokeWidth={2} /> : <ArrowUpRight size={15} strokeWidth={2} />}
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="flex items-baseline gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-subtle">
+                  {n.incoming ? "Incoming" : "Outgoing"}
+                </span>
+                <SatsAmount
+                  sats={n.amountSats}
+                  className={`text-[12.5px] font-semibold ${n.incoming ? "text-success" : "text-danger"}`}
+                />
+              </span>
+              <span className="break-all font-mono text-[10px] leading-[1.45] text-subtle">{n.txid}</span>
+            </span>
+          </motion.button>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
@@ -432,7 +597,11 @@ export function AppShell() {
           </motion.div>
         </main>
       </div>
-      <ToastStack />
+      <div className="pointer-events-none fixed right-4 top-[68px] z-50 flex flex-col items-end gap-2">
+        <ActiveSwapBadge />
+        <ToastStack />
+      </div>
+      <TxNoticeStack />
     </div>
   );
 }

@@ -3,9 +3,10 @@ import type { ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Globe, KeyRound, Wallet } from "lucide-react";
 
+import { routerName } from "../../../lib/market-format";
+import { explorerTxUrl, formatNumber } from "../../../lib/wallet-format";
 import { buildCircuit, edgeStrands, labelAnchor, type CircuitGeometry } from "./geometry";
 import {
-  ACT_LABEL,
   EDGE_STAGE_LABEL,
   STAGE_LABEL,
   type CircuitView,
@@ -214,12 +215,13 @@ function CircuitEdge({
 function EdgeLabel({ x, y, view }: { x: number; y: number; view: EdgeView }) {
   const badge =
     view.stage === "confirmed"
-      ? view.confirmedHeight
-        ? `✓ ${view.confirmedHeight.toLocaleString()}`
-        : "✓ confirmed"
+      ? "✓ confirmed"
       : view.stage === "pending"
         ? ""
         : `◌ ${EDGE_STAGE_LABEL[view.stage].toLowerCase()}`;
+  // One leg can carry several contracts; the first is enough to open the right explorer, and
+  // the centre readout lists every one of them.
+  const txid = view.txids[0];
   return (
     <g style={{ pointerEvents: "none" }}>
       {view.amountSats !== undefined && (
@@ -230,23 +232,52 @@ function EdgeLabel({ x, y, view }: { x: number; y: number; view: EdgeView }) {
           className="fill-muted"
           style={{ font: "500 9px var(--font-numeric)" }}
         >
-          {view.amountSats.toLocaleString()}
-          {/* The strands themselves are deliberately thin, so the count is spelled out too
-              rather than left to be read off the stroke. */}
-          {view.contractCount > 1 && ` ×${view.contractCount}`}
+          {formatNumber(view.amountSats)}
         </text>
       )}
-      {badge && (
+      {/* The strands themselves are deliberately thin, so the count is spelled out rather
+          than left to be read off the stroke. */}
+      {view.contractCount > 1 && (
         <text
           x={x}
-          y={y + 8}
+          y={y + 6}
           textAnchor="middle"
-          fill={STROKE[view.tone]}
+          className="fill-subtle"
           style={{ font: "500 8px var(--font-mono)" }}
         >
-          {badge}
+          {view.contractCount} Splits
         </text>
       )}
+      {badge &&
+        (txid ? (
+          <a
+            href={explorerTxUrl(txid)}
+            target="_blank"
+            rel="noreferrer"
+            style={{ pointerEvents: "auto", cursor: "pointer" }}
+          >
+            <title>Open this contract on mempool</title>
+            <text
+              x={x}
+              y={y + (view.contractCount > 1 ? 16 : 8)}
+              textAnchor="middle"
+              fill={STROKE[view.tone]}
+              style={{ font: "500 8px var(--font-mono)", textDecoration: "underline" }}
+            >
+              {badge}
+            </text>
+          </a>
+        ) : (
+          <text
+            x={x}
+            y={y + (view.contractCount > 1 ? 16 : 8)}
+            textAnchor="middle"
+            fill={STROKE[view.tone]}
+            style={{ font: "500 8px var(--font-mono)" }}
+          >
+            {badge}
+          </text>
+        ))}
     </g>
   );
 }
@@ -485,7 +516,7 @@ function StageBody({ view }: { view: CircuitView }) {
 
   return (
     <>
-      <Heading tone={tone}>{view.failed ? "Swap Failed" : done ? "Swap Complete" : ACT_LABEL[view.act]}</Heading>
+      <Heading tone={tone}>{view.title}</Heading>
       <Sub>{line}</Sub>
 
       <p
@@ -499,13 +530,20 @@ function StageBody({ view }: { view: CircuitView }) {
 
       <div className="mt-3 w-full border-t border-line pt-2">
         {view.sendAmountSats !== undefined && (
-          <Row label="Sent" value={`${view.sendAmountSats.toLocaleString()} sats`} />
+          <Row label="Sent" value={`${formatNumber(view.sendAmountSats)} sats`} />
         )}
-        {view.receiveAmountSats !== undefined && (
-          <Row label="Receiving" value={`${view.receiveAmountSats.toLocaleString()} sats`} />
+        {view.paymentAmountSats !== undefined ? (
+          <Row label="Receiver gets" value={`${formatNumber(view.paymentAmountSats)} sats`} />
+        ) : (
+          view.receiveAmountSats !== undefined && (
+            <Row label="Receiving" value={`${formatNumber(view.receiveAmountSats)} sats`} />
+          )
         )}
-        {view.totalFeeSats !== undefined && (
-          <Row label="Fees" value={`${view.totalFeeSats.toLocaleString()} sats`} />
+        {view.routerFeeSats !== undefined && (
+          <Row label="Router fees" value={`${formatNumber(view.routerFeeSats)} sats`} />
+        )}
+        {view.miningFeeSats !== undefined && (
+          <Row label="Mining fees" value={`${formatNumber(view.miningFeeSats)} sats`} />
         )}
       </div>
 
@@ -526,12 +564,12 @@ function NodeBody({ hop, view }: { hop: HopView; view: CircuitView }) {
       <Sub>
         hop {hop.index + 1} of {view.routerCount + 1} · {STAGE_LABEL[hop.stage]}
       </Sub>
-      <span className="mt-1 max-w-full break-all text-center font-mono text-[9px] text-muted">
-        {hop.address}
+      <span className="mt-1 max-w-full text-center font-mono text-[9px] text-muted">
+        {routerName(hop.address)}
       </span>
       {hop.fee && (
         <div className="mt-1 w-full border-t border-line pt-2">
-          <Row label="Fee" value={`${hop.fee.estimatedFeeSats.toLocaleString()} sats`} />
+          <Row label="Fee" value={`${formatNumber(hop.fee.estimatedFeeSats)} sats`} />
           <Row label="Locktime" value={`${hop.fee.locktime} blocks`} />
           <Row
             label="Offer"
@@ -554,25 +592,37 @@ function EdgeBody({ edge, view }: { edge: EdgeView; view: CircuitView }) {
       </Sub>
       <div className="mt-2 w-full border-t border-line pt-2">
         {edge.amountSats !== undefined && (
-          <Row label="Amount" value={`${edge.amountSats.toLocaleString()} sats`} />
+          <Row label="Amount" value={`${formatNumber(edge.amountSats)} sats`} />
         )}
         <Row label="Status" value={EDGE_STAGE_LABEL[edge.stage]} />
-        {edge.contractCount > 1 && (
-          <Row label="Split over" value={`${edge.contractCount} transactions`} />
-        )}
-        {edge.confirmedHeight !== undefined && (
-          <Row label="Block" value={edge.confirmedHeight.toLocaleString()} />
-        )}
+        {edge.contractCount > 1 && <Row label="Splits" value={`${edge.contractCount}`} />}
         {edge.locktimeBlocks !== undefined && (
           <Row label="Refund after" value={`${edge.locktimeBlocks} blocks`} />
         )}
       </div>
-      <Sub>
-        {edge.txid ??
-          (edge.contractCount > 1
-            ? "Transaction ids appear once the backend reports them"
-            : "Transaction id appears once the backend reports it")}
-      </Sub>
+      {edge.txids.length > 0 ? (
+        // Pointer events are off for the readout as a whole so the ring underneath stays
+        // hoverable; the links are the one part that has to take a click.
+        <div className="mt-1.5 flex w-full flex-col items-center gap-0.5" style={{ pointerEvents: "auto" }}>
+          {edge.txids.map((txid) => (
+            <a
+              key={txid}
+              href={explorerTxUrl(txid)}
+              target="_blank"
+              rel="noreferrer"
+              className="max-w-full break-all text-center font-mono text-[9px] text-primary underline decoration-dotted"
+            >
+              {txid}
+            </a>
+          ))}
+        </div>
+      ) : (
+        <Sub>
+          {edge.contractCount > 1
+            ? "Transaction ids appear once the swap records them"
+            : "Transaction id appears once the swap records it"}
+        </Sub>
+      )}
     </>
   );
 }
@@ -588,15 +638,15 @@ function WalletBody({ view }: { view: CircuitView }) {
       <Sub>Funds leave the out-port and return to the in-port of this same wallet</Sub>
       <div className="mt-2 w-full border-t border-line pt-2">
         {view.sendAmountSats !== undefined && (
-          <Row label="Out" value={`${view.sendAmountSats.toLocaleString()} sats`} />
+          <Row label="Out" value={`${formatNumber(view.sendAmountSats)} sats`} />
         )}
         {view.receiveAmountSats !== undefined && (
-          <Row label="In" value={`${view.receiveAmountSats.toLocaleString()} sats`} />
+          <Row label="In" value={`${formatNumber(view.receiveAmountSats)} sats`} />
         )}
         {view.totalFeeSats !== undefined && (
-          <Row label="Fees" value={`${view.totalFeeSats.toLocaleString()} sats`} />
+          <Row label="Fees" value={`${formatNumber(view.totalFeeSats)} sats`} />
         )}
-        {net !== undefined && <Row label="Net" value={`${net.toLocaleString()} sats`} />}
+        {net !== undefined && <Row label="Net" value={`${formatNumber(net)} sats`} />}
       </div>
     </>
   );

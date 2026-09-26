@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import type { InitResult } from "../../api/types";
 import { startWalletSynchronization } from "../../lib/wallet-sync";
 import { useSessionStore } from "../../store/session";
+import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 import { SelectWalletStep } from "./SelectWalletStep";
 
@@ -11,6 +12,15 @@ export function SetupPage() {
   const beginWalletSession = useWalletCacheStore((s) => s.beginSession);
 
   function completeSetup(result: InitResult, restored: boolean) {
+    // Joining is instant where a fresh unlock takes a while, so say why.
+    if (result.joined) {
+      useToastStore
+        .getState()
+        .push(
+          result.note ? "warning" : "success",
+          result.note ?? "This wallet was already open in another browser, so this one joined it.",
+        );
+    }
     beginWalletSession(result.walletName, result.dataDir, restored);
     setInitialized(result);
     void startWalletSynchronization();

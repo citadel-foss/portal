@@ -1,20 +1,20 @@
-//! Wallet lifecycle: init, shutdown, encryption probe, restore, backup.
+//! Wallet lifecycle: open, join, release, restore, backup.
 //!
 //! Wallet load/restore commands must route errors through
 //! `from_wallet_join_error`, not `AppError::internal` — a wrong password
 //! panics inside the crate instead of returning `Result`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use openswap::bitcoin::{Address, OutPoint, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
-use openswap::utill::get_taker_dir;
 use openswap::wallet::{AddressType, Wallet};
 use uuid::Uuid;
 
@@ -24,20 +24,19 @@ use crate::ops::chain_backend;
 use crate::error::{from_wallet_join_error, AppError, ErrorCode};
 use crate::security::input::validate_leaf_name;
 use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
-use crate::state::AppState;
-use crate::state::PendingFileSelection;
+use crate::state::{AppState, PendingFileSelection, TakerInstance, TakerSlot};
 use crate::types::{
     AddressTypeDto, AddressValidation, BalancesDto, ConnectionTypeDto, FeeEstimate, InitConfig,
     InitResult, NewAddress, Outpoint, PathsDto, PriceEstimate, RestoreSelectionView, SendResult,
     SessionStateDto, TxSummary, UtxoEntry, WalletInfo,
 };
 
-const BTC_PRICE_CACHE_FILE: &str = "btc-price-cache.json";
-const MAX_PRICE_CACHE_BYTES: u64 = 4096;
-static PRICE_CACHE_IO: Mutex<()> = Mutex::new(());
+/// The price moves far slower than anyone reads it, so one fetch serves every caller for a
+/// while. Memory only: after a restart the first caller fetches it again.
+const PRICE_MAX_AGE_SECS: u64 = 15 * 60;
+static LAST_PRICE: Mutex<Option<CachedBtcPrice>> = Mutex::new(None);
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy)]
 struct CachedBtcPrice {
     usd: f64,
     fetched_at: u64,
@@ -54,106 +53,132 @@ fn valid_usd_price(usd: f64) -> bool {
     usd.is_finite() && usd > 0.0
 }
 
-fn price_cache_path() -> Result<PathBuf, AppError> {
-    Ok(get_taker_dir()?.join(BTC_PRICE_CACHE_FILE))
-}
-
-fn load_cached_btc_price() -> Result<Option<CachedBtcPrice>, AppError> {
-    let _guard = PRICE_CACHE_IO.lock()?;
-    let path = price_cache_path()?;
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_PRICE_CACHE_BYTES
-    {
-        return Ok(None);
-    }
-    let cached: CachedBtcPrice = match serde_json::from_slice(&std::fs::read(path)?) {
-        Ok(cached) => cached,
-        Err(error) => {
-            log::warn!("ignoring invalid BTC price cache: {error}");
-            return Ok(None);
-        }
-    };
-    if !valid_usd_price(cached.usd) {
-        return Ok(None);
-    }
-    Ok(Some(cached))
-}
-
-fn save_cached_btc_price(cached: &CachedBtcPrice) -> Result<(), AppError> {
-    let _guard = PRICE_CACHE_IO.lock()?;
-    let path = price_cache_path()?;
-    if let Some(parent) = path.parent() {
-        crate::security::fs::ensure_private_dir(parent)?;
-    }
-    let body = serde_json::to_vec(cached).map_err(AppError::internal)?;
-    crate::security::fs::write_private(&path, &body)
-}
-
-/// Cloning the Arc (not the Wallet) keeps this independent of the taker mutex.
-pub(crate) fn get_wallet_handle(state: &Arc<AppState>) -> Result<Arc<RwLock<Wallet>>, AppError> {
-    state
-        .wallet
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)
-}
-
 pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
     storage::list_wallets(&data_dir)
 }
 
 /// The host's real wallet locations. Desktop-only: the web host hands the browser opaque
 /// wallet IDs and a storage label instead, since a browser has no business seeing server paths.
-pub fn get_paths(state: &Arc<AppState>) -> Result<PathsDto, AppError> {
-    let data_dir = match state.data_dir.read()?.clone() {
-        Some(active) => active,
-        None => crate::storage::resolve_data_dir(&None)?,
+pub fn get_paths(state: &Arc<AppState>, session: &str) -> Result<PathsDto, AppError> {
+    let root = match state.taker_for(session) {
+        Ok(taker) => taker.root.clone(),
+        Err(_) => resolve_data_dir(&None)?,
     };
     Ok(PathsDto {
-        wallets_dir: data_dir.join("wallets").display().to_string(),
-        data_dir: data_dir.display().to_string(),
+        wallets_dir: root.join(storage::WALLET_DATA_DIR).display().to_string(),
+        data_dir: root.display().to_string(),
     })
 }
 
-/// Creates or loads the wallet, connects to Bitcoin Core, checks Tor,
-/// starts background threads. Blocking; can take a few seconds.
+/// How often a caller re-checks a wallet another session is still initializing.
+const OPENING_POLL: Duration = Duration::from_millis(250);
+
+enum OpenStep {
+    Join(Arc<TakerInstance>),
+    Wait,
+    Init,
+}
+
+/// Unlocks a wallet for this session.
+///
+/// A wallet another session already has open is joined, not reinitialized: two Takers over the
+/// same files would each overwrite the other's saves, and each `Taker::init` fails whatever
+/// swaps it finds unfinished. Joining still takes the wallet password, checked against the file.
 pub async fn init_taker(
     state: &Arc<AppState>,
+    session: &str,
     config: InitConfig,
 ) -> Result<InitResult, AppError> {
     validate_leaf_name(&config.wallet_name, "walletName")?;
     let tor = crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
-    {
-        let guard = crate::state::try_lock_taker(&state.taker)?;
-        if guard.is_some() {
-            return Err(AppError::new(
-                ErrorCode::Internal,
-                "wallet is already initialized for this session",
-            ));
+
+    let root = resolve_data_dir(&config.data_dir)?;
+    if config.data_dir.is_some() {
+        crate::security::fs::require_private_dir(&root)?;
+    } else {
+        crate::security::fs::ensure_private_dir(&root)?;
+    }
+    let key = storage::wallet_data_dir(&root, &config.wallet_name);
+
+    // Switching wallets: leave the old one first, which may drop it if nobody else is on it.
+    if state.wallet_of(session).is_some_and(|bound| bound != key) {
+        release_session(state, session);
+    }
+
+    loop {
+        let step = {
+            let mut takers = state.takers.lock()?;
+            match takers.get(&key) {
+                Some(TakerSlot::Open(taker)) => OpenStep::Join(taker.clone()),
+                Some(TakerSlot::Opening) => OpenStep::Wait,
+                None => {
+                    takers.insert(key.clone(), TakerSlot::Opening);
+                    OpenStep::Init
+                }
+            }
+        };
+        match step {
+            OpenStep::Join(taker) => return join_taker(state, session, &taker, config, tor.socks_port).await,
+            // Bound while waiting, so this session sees the other one's init progress too.
+            OpenStep::Wait => {
+                state.bindings.lock()?.insert(session.to_string(), key.clone());
+                tokio::time::sleep(OPENING_POLL).await;
+            }
+            OpenStep::Init => break,
         }
     }
 
-    let data_dir = resolve_data_dir(&config.data_dir)?;
-    if config.data_dir.is_some() {
-        crate::security::fs::require_private_dir(&data_dir)?;
-    } else {
-        crate::security::fs::ensure_private_dir(&data_dir)?;
+    state.bindings.lock()?.insert(session.to_string(), key.clone());
+    let opened = open_taker(state, session, &root, &key, config, &tor).await;
+    let mut takers = state.takers.lock()?;
+    match opened {
+        Ok((taker, result)) => {
+            takers.insert(key, TakerSlot::Open(taker));
+            Ok(result)
+        }
+        Err(error) => {
+            takers.remove(&key);
+            drop(takers);
+            let mut bindings = state.bindings.lock()?;
+            if bindings.get(session) == Some(&key) {
+                bindings.remove(session);
+            }
+            Err(error)
+        }
     }
-    crate::security::fs::ensure_private_dir(&data_dir.join("wallets"))?;
+}
+
+/// Starts a Taker for a wallet nobody has open. The caller holds its `Opening` slot.
+async fn open_taker(
+    state: &Arc<AppState>,
+    session: &str,
+    root: &Path,
+    key: &Path,
+    config: InitConfig,
+    tor: &crate::tor::TorRuntime,
+) -> Result<(Arc<TakerInstance>, InitResult), AppError> {
+    // A release still saving this wallet has to finish before it is loaded again.
+    let pending = state.releasing.lock()?.remove(key);
+    if let Some(handle) = pending {
+        tokio::task::spawn_blocking(move || {
+            let _ = handle.join();
+        })
+        .await
+        .map_err(AppError::internal)?;
+    }
+
+    crate::security::fs::ensure_private_dir(&root.join(storage::WALLET_DATA_DIR))?;
+    crate::security::fs::ensure_private_dir(key)?;
+    crate::security::fs::ensure_private_dir(&key.join("wallets"))?;
+    let dir_lock = storage::lock_wallet_dir(key)?;
+
     let connection_type = match config.connection_type {
         ConnectionTypeDto::Tor => ConnectionType::Tor,
         ConnectionTypeDto::Clearnet => ConnectionType::Clearnet,
     };
-
-    let chain_config = chain_backend::load();
+    let chain_config = chain_backend::load(session);
     let init_cfg = TakerInitConfig {
-        data_dir: Some(data_dir.clone()),
+        data_dir: Some(key.to_path_buf()),
         wallet_name: config.wallet_name.clone(),
         backend: chain_backend::resolve_from(
             &chain_config,
@@ -161,7 +186,7 @@ pub async fn init_taker(
             Some(tor.socks_port),
         )?,
         control_port: Some(tor.control_port),
-        tor_auth_password: Some(tor.control_password),
+        tor_auth_password: Some(tor.control_password.clone()),
         socks_port: tor.socks_port,
         password: config.wallet_password,
         connection_type,
@@ -171,105 +196,276 @@ pub async fn init_taker(
         check_blocklist: None,
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
     };
-    let wallet_name = config.wallet_name;
-
-    // Our own dual-role logger, not the crate's setup_taker_logger — see logging.rs.
-    crate::logging::set_taker_dir(data_dir.clone());
 
     // `Taker::init` runs startup recovery inline, which blocks on a block being mined and can
     // hold this call for a block interval; the watcher is what lets the UI say which phase of it
     // is running instead of showing one opaque spinner.
-    crate::logging::watch_init_phases(state.events.clone());
-    let init = tokio::task::spawn_blocking(move || Taker::init(init_cfg)).await;
-    crate::logging::stop_watching_init_phases();
-    let taker = init
-        .map_err(from_wallet_join_error)?
-        .map_err(AppError::from)?;
+    let sink = state.events.clone();
+    let wallet_key = key.to_path_buf();
+    // Registered before `Taker::init`, not after: the threads it starts log straight away, and
+    // only a registered wallet can claim their unattributed lines.
+    crate::logging::register_wallet(config.wallet_name.clone(), key.to_path_buf());
+    let taker = tokio::task::spawn_blocking(move || {
+        let _log = crate::logging::wallet_scope(wallet_key.clone());
+        let _watch = crate::logging::watch_init_phases(sink, wallet_key);
+        Taker::init(init_cfg)
+    })
+    .await
+    .map_err(from_wallet_join_error)
+    .and_then(|init| init.map_err(AppError::from))
+    .inspect_err(|_| crate::logging::unregister_wallet(key))?;
 
-    // A previous `shutdown` latched this; re-arm so syncs on the new taker aren't
-    // cancelled the moment they start.
-    state.sync_cancel.store(false, Ordering::Relaxed);
-    *state.wallet.write()? = Some(taker.get_wallet().clone());
-    *state.offer_sync.write()? = Some(taker.offer_sync_client());
-    *state.data_dir.write()? = Some(data_dir.clone());
-    *state.active_chain_backend.write()? = Some(chain_config);
-    *state.active_socks_port.write()? = Some(tor.socks_port);
-    *state.taker.lock()? = Some(taker);
+    let instance = Arc::new(TakerInstance {
+        wallet_name: config.wallet_name.clone(),
+        data_dir: key.to_path_buf(),
+        root: root.to_path_buf(),
+        wallet: taker.get_wallet().clone(),
+        offer_sync: taker.offer_sync_client(),
+        taker: Arc::new(Mutex::new(Some(taker))),
+        chain_backend: chain_config,
+        socks_port: tor.socks_port,
+        active_swap: Mutex::new(None),
+        sync_cancel: Arc::new(AtomicBool::new(false)),
+        is_offerbook_syncing: AtomicBool::new(false),
+        last_offerbook_sync_ts: AtomicU64::new(0),
+        sessions: Mutex::new(HashSet::from([session.to_string()])),
+        dir_lock: Mutex::new(Some(dir_lock)),
+    });
+    let result = InitResult {
+        wallet_name: config.wallet_name,
+        data_dir: root.display().to_string(),
+        joined: false,
+        note: None,
+    };
+    Ok((instance, result))
+}
 
+/// Adds a session to a wallet another session already has open.
+async fn join_taker(
+    state: &Arc<AppState>,
+    session: &str,
+    taker: &Arc<TakerInstance>,
+    config: InitConfig,
+    socks_port: u16,
+) -> Result<InitResult, AppError> {
+    let path = wallet_path(&taker.data_dir, &taker.wallet_name);
+    let password = config.wallet_password.filter(|p| !p.is_empty());
+    tokio::task::spawn_blocking(move || verify_wallet_password(&path, password))
+        .await
+        .map_err(from_wallet_join_error)??;
+
+    let note = check_join_network(session, taker, socks_port).await?;
+    taker.sessions.lock()?.insert(session.to_string());
+    state
+        .bindings
+        .lock()?
+        .insert(session.to_string(), taker.data_dir.clone());
     Ok(InitResult {
-        wallet_name,
-        data_dir: data_dir.display().to_string(),
+        wallet_name: taker.wallet_name.clone(),
+        data_dir: taker.root.display().to_string(),
+        joined: true,
+        note,
     })
 }
 
-/// Drops the Taker and reports success only when its decrypted handles were
-/// actually removed. Process-close callers may ignore an in-progress error,
-/// but interactive lock/reset must not reset its UI on that error.
-pub fn shutdown(state: &Arc<AppState>) -> Result<(), AppError> {
-    if state
-        .active_swap
-        .lock()?
-        .as_ref()
-        .is_some_and(|swap| matches!(swap.phase, crate::state::SwapLifecycle::Running))
-    {
-        return Err(AppError::swap_in_progress());
+/// Proves the password opens the wallet file without loading a second copy of the wallet.
+///
+/// AES-GCM authenticates, so a wrong password cannot decrypt to anything. The encryption check
+/// comes first because without a password the crate reads the file as plaintext, and any CBOR
+/// document — an encrypted one included — parses as "something".
+fn verify_wallet_password(path: &Path, password: Option<String>) -> Result<(), AppError> {
+    use openswap::security::{load_sensitive_struct, SecurityError, SerdeCbor};
+    let wrong = || AppError::new(ErrorCode::WalletWrongPassword, "incorrect wallet password");
+    if password.is_none() {
+        return if Wallet::is_wallet_encrypted(path)? {
+            Err(wrong())
+        } else {
+            Ok(())
+        };
     }
-    // Released before the handles below, so a sync already inside the crate's retry loop
-    // unwinds instead of holding a blocking thread against a backend that is going away.
-    state.sync_cancel.store(true, Ordering::Relaxed);
-    let mut taker = match crate::state::try_lock_taker(&state.taker) {
-        Ok(taker) => taker,
-        Err(error) => {
-            // The live taker still owns this flag. Re-arm it when shutdown could not
-            // acquire the handle, otherwise every later sync is cancelled immediately.
-            state.sync_cancel.store(false, Ordering::Relaxed);
-            return Err(error);
-        }
+    match load_sensitive_struct::<serde::de::IgnoredAny, SerdeCbor>(path, password) {
+        Ok(_) => Ok(()),
+        Err(SecurityError::Decryption | SecurityError::PasswordRequired) => Err(wrong()),
+        Err(e) => Err(AppError::new(ErrorCode::WalletLoadFailed, format!("{e:?}"))),
+    }
+}
+
+/// A wallet belongs to one chain, and the running Taker's backend is on it — the crate refused
+/// to load the wallet otherwise. So a joining session whose own backend reports a different
+/// chain has picked the wrong network, exactly as it would have on a fresh init.
+async fn check_join_network(
+    session: &str,
+    taker: &TakerInstance,
+    socks_port: u16,
+) -> Result<Option<String>, AppError> {
+    let own = chain_backend::load(session);
+    if chain_backend::fingerprint(&own, Some(socks_port))
+        == chain_backend::fingerprint(&taker.chain_backend, Some(taker.socks_port))
+    {
+        return Ok(None);
+    }
+    let (mine, running) = tokio::join!(
+        chain_backend::check_backend(session, Some(own.clone()), Some(socks_port)),
+        chain_backend::check_backend(session, Some(taker.chain_backend.clone()), Some(taker.socks_port)),
+    );
+    let (Some(mine), Some(running)) = (mine?.chain, running?.chain) else {
+        return Err(AppError::new(
+            ErrorCode::RpcUnreachable,
+            "Could not confirm which network this wallet is on. Check the connection and try again.",
+        ));
     };
-    taker.take();
-    drop(taker);
-    *state.wallet.write()? = None;
-    *state.offer_sync.write()? = None;
-    *state.data_dir.write()? = None;
-    *state.active_chain_backend.write()? = None;
-    *state.active_socks_port.write()? = None;
-    state.pending_file_selections.lock()?.clear();
-    *state.active_swap.lock()? = None;
-    Ok(())
+    if mine != running {
+        // The backend reports mainnet as "bitcoin", which reads as the currency.
+        let name = |chain: &str| if chain == "bitcoin" { "mainnet".to_string() } else { chain.to_string() };
+        let (mine, running) = (name(&mine), name(&running));
+        return Err(AppError::new(
+            ErrorCode::WalletNetworkMismatch,
+            format!(
+                "This is a {running} wallet, but this browser is connected to {mine}. Go back \
+                 and pick a {running} server."
+            ),
+        ));
+    }
+    Ok(Some(format!(
+        "This wallet was already open in another browser, so it keeps that browser's connection ({}).",
+        chain_backend::describe(&taker.chain_backend)
+    )))
+}
+
+/// Takes this session off its wallet. The wallet itself is dropped once no session is left on
+/// it, unless a swap is still running — the swap thread releases it when the swap settles.
+pub fn release_session(state: &Arc<AppState>, session: &str) {
+    let Some(key) = state.bindings.lock().ok().and_then(|mut b| b.remove(session)) else {
+        return;
+    };
+    if let Ok(takers) = state.takers.lock() {
+        if let Some(TakerSlot::Open(taker)) = takers.get(&key) {
+            if let Ok(mut sessions) = taker.sessions.lock() {
+                sessions.remove(session);
+            }
+        }
+    }
+    release_if_unused(state, &key);
+}
+
+/// A session that is gone for good: signed out or expired. Also drops its gate choice, which
+/// can hold a node's RPC password.
+pub fn end_session(state: &Arc<AppState>, session: &str) {
+    release_session(state, session);
+    chain_backend::forget_session(session);
+}
+
+/// Drops the wallet at `key` if nothing is using it any more.
+pub(crate) fn release_if_unused(state: &Arc<AppState>, key: &Path) {
+    let Ok(mut takers) = state.takers.lock() else {
+        return;
+    };
+    let idle = match takers.get(key) {
+        Some(TakerSlot::Open(taker)) => {
+            !taker.swap_running() && taker.sessions.lock().is_ok_and(|s| s.is_empty())
+        }
+        _ => false,
+    };
+    if !idle {
+        return;
+    }
+    let Some(TakerSlot::Open(taker)) = takers.remove(key) else {
+        return;
+    };
+    drop(takers);
+    spawn_release(state, taker);
+}
+
+/// Drops a Taker off the caller's thread.
+///
+/// The crate's `Drop` joins every background thread, and one mid-way through an offer fetch
+/// over Tor only notices the shutdown flag between makers — measured at over twenty seconds.
+/// Nothing a user is waiting on should sit behind that. The wallet-dir lock goes with it, and
+/// only once the final save is done.
+fn spawn_release(state: &Arc<AppState>, taker: Arc<TakerInstance>) {
+    // Raised first, so a sync already inside the crate's retry loop unwinds instead of holding
+    // the wallet lock that `Drop`'s final save needs.
+    taker.sync_cancel.store(true, Ordering::Relaxed);
+    let key = taker.data_dir.clone();
+    let spawned = std::thread::Builder::new()
+        .name("taker-release".into())
+        .spawn(move || {
+            let _log = crate::logging::wallet_scope(taker.data_dir.clone());
+            // Blocking on purpose: a command still inside the crate — a prepare, a poll —
+            // finishes before the Taker it is using goes away.
+            let inner = taker
+                .taker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            drop(inner);
+            if let Ok(mut lock) = taker.dir_lock.lock() {
+                lock.take();
+            }
+            crate::logging::unregister_wallet(&taker.data_dir);
+        });
+    match spawned {
+        Ok(handle) => {
+            if let Ok(mut releasing) = state.releasing.lock() {
+                releasing.retain(|_, handle| !handle.is_finished());
+                releasing.insert(key, handle);
+            }
+        }
+        Err(e) => log::error!("could not start the wallet release thread: {e}"),
+    }
+}
+
+/// Drops every wallet and waits for all of them to finish saving. For the quit paths only.
+///
+/// A wallet with a running swap is left alone: the swap thread holds its Taker for the whole
+/// swap, and the swap's own per-phase writes are what the next launch recovers from.
+pub fn shutdown_all(state: &Arc<AppState>) {
+    if let Ok(mut bindings) = state.bindings.lock() {
+        bindings.clear();
+    }
+    for taker in state.open_takers() {
+        if let Ok(mut sessions) = taker.sessions.lock() {
+            sessions.clear();
+        }
+        if taker.swap_running() {
+            log::warn!("{} has a swap running; leaving it to the swap thread", taker.wallet_name);
+            continue;
+        }
+        release_if_unused(state, &taker.data_dir);
+    }
+    let pending: Vec<_> = state
+        .releasing
+        .lock()
+        .map(|mut releasing| releasing.drain().map(|(_, handle)| handle).collect())
+        .unwrap_or_default();
+    for handle in pending {
+        let _ = handle.join();
+    }
 }
 
 /// Infallible by design: every branch is a valid answer, so a fresh start never looks broken.
-pub fn get_session_state(state: &Arc<AppState>) -> SessionStateDto {
-    let wallet_name = state
-        .wallet
-        .read()
-        .ok()
-        .and_then(|w| w.clone())
-        .and_then(|w| w.read().ok().map(|w| w.get_name().to_string()));
-    let data_dir = state
-        .data_dir
-        .read()
-        .ok()
-        .and_then(|d| d.clone())
-        .map(|d| d.display().to_string());
-    SessionStateDto {
-        initialized: wallet_name.is_some(),
-        wallet_name,
-        data_dir,
+pub fn get_session_state(state: &Arc<AppState>, session: &str) -> SessionStateDto {
+    match state.taker_for(session) {
+        Ok(taker) => SessionStateDto {
+            initialized: true,
+            wallet_name: Some(taker.wallet_name.clone()),
+            data_dir: Some(taker.root.display().to_string()),
+        },
+        Err(_) => SessionStateDto {
+            initialized: false,
+            wallet_name: None,
+            data_dir: None,
+        },
     }
 }
 
-pub fn get_wallet_info(state: &Arc<AppState>) -> Result<WalletInfo, AppError> {
-    let wallet_name = get_wallet_handle(state)?.read()?.get_name().to_string();
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+pub fn get_wallet_info(taker: &TakerInstance) -> Result<WalletInfo, AppError> {
     Ok(WalletInfo {
-        wallet_path: wallet_path(&data_dir, &wallet_name).display().to_string(),
-        wallet_name,
-        data_dir: data_dir.display().to_string(),
+        wallet_path: wallet_path(&taker.data_dir, &taker.wallet_name)
+            .display()
+            .to_string(),
+        wallet_name: taker.wallet_name.clone(),
+        data_dir: taker.data_dir.display().to_string(),
     })
 }
 
@@ -284,6 +480,7 @@ pub fn register_restore_selection(
     state: &Arc<AppState>,
     _operation: SensitiveOperationGuard,
     path: PathBuf,
+    staged: bool,
 ) -> Result<RestoreSelectionView, AppError> {
     let metadata = std::fs::symlink_metadata(&path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -305,6 +502,7 @@ pub fn register_restore_selection(
         selection_id,
         PendingFileSelection {
             path: canonical,
+            staged,
             created_at: std::time::Instant::now(),
         },
     );
@@ -314,10 +512,22 @@ pub fn register_restore_selection(
     })
 }
 
+/// Deletes a host-staged file when dropped.
+struct StagedFile(Option<PathBuf>);
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Restore from a Rust-selected backup before `init_taker`. Bad password/file panics (caught via
 /// from_wallet_join_error); a real WalletError is swallowed by the crate, so check the output.
 pub async fn restore_wallet(
     state: &Arc<AppState>,
+    session: &str,
     data_dir: Option<String>,
     wallet_name: String,
     socks_port: Option<u16>,
@@ -329,13 +539,14 @@ pub async fn restore_wallet(
         &state.sensitive_operation_active,
         SensitiveOperation::RestorePrivateKey,
     )?;
-    let dir = resolve_data_dir(&data_dir)?;
+    let root = resolve_data_dir(&data_dir)?;
     if data_dir.is_some() {
-        crate::security::fs::require_private_dir(&dir)?;
+        crate::security::fs::require_private_dir(&root)?;
     } else {
-        crate::security::fs::ensure_private_dir(&dir)?;
+        crate::security::fs::ensure_private_dir(&root)?;
     }
-    crate::security::fs::ensure_private_dir(&dir.join("wallets"))?;
+    crate::security::fs::ensure_private_dir(&root.join(storage::WALLET_DATA_DIR))?;
+    let dir = storage::wallet_data_dir(&root, &wallet_name);
     let restored_path = wallet_path(&dir, &wallet_name);
 
     // Do not consume a one-shot file selection for an error the user can fix by
@@ -356,16 +567,23 @@ pub async fn restore_wallet(
                 "restore file selection is missing, expired, or already used",
             )
         })?;
+    // Held to the end of this function, so an upload is gone however the restore ends — it
+    // is the whole encrypted wallet, and nothing needs it once the restore has read it.
+    let _staged = StagedFile(selection.staged.then(|| selection.path.clone()));
     if selection.created_at.elapsed() > Duration::from_secs(300) {
         return Err(AppError::new(
             ErrorCode::InvalidFileSelection,
             "restore file selection expired; choose the file again",
         ));
     }
-    let backend = chain_backend::resolve(&wallet_name, socks_port)?;
+    crate::security::fs::ensure_private_dir(&dir)?;
+    crate::security::fs::ensure_private_dir(&dir.join("wallets"))?;
+    let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
     let backup_path = selection.path;
 
+    let log_dir = dir.clone();
     tokio::task::spawn_blocking(move || {
+        let _log = crate::logging::wallet_scope(log_dir);
         openswap::wallet::ffi::restore_wallet_gui_app(
             Some(dir),
             Some(wallet_name),
@@ -391,12 +609,12 @@ pub async fn restore_wallet(
 /// destination was picked and holds the sensitive-operation guard across the choice, so this
 /// takes the guard rather than acquiring a second one.
 pub async fn write_backup(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     _operation: SensitiveOperationGuard,
     destination: PathBuf,
     password: String,
 ) -> Result<String, AppError> {
-    let wallet = get_wallet_handle(state)?;
+    let wallet = taker.wallet.clone();
     // The openswap helper always replaces the selected extension with `.json`.
     // Validate and pre-create that actual target so its first write is private too.
     let destination = destination.with_extension("json");
@@ -460,8 +678,8 @@ pub fn validate_address(address: String) -> AddressValidation {
     }
 }
 
-pub async fn get_balances(state: &Arc<AppState>) -> Result<BalancesDto, AppError> {
-    let wallet = get_wallet_handle(state)?;
+pub async fn get_balances(taker: &TakerInstance) -> Result<BalancesDto, AppError> {
+    let wallet = taker.wallet.clone();
     tokio::task::spawn_blocking(move || -> Result<BalancesDto, AppError> {
         let b = wallet.read()?.get_balances()?;
         Ok(BalancesDto {
@@ -485,21 +703,11 @@ struct LastAddresses {
     p2tr: Option<String>,
 }
 
-fn resolve_last_address_path(state: &Arc<AppState>) -> Result<PathBuf, AppError> {
-    let data_dir = state
+fn last_address_path(taker: &TakerInstance) -> PathBuf {
+    taker
         .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let wallet = state
-        .wallet
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let wallet_name = wallet.read()?.get_name().to_string();
-    Ok(data_dir
         .join("wallets")
-        .join(format!("{wallet_name}_last_address.json")))
+        .join(format!("{}_last_address.json", taker.wallet_name))
 }
 
 fn load_last_addresses(path: &PathBuf) -> LastAddresses {
@@ -530,11 +738,11 @@ const USED_ADDRESS_LOOKBACK: usize = 10;
 /// receive panel can render immediately, and `verify_last_address` does the expensive part
 /// afterwards. Blocking address issuance on that check is what made Receive slow.
 pub async fn get_new_address(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    let wallet = get_wallet_handle(state)?;
-    let path = resolve_last_address_path(state)?;
+    let wallet = taker.wallet.clone();
+    let path = last_address_path(taker);
     let (addr_type, label) = address_kind(address_type);
     tokio::task::spawn_blocking(move || -> Result<NewAddress, AppError> {
         let mut cached = load_last_addresses(&path);
@@ -567,11 +775,11 @@ pub async fn get_new_address(
 /// The slow half of address issuance, split out so it runs after the panel has already painted.
 /// Returns whatever address the user should be offering, always verified.
 pub async fn verify_last_address(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    let wallet = get_wallet_handle(state)?;
-    let path = resolve_last_address_path(state)?;
+    let wallet = taker.wallet.clone();
+    let path = last_address_path(taker);
     let (addr_type, label) = address_kind(address_type);
     tokio::task::spawn_blocking(move || -> Result<NewAddress, AppError> {
         let mut cached = load_last_addresses(&path);
@@ -627,11 +835,11 @@ fn address_slot(cached: &mut LastAddresses, addr_type: AddressType) -> &mut Opti
 }
 
 pub async fn get_transactions(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     count: Option<usize>,
     skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
-    let wallet = get_wallet_handle(state)?;
+    let wallet = taker.wallet.clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<TxSummary>, AppError> {
         let txs = wallet.read()?.get_transactions(count, skip)?;
         Ok(txs
@@ -652,9 +860,10 @@ pub async fn get_transactions(
     .map_err(AppError::internal)?
 }
 
-pub async fn list_utxos(state: &Arc<AppState>) -> Result<Vec<UtxoEntry>, AppError> {
-    let wallet = get_wallet_handle(state)?;
-    let socks_port = *state.active_socks_port.read()?;
+pub async fn list_utxos(taker: &TakerInstance) -> Result<Vec<UtxoEntry>, AppError> {
+    let wallet = taker.wallet.clone();
+    let backend = taker.chain_backend.clone();
+    let socks_port = Some(taker.socks_port);
     tokio::task::spawn_blocking(move || -> Result<Vec<UtxoEntry>, AppError> {
         let utxos = wallet.read()?.list_all_utxo_spend_info();
         Ok(utxos
@@ -664,7 +873,7 @@ pub async fn list_utxos(state: &Arc<AppState>) -> Result<Vec<UtxoEntry>, AppErro
                 vout: entry.vout,
                 amount_sats: entry.amount.to_sat(),
                 confirmations: entry.confirmations,
-                address: chain_backend::utxo_address(&entry, socks_port),
+                address: chain_backend::utxo_address(&entry, &backend, socks_port),
                 spendable: entry.spendable,
                 solvable: entry.solvable,
                 spend_type: spend_info.to_string(),
@@ -678,6 +887,7 @@ pub async fn list_utxos(state: &Arc<AppState>) -> Result<Vec<UtxoEntry>, AppErro
 /// `fee_rate` defaults to 2 sat/vB when omitted.
 pub async fn send_to_address(
     state: &Arc<AppState>,
+    taker: &TakerInstance,
     address: String,
     amount_sats: u64,
     fee_rate: Option<f64>,
@@ -706,7 +916,7 @@ pub async fn send_to_address(
         &state.sensitive_operation_active,
         SensitiveOperation::SendTakerFunds,
     )?;
-    let wallet = get_wallet_handle(state)?;
+    let wallet = taker.wallet.clone();
     let outpoints = outpoints
         .map(|list| {
             if list.len() > 10_000 {
@@ -733,7 +943,9 @@ pub async fn send_to_address(
         ));
     }
 
+    let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<SendResult, AppError> {
+        let _log = crate::logging::wallet_scope(log_dir);
         let txid = wallet
             .write()?
             .send_to_address(amount_sats, address, fee_rate, outpoints)?;
@@ -745,10 +957,12 @@ pub async fn send_to_address(
     .map_err(AppError::internal)?
 }
 
-pub async fn sync_wallet(state: &Arc<AppState>) -> Result<(), AppError> {
-    let wallet = get_wallet_handle(state)?;
-    let cancel = state.sync_cancel.clone();
+pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
+    let wallet = taker.wallet.clone();
+    let cancel = taker.sync_cancel.clone();
+    let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let _log = crate::logging::wallet_scope(log_dir);
         wallet.write()?.sync_and_save(&cancel)?;
         Ok(())
     })
@@ -807,69 +1021,94 @@ fn read_fee(body: &serde_json::Value, key: &str) -> Result<f64, AppError> {
 }
 
 /// Hits mempool.space/api/v1/prices over clearnet, same as estimate_fees — public market data,
-/// not swap-sensitive, so it isn't routed through Tor. A successful quote is saved locally;
-/// a later network failure falls back to that last known value across app restarts.
+/// not swap-sensitive, so it isn't routed through Tor. A quote younger than
+/// [`PRICE_MAX_AGE_SECS`] is served from memory; a failed fetch falls back to the last one this
+/// process saw.
 pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
-    tokio::task::spawn_blocking(|| -> Result<PriceEstimate, AppError> {
-        let live_quote = (|| -> Result<CachedBtcPrice, AppError> {
-            let response = minreq::get("https://mempool.space/api/v1/prices")
-                .with_timeout(10)
-                .send()
-                .map_err(AppError::internal)?;
-            if !(200..300).contains(&response.status_code) {
-                return Err(AppError::new(
+    let last = *LAST_PRICE.lock()?;
+    if let Some(quote) = last.filter(|q| unix_timestamp().saturating_sub(q.fetched_at) < PRICE_MAX_AGE_SECS) {
+        return Ok(PriceEstimate {
+            usd: quote.usd,
+            cached: false,
+            fetched_at: quote.fetched_at,
+        });
+    }
+    let live = tokio::task::spawn_blocking(|| -> Result<CachedBtcPrice, AppError> {
+        let response = minreq::get("https://mempool.space/api/v1/prices")
+            .with_timeout(10)
+            .send()
+            .map_err(AppError::internal)?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(AppError::new(
+                ErrorCode::Internal,
+                format!("price service returned HTTP {}", response.status_code),
+            ));
+        }
+        let body: serde_json::Value = response.json().map_err(AppError::internal)?;
+        let usd = body
+            .get("USD")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|price| valid_usd_price(*price))
+            .ok_or_else(|| {
+                AppError::new(
                     ErrorCode::Internal,
-                    format!("price service returned HTTP {}", response.status_code),
-                ));
-            }
-            let body: serde_json::Value = response.json().map_err(AppError::internal)?;
-            let usd = body
-                .get("USD")
-                .and_then(serde_json::Value::as_f64)
-                .filter(|price| valid_usd_price(*price))
-                .ok_or_else(|| {
-                    AppError::new(
-                        ErrorCode::Internal,
-                        "price response missing a valid USD value".to_string(),
-                    )
-                })?;
-            Ok(CachedBtcPrice {
-                usd,
-                fetched_at: unix_timestamp(),
-            })
-        })();
+                    "price response missing a valid USD value".to_string(),
+                )
+            })?;
+        Ok(CachedBtcPrice {
+            usd,
+            fetched_at: unix_timestamp(),
+        })
+    })
+    .await
+    .map_err(AppError::internal)?;
 
-        match live_quote {
-            Ok(quote) => {
-                if let Err(error) = save_cached_btc_price(&quote) {
-                    log::warn!("could not save BTC/USD price cache: {error:?}");
-                }
+    match live {
+        Ok(quote) => {
+            *LAST_PRICE.lock()? = Some(quote);
+            Ok(PriceEstimate {
+                usd: quote.usd,
+                cached: false,
+                fetched_at: quote.fetched_at,
+            })
+        }
+        Err(live_error) => match last {
+            Some(quote) => {
+                log::warn!(
+                    "live BTC/USD price unavailable; using the quote from {}: {live_error:?}",
+                    quote.fetched_at
+                );
                 Ok(PriceEstimate {
                     usd: quote.usd,
-                    cached: false,
+                    cached: true,
                     fetched_at: quote.fetched_at,
                 })
             }
-            Err(live_error) => match load_cached_btc_price() {
-                Ok(Some(quote)) => {
-                    log::warn!(
-                        "live BTC/USD price unavailable; using cached quote from {}: {live_error:?}",
-                        quote.fetched_at
-                    );
-                    Ok(PriceEstimate {
-                        usd: quote.usd,
-                        cached: true,
-                        fetched_at: quote.fetched_at,
-                    })
-                }
-                Ok(None) => Err(live_error),
-                Err(cache_error) => {
-                    log::warn!("could not read BTC/USD price cache: {cache_error:?}");
-                    Err(live_error)
-                }
-            },
-        }
-    })
-    .await
-    .map_err(AppError::internal)?
+            None => Err(live_error),
+        },
+    }
+}
+
+#[cfg(test)]
+mod staged_file_tests {
+    use super::StagedFile;
+
+    /// A web upload is the whole encrypted wallet and goes the moment the restore is done; a
+    /// desktop pick is the user's own backup and must never be touched.
+    #[test]
+    fn only_a_staged_file_is_deleted() {
+        let dir = std::env::temp_dir().join(format!("portal-staged-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let upload = dir.join("upload");
+        let picked = dir.join("picked");
+        std::fs::write(&upload, b"x").unwrap();
+        std::fs::write(&picked, b"x").unwrap();
+
+        drop(StagedFile(Some(upload.clone())));
+        drop(StagedFile(None));
+
+        assert!(!upload.exists());
+        assert!(picked.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, RefreshCw } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, Download, Droplets, ExternalLink, RefreshCw } from "lucide-react";
 import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import QRCode from "qrcode";
@@ -6,14 +6,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { estimateFees, getBalances, getBtcPrice, getNewAddress, getTransactions, listUtxos, sendToAddress, validateAddress, verifyLastAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, FeeEstimate, NewAddress, Outpoint, TxSummary, UtxoEntry } from "../../api/types";
-import { Card, Modal, SatsAmount } from "../../components/ui/display";
+import { Card, Identifier, Modal, SatsAmount } from "../../components/ui/display";
 import { Button, PresetTile, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import {
   classifySpendType,
   formatFeeRate,
   formatUnitAmount,
   satsToUnitString,
-  truncateMiddle,
   unitStringToSats,
   type Unit,
 } from "../../lib/wallet-format";
@@ -21,6 +20,9 @@ import { useToastStore } from "../../store/toast";
 import { refreshWalletCache } from "../../lib/wallet-sync";
 import { usePendingSendsStore } from "../../store/pending-sends";
 import { useWalletCacheStore } from "../../store/wallet-cache";
+import { FAUCET_URL, isOurSignet, useConnectionStore } from "../../store/connection";
+import { openExternal } from "../../platform";
+import { copyText } from "../../lib/clipboard";
 
 /** Fixed, always-distinct choices. The mempool quote informs the hint below them, not the tiles
  *  themselves — API-derived tiers collapse to the same number on a quiet mempool. */
@@ -28,6 +30,26 @@ const FEE_PRESETS = [1, 2, 3] as const;
 const MAX_PRESET = FEE_PRESETS[FEE_PRESETS.length - 1];
 
 type FeeKey = (typeof FEE_PRESETS)[number] | "custom";
+
+/** Coins on our signet have no value and nowhere to be bought, so the faucet is the only way
+ *  to get any — which is also why this must not appear anywhere else: on a chain whose coins
+ *  are real, a "free coins" button is at best a lie. */
+function FaucetButton() {
+  const ours = useConnectionStore(isOurSignet);
+  if (!ours) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => void openExternal(FAUCET_URL)}
+      title="Get signet coins from our faucet"
+      className="lift inline-flex flex-none items-center gap-1.5 rounded-pill border border-primary/30 bg-primary/[0.08] px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-primary outline-none hover:border-primary/50 hover:bg-primary/[0.14] focus-visible:shadow-ring"
+    >
+      <Droplets size={12} strokeWidth={2} />
+      Faucet
+      <ExternalLink size={11} strokeWidth={2} />
+    </button>
+  );
+}
 
 function SendPanel() {
   const pushToast = useToastStore((s) => s.push);
@@ -226,9 +248,12 @@ function SendPanel() {
           </span>
           <h2 className="font-header text-[15px] font-bold text-foreground">Send</h2>
         </div>
-        <span className="text-[11px] text-subtle">
-          Spendable: <SatsAmount sats={balances?.spendable ?? 0} className="text-foreground" />
-        </span>
+        <div className="flex items-center gap-2.5">
+          <span className="text-[11px] text-subtle">
+            Spendable: <SatsAmount sats={balances?.spendable ?? 0} className="text-foreground" />
+          </span>
+          <FaucetButton />
+        </div>
       </div>
 
       {!walletReadyToSpend && (
@@ -357,10 +382,10 @@ function SendPanel() {
                   key={key}
                   className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
                 >
-                  <span className="flex items-center gap-2 truncate font-mono text-[11px] text-muted">
-                    <input type="checkbox" checked={checked} onChange={() => toggleOutpoint(u)} className="accent-primary" />
-                    {truncateMiddle(u.txid, 8, 6)}:{u.vout}
-                    <span className="rounded-control border border-line px-1.5 py-0.5 text-[9px] text-subtle">
+                  <span className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted">
+                    <input type="checkbox" checked={checked} onChange={() => toggleOutpoint(u)} className="flex-none accent-primary" />
+                    <Identifier value={u.address ?? `${u.txid}:${u.vout}`} className="text-[11px] leading-[1.45]" />
+                    <span className="flex-none rounded-control border border-line px-1.5 py-0.5 text-[9px] text-subtle">
                       {classifySpendType(u.spendType)}
                     </span>
                   </span>
@@ -564,8 +589,11 @@ function ReceivePanel() {
   function copyAddress() {
     if (!current) return;
     copied.current.add(current.address);
-    void navigator.clipboard.writeText(current.address);
-    pushToast("success", "Address copied.");
+    void copyText(current.address).then((ok) =>
+      ok
+        ? pushToast("success", "Address copied.")
+        : pushToast("warning", "Could not reach the clipboard — select the address and copy it."),
+    );
   }
 
   function exportCsv() {
@@ -588,6 +616,7 @@ function ReceivePanel() {
           </span>
           <h2 className="font-header text-[15px] font-bold text-foreground">Receive</h2>
         </div>
+        <FaucetButton />
       </div>
 
       <SegmentedToggle
@@ -620,14 +649,16 @@ function ReceivePanel() {
 
       <label className="flex flex-col gap-2">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Your Address</span>
-        <div className="flex h-[46px] items-center justify-between gap-2 rounded-control border border-line-strong bg-surface-raised px-3.5">
-          <span className="truncate font-mono text-[12.5px] text-muted" title={current?.address}>
-            {current
-              ? truncateMiddle(current.address, 14, 10)
-              : pendingType === addressType
-                ? "Generating…"
-                : "—"}
-          </span>
+        <div className="flex min-h-[46px] items-center justify-between gap-2 rounded-control border border-line-strong bg-surface-raised px-3.5 py-2.5">
+          {current ? (
+            // `select-all` so one click takes the whole address: this is the value a user
+            // falls back to lifting by hand when the clipboard is out of reach.
+            <Identifier value={current.address} className="select-all text-[12.5px] leading-[1.5] text-muted" />
+          ) : (
+            <span className="font-mono text-[12.5px] text-subtle">
+              {pendingType === addressType ? "Generating…" : "—"}
+            </span>
+          )}
           <button
             type="button"
             onClick={copyAddress}
@@ -658,9 +689,7 @@ function ReceivePanel() {
           {recentAddresses.length === 0 && <p className="py-2 text-[11.5px] text-subtle">No incoming transactions yet.</p>}
           {recentAddresses.map(([addr, sats]) => (
             <div key={addr} className="flex items-center justify-between gap-3 py-2 text-[11.5px]">
-              <span className="truncate font-mono text-muted" title={addr}>
-                {truncateMiddle(addr, 10, 6)}
-              </span>
+              <Identifier value={addr} className="text-[11.5px] leading-[1.45] text-muted" />
               <SatsAmount sats={sats} className="flex-none font-semibold text-success" />
             </div>
           ))}

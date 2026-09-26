@@ -2,7 +2,6 @@
 //! (`<wallet_name>_swap_report.json`, not per swap id) written by the crate
 //! itself — we only read it.
 
-use std::sync::Arc;
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +11,7 @@ use openswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport, UTXOS
 
 use crate::ops::chain_backend;
 use crate::error::{AppError, ErrorCode};
-use crate::state::{try_lock_taker, AppState};
+use crate::state::{try_lock_taker, TakerInstance};
 use crate::types::{
     Outpoint, ReportRouterFee, ReportUtxo, SwapReportDetail, SwapReportSummary, SwapUtxoDto,
 };
@@ -77,19 +76,8 @@ fn received_sats(r: &TakerReport) -> u64 {
     }
 }
 
-fn resolve_report_path(state: &Arc<AppState>) -> Result<PathBuf, AppError> {
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let wallet = state
-        .wallet
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let wallet_name = wallet.read()?.get_name().to_string();
-    Ok(report_path(&data_dir, &wallet_name))
+fn resolve_report_path(taker: &TakerInstance) -> PathBuf {
+    report_path(&taker.data_dir, &taker.wallet_name)
 }
 
 fn load_report_file(path: &Path) -> Result<SwapReportFile, AppError> {
@@ -168,14 +156,10 @@ fn tracker_records(data_dir: &Path) -> Vec<SwapRecord> {
 }
 
 pub async fn list_swap_reports(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
 ) -> Result<Vec<SwapReportSummary>, AppError> {
-    let path = resolve_report_path(state)?;
-    let data_dir = state
-        .data_dir
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+    let path = resolve_report_path(taker);
+    let data_dir = taker.data_dir.clone();
     let file = tokio::task::spawn_blocking(move || load_report_file(&path))
         .await
         .map_err(AppError::internal)??;
@@ -236,10 +220,10 @@ pub async fn list_swap_reports(
 }
 
 pub async fn get_swap_report(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     swap_id: String,
 ) -> Result<SwapReportDetail, AppError> {
-    let path = resolve_report_path(state)?;
+    let path = resolve_report_path(taker);
     let file = tokio::task::spawn_blocking(move || load_report_file(&path))
         .await
         .map_err(AppError::internal)??;
@@ -316,10 +300,10 @@ pub async fn get_swap_report(
 }
 
 pub async fn verify_deniability(
-    state: &Arc<AppState>,
+    instance: &TakerInstance,
     swap_id: String,
 ) -> Result<bool, AppError> {
-    let taker = state.taker.clone();
+    let taker = instance.taker.clone();
     tokio::task::spawn_blocking(move || -> Result<bool, AppError> {
         let guard = try_lock_taker(&taker)?;
         let taker = guard.as_ref().ok_or_else(AppError::not_initialized)?;
@@ -343,23 +327,15 @@ pub async fn verify_deniability(
 const MAX_SWEPT_CANDIDATES: usize = 8;
 
 pub async fn get_incoming_swap_utxo(
-    state: &Arc<AppState>,
+    taker: &TakerInstance,
     swap_id: String,
 ) -> Result<Option<SwapUtxoDto>, AppError> {
-    let path = resolve_report_path(state)?;
-    let wallet = state
-        .wallet
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
+    let path = resolve_report_path(taker);
+    let wallet = taker.wallet.clone();
     // The session config can be re-pointed mid-session; this is the route the wallet is
     // actually built against.
-    let active_backend = state
-        .active_chain_backend
-        .read()?
-        .clone()
-        .ok_or_else(AppError::not_initialized)?;
-    let socks_port = *state.active_socks_port.read()?;
+    let active_backend = taker.chain_backend.clone();
+    let socks_port = Some(taker.socks_port);
 
     tokio::task::spawn_blocking(move || -> Result<Option<SwapUtxoDto>, AppError> {
         let report = load_report_file(&path)?

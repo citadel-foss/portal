@@ -62,7 +62,7 @@ const PHASE_DOING: Record<TrackerPhase, string> = {
   funds_broadcast: "Routing your funds into the first contract",
   contracts_exchanged: "Waiting for the routed contracts to confirm",
   finalizing: "Exchanging private keys around the route",
-  privkeys_forwarded: "Sweeping the incoming contract into your wallet",
+  privkeys_forwarded: "Waiting for the sweep tx to confirm",
   completed: "Swept to your wallet",
   failed: "Stopped — recovery reclaims anything already on-chain",
 };
@@ -73,7 +73,7 @@ export type EdgeStage = "pending" | "built" | "broadcast" | "confirming" | "conf
 export const EDGE_STAGE_LABEL: Record<EdgeStage, string> = {
   pending: "Not started",
   built: "Built",
-  broadcast: "Broadcast",
+  broadcast: "Waiting confirmations",
   confirming: "Confirming",
   confirmed: "Confirmed",
 };
@@ -105,8 +105,8 @@ export interface EdgeView {
   locktimeBlocks?: number;
   /** Contract transactions on this leg. A hop may be funded by several splits, not one tx. */
   contractCount: number;
-  txid?: string;
-  confirmedHeight?: number;
+  /** Recorded contract txids, in the order the crate wrote them; empty until it does. */
+  txids: string[];
 }
 
 export interface CircuitView {
@@ -131,10 +131,24 @@ export interface CircuitView {
   liveEdgeIndex: number | null;
   /** One sentence: what the swap is actually doing right now. */
   activity: string;
+  /**
+   * The headline: the act by default, and `Hop N Confirming` while a contract is on the chain
+   * waiting. The status strip under the circuit shows this same string, so the two can never
+   * name different stages of the same swap.
+   */
+  title: string;
+  /** How much longer the live leg has: a block while a tx is confirming, otherwise unhedged. */
+  etaLabel: string;
   hopsConfirmed: number;
   sendAmountSats?: number;
   receiveAmountSats?: number;
   totalFeeSats?: number;
+  /** `totalFeeSats` split the way the summary panel splits it, so the two agree. */
+  routerFeeSats?: number;
+  miningFeeSats?: number;
+  /** Set when this swap pays a third party rather than returning the coins to the wallet. */
+  paymentAddress?: string;
+  paymentAmountSats?: number;
 }
 
 const PHASE_ACT: Record<TrackerPhase, Act> = {
@@ -223,23 +237,23 @@ export function useSwapCircuit(
               : "idle";
     });
 
-    // How many contract txs each leg carries. Only the two legs touching the wallet are
-    // recorded per-leg; everything between two routers arrives as one flat list, so it can
-    // only be attributed when it divides evenly across those legs. Until a leg's txids are
-    // recorded its count reads 0, and one strand stands in for the unknown.
+    // Which contract txs each leg carries. Only the two legs touching the wallet are recorded
+    // per-leg; everything between two routers arrives as one flat list, so it can only be
+    // attributed when it divides evenly across those legs. Until a leg's txids are recorded it
+    // has none, and one strand stands in for the unknown.
     const betweenRouters = Math.max(0, routerCount - 1);
-    const watchonly = tracker?.watchonlyContractCount ?? 0;
+    const watchonly = tracker?.watchonlyContractTxids ?? [];
     const perIntermediate =
-      betweenRouters > 0 && watchonly % betweenRouters === 0 ? watchonly / betweenRouters : 0;
-    const contractCountFor = (index: number) =>
-      Math.max(
-        1,
-        index === 0
-          ? (tracker?.outgoingContractCount ?? 0)
-          : index === routerCount
-            ? (tracker?.incomingContractCount ?? 0)
-            : perIntermediate,
-      );
+      betweenRouters > 0 && watchonly.length % betweenRouters === 0
+        ? watchonly.length / betweenRouters
+        : 0;
+    const txidsFor = (index: number): string[] => {
+      if (index === 0) return tracker?.outgoingContractTxids ?? [];
+      if (index === routerCount) return tracker?.incomingContractTxids ?? [];
+      if (perIntermediate === 0) return [];
+      // Leg 1 is the first router-to-router hop, so it starts at the front of the flat list.
+      return watchonly.slice((index - 1) * perIntermediate, index * perIntermediate);
+    };
 
     // Edge k carries the value leaving slot k. Amounts descend as each router takes its fee.
     let running = summary?.sendAmountSats ?? tracker?.sendAmountSats;
@@ -269,13 +283,15 @@ export function useSwapCircuit(
       const tone: Tone =
         stage === "confirmed" ? "success" : stage === "pending" ? "idle" : "active";
 
+      const txids = txidsFor(index);
       return {
         index,
         stage,
         tone,
         amountSats,
         locktimeBlocks: index === 0 ? undefined : summary?.routers[index - 1]?.locktime,
-        contractCount: contractCountFor(index),
+        contractCount: Math.max(1, txids.length),
+        txids,
       };
     });
 
@@ -294,13 +310,30 @@ export function useSwapCircuit(
     }
     if (failed && liveEdge !== -1) edges[liveEdge].tone = "danger";
 
+    // Is a contract sitting on the chain waiting? That is the one state with a block-shaped
+    // answer to "how much longer", and the one the headline names by hop.
+    const liveStage = liveEdge === -1 ? null : edges[liveEdge].stage;
+    const onChainWait = liveStage === "broadcast" || liveStage === "confirming";
+
     // A router that hasn't been reached yet isn't the story — the phase is. Once the swap is
     // working on one, that router's stage is the specific thing to say.
     const focusHop = focusIndex === null ? null : hops[focusIndex];
     const activity =
       failed || focusHop === null || focusHop.stage === "waiting"
         ? PHASE_DOING[failed ? "failed" : phase]
-        : `${focusHop.label} · ${STAGE_DOING[focusHop.stage]}`;
+        : // Leg 0 is our own funding, not a router's contract. The first router reads as
+          // `confirming` throughout that wait, so naming it here credits our transaction to it.
+          liveEdge === 0 && onChainWait
+          ? "Your wallet · Waiting for its contract to confirm on-chain"
+          : `${focusHop.label} · ${STAGE_DOING[focusHop.stage]}`;
+
+    const title = failed
+      ? "Swap Failed"
+      : finished
+        ? "Swap Complete"
+        : onChainWait
+          ? `Hop ${liveEdge + 1} Confirming`
+          : ACT_LABEL[act];
 
     return {
       routerCount,
@@ -314,10 +347,18 @@ export function useSwapCircuit(
       focusIndex,
       liveEdgeIndex: liveEdge === -1 ? null : liveEdge,
       activity,
+      title,
+      // A confirmation wait is the only stretch with a real unit; everything else is protocol
+      // chatter measured in seconds, and a countdown on it would be invented.
+      etaLabel: failed || finished ? "—" : onChainWait ? "10 mins" : "Soon",
       hopsConfirmed: edges.filter((e) => e.stage === "confirmed").length,
       sendAmountSats: summary?.sendAmountSats ?? tracker?.sendAmountSats,
       receiveAmountSats: summary?.estimatedReceiveAmountSats,
       totalFeeSats: summary?.totalEstimatedFeeSats,
+      routerFeeSats: summary?.routerFeeSats,
+      miningFeeSats: summary?.miningFeeSats,
+      paymentAddress: summary?.payment?.address ?? tracker?.paymentAddress,
+      paymentAmountSats: summary?.payment?.amountSats ?? tracker?.paymentAmountSats,
     };
   }, [tracker, summary, failure, finished]);
 }

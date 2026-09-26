@@ -1,4 +1,5 @@
 import { checkBackend, getBalances, getTransactions, getWalletInfo, listUtxos, syncWallet } from "../api/commands";
+import { useTxNoticeStore } from "../store/tx-notifications";
 import { useWalletCacheStore } from "../store/wallet-cache";
 
 let hydrateInFlight: Promise<void> | null = null;
@@ -51,7 +52,10 @@ export function refreshWalletCache(): Promise<void> {
       try {
         // Electrum reconstructs this from watched-script history and fetches
         // transaction inputs, so keep the initial window intentionally small.
-        cache.setHistoryData(await getTransactions(10, 0));
+        const history = await getTransactions(10, 0);
+        cache.setHistoryData(history);
+        // After the cache, so the wallet page a notification links to already has the row.
+        useTxNoticeStore.getState().observe(history);
       } catch (error) {
         cache.setHistoryError(
           (error as { message?: string })?.message ?? "Transaction history could not be loaded.",

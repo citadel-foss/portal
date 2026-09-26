@@ -1,0 +1,26 @@
+# Standalone deployment. Portal is not exposed directly: it speaks plain HTTP and expects a
+# TLS-terminating proxy in front, which is what `trusted-tls-proxy` asserts.
+services:
+  portal:
+    build:
+      context: ..
+      dockerfile: umbrel/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - portal-data:/data
+    environment:
+      PORTAL_BIND: 0.0.0.0:3000
+      PORTAL_ASSETS_DIR: /opt/portal/web
+      PORTAL_ACCESS_PROFILE: trusted-tls-proxy
+      # Exactly the origin the browser uses. Host, Origin and cookie policy derive from it.
+      PORTAL_PUBLIC_ORIGIN: ${PORTAL_PUBLIC_ORIGIN:?set the https origin your proxy serves}
+      PORTAL_SHUTDOWN_TIMEOUT_SECS: "110"
+    # Longer than the application deadline above, so the app records what it was doing rather
+    # than being killed mid-write.
+    stop_grace_period: 120s
+    # No published port: reachable only from the proxy on this network.
+    expose:
+      - "3000"
+
+volumes:
+  portal-data:

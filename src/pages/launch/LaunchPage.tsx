@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Link, Navigate } from "react-router-dom";
 import { Background } from "../../components/ui/layout";
 import { useSessionStore } from "../../store/session";
+import logoUrl from "../../assets/logo.png";
 
 const RISE = [0.16, 1, 0.3, 1] as const;
 
@@ -72,9 +73,14 @@ export function LaunchPage() {
             transition={{ duration: 0.5, ease: RISE }}
             className="text-center"
           >
-            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-primary font-header text-[17px] font-bold text-on-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.24),0_6px_16px_-8px_color-mix(in_oklab,var(--color-primary)_60%,transparent)]">
-              P
-            </div>
+            {/* White plate: the mark is two-tone, and its black half reads as a hole in the
+                logo against a dark ground. */}
+            <img
+              src={logoUrl}
+              alt=""
+              aria-hidden="true"
+              className="mx-auto h-11 w-11 rounded-full bg-white p-0.5 shadow-[0_6px_16px_-8px_rgba(0,0,0,0.9)]"
+            />
             <h1 className="mt-5 font-header text-[26px] font-bold leading-none text-foreground">
               Portal
             </h1>
@@ -88,7 +94,7 @@ export function LaunchPage() {
               to="/setup"
               icon={<ArrowLeftRight size={22} strokeWidth={1.8} />}
               title="Wallet"
-              description="Unlock a wallet and swap your bitcoin privately through a route of routers."
+              description="Unlock wallets to perform routed swaps."
               delay={0.12}
             />
             <RoleCard
@@ -96,7 +102,7 @@ export function LaunchPage() {
               accent="router"
               icon={<Server size={22} strokeWidth={1.8} />}
               title="Router"
-              description="Run liquidity services over Tor and earn fees from the swaps you route."
+              description="Run swap routers and earn fees."
               delay={0.2}
             />
           </div>

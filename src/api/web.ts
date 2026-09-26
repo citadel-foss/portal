@@ -1,5 +1,9 @@
 /** Web host: same-origin HTTP command routes and one shared SSE stream per tab. */
-import type { Host, RestoreSelection, UnresolvedOperation } from "./host-contract";
+import type {
+  Host,
+  RestoreSelection,
+  UnresolvedOperation,
+} from "./host-contract";
 
 const API = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/v1`;
 
@@ -30,6 +34,13 @@ function operationId(): string {
 /** Normalizes a failed response into the same raw shape `isAppError` accepts, so callers
  *  switch on `code` exactly as they do on desktop rather than unwrapping a JS `Error`. */
 async function toAppError(response: Response): Promise<unknown> {
+  // A command refused for want of a session means it expired or the server restarted. The
+  // page holds nothing worth keeping past that, so it starts over from the login screen.
+  // Not for the login routes themselves, where a 401 is a wrong password.
+  if (response.status === 401 && !/\/(session|auth\/\w+)$/.test(new URL(response.url).pathname)) {
+    window.location.hash = "#/login";
+    window.location.reload();
+  }
   const body = await response.json().catch(() => null);
   if (body && typeof body === "object" && "error" in body) return (body as { error: unknown }).error;
   return {
@@ -38,7 +49,10 @@ async function toAppError(response: Response): Promise<unknown> {
   };
 }
 
-async function call<T>(name: string, args?: Record<string, unknown>): Promise<T> {
+async function call<T>(
+  name: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
   // One key per deliberate invocation — two deliberate sends are two operations, not a
   // retry of one. The key is kept here so that if the response is lost in flight we can ask
   // the server what became of it rather than resubmitting blind.
@@ -80,9 +94,14 @@ async function call<T>(name: string, args?: Record<string, unknown>): Promise<T>
  * the answer and the work is already running; a 404 means acceptance never happened and the
  * caller is free to try again.
  */
-async function reconcileLostResponse(key: string, cause: unknown): Promise<unknown> {
+async function reconcileLostResponse(
+  key: string,
+  cause: unknown,
+): Promise<unknown> {
   try {
-    const probe = await fetch(`${API}/operations/${key}`, { credentials: "same-origin" });
+    const probe = await fetch(`${API}/operations/${key}`, {
+      credentials: "same-origin",
+    });
     if (probe.ok) return await settle(key);
   } catch {
     // Still unreachable — fall through and report the original failure.
@@ -90,7 +109,8 @@ async function reconcileLostResponse(key: string, cause: unknown): Promise<unkno
   throw {
     code: "SERVER_UNREACHABLE",
     message:
-      (cause as { message?: string })?.message ?? "The request did not reach Portal's API.",
+      (cause as { message?: string })?.message ??
+      "The request did not reach Portal's API.",
   };
 }
 
@@ -114,11 +134,13 @@ async function settle(operationId: string): Promise<unknown> {
     };
     if (record.state === "succeeded") return record.result ?? null;
     if (record.state === "failed") {
-      throw record.error ?? { code: "INTERNAL", message: "the operation failed" };
+      throw (
+        record.error ?? { code: "INTERNAL", message: "the operation failed" }
+      );
     }
     // Never reported as a plain failure: the effect may have happened, and saying otherwise
     // is what invites someone to send the same payment twice.
-    if (record.state === "indeterminate" || record.state === "interrupted") {
+    if (record.state === "indeterminate") {
       throw {
         code: "OPERATION_UNRESOLVED",
         message:
@@ -129,7 +151,8 @@ async function settle(operationId: string): Promise<unknown> {
     if (Date.now() > deadline) {
       throw {
         code: "OPERATION_PENDING",
-        message: "Still running. It keeps going on the server — reopen Portal to see it.",
+        message:
+          "Still running. It keeps going on the server — reopen Portal to see it.",
       };
     }
     await new Promise((resolve) => setTimeout(resolve, wait));
@@ -151,7 +174,10 @@ function ensureStream() {
   if (stream) return;
   stream = new EventSource(`${API}/events`, { withCredentials: true });
   stream.onmessage = (message) => {
-    const { name, payload } = JSON.parse(message.data) as { name: string; payload: unknown };
+    const { name, payload } = JSON.parse(message.data) as {
+      name: string;
+      payload: unknown;
+    };
     handlers.get(name)?.forEach((handler) => handler(payload));
   };
   // Named events do not reach `onmessage`. Without this listener the server's warning that
@@ -177,6 +203,52 @@ async function post(path: string, body: unknown): Promise<Response> {
   });
 }
 
+async function runRestore(): Promise<{
+  authenticated: boolean;
+  hasOwner: boolean;
+}> {
+  // A failure to reach the server at all is not a failure to authenticate. Letting the
+  // two collapse into one puts a password prompt in front of someone whose API simply
+  // is not running, which is impossible to diagnose from the screen.
+  let response: Response;
+  try {
+    response = await fetch(`${API}/session`, { credentials: "same-origin" });
+  } catch {
+    throw {
+      code: "SERVER_UNREACHABLE",
+      message: "Portal's API is not responding.",
+    };
+  }
+  if (response.status === 401) {
+    // The 401 body carries it: probing with a real login attempt would burn the
+    // server's throttle, and a handful of page loads would lock the owner out.
+    const body = await response.json().catch(() => null);
+    // `details`, not the error itself: that is where `AppError` carries structured data,
+    // and reading the wrong level silently yielded `undefined` — which the fallback below
+    // then turned into "there is an owner", so an unclaimed server offered a sign-in form
+    // for a password that did not exist yet.
+    const hasOwner =
+      (body as { error?: { details?: { hasOwner?: boolean } } } | null)?.error
+        ?.details?.hasOwner ?? true;
+    return { authenticated: false, hasOwner };
+  }
+  // Only a 401 means "log in". A dev proxy with nothing behind it answers 500 rather
+  // than failing the connection, so every other status is the server being absent —
+  // showing a password prompt for that sends the user somewhere with no way out.
+  if (!response.ok) {
+    throw {
+      code: "SERVER_UNREACHABLE",
+      message: "Portal's API is not responding.",
+    };
+  }
+  const body = (await response.json()) as {
+    csrfToken: string;
+    hasOwner: boolean;
+  };
+  setCsrfToken(body.csrfToken);
+  return { authenticated: true, hasOwner: body.hasOwner };
+}
+
 export const host: Host = {
   invoke: call,
   subscribe: async (event, handler) => {
@@ -194,13 +266,16 @@ export const host: Host = {
     // The server has no user's Router Dashboard to read; the command is desktop-only.
     localDashboardImport: false,
     canQuit: false,
-    requiresLogin: true,
   },
   operations: {
     blocking: async () => {
-      const response = await fetch(`${API}/operations`, { credentials: "same-origin" });
+      const response = await fetch(`${API}/operations`, {
+        credentials: "same-origin",
+      });
       if (!response.ok) return [];
-      const body = (await response.json()) as { blockingConflicts?: UnresolvedOperation[] };
+      const body = (await response.json()) as {
+        blockingConflicts?: UnresolvedOperation[];
+      };
       return body.blockingConflicts ?? [];
     },
     reconcile: async (id) => {
@@ -212,49 +287,15 @@ export const host: Host = {
     },
   },
   session: {
-    restore: async () => {
-      // A failure to reach the server at all is not a failure to authenticate. Letting the
-      // two collapse into one puts a password prompt in front of someone whose API simply
-      // is not running, which is impossible to diagnose from the screen.
-      let response: Response;
-      try {
-        response = await fetch(`${API}/session`, { credentials: "same-origin" });
-      } catch {
-        throw { code: "SERVER_UNREACHABLE", message: "Portal's API is not responding." };
-      }
-      if (response.status === 401) {
-        // The 401 body carries it: probing with a real login attempt would burn the
-        // server's throttle, and a handful of page loads would lock the owner out.
-        const body = await response.json().catch(() => null);
-        const hasOwner =
-          (body as { error?: { hasOwner?: boolean } } | null)?.error?.hasOwner ?? true;
-        return { authenticated: false, hasOwner };
-      }
-      // Only a 401 means "log in". A dev proxy with nothing behind it answers 500 rather
-      // than failing the connection, so every other status is the server being absent —
-      // showing a password prompt for that sends the user somewhere with no way out.
-      if (!response.ok) {
-        throw { code: "SERVER_UNREACHABLE", message: "Portal's API is not responding." };
-      }
-      const body = (await response.json()) as {
-        csrfToken: string;
-        hasOwner: boolean;
-        requiresLogin: boolean;
-      };
-      setCsrfToken(body.csrfToken);
-      // A local run with no credential configured answers this without a session, and the
-      // UI then matches the desktop app exactly — no login, straight to the connection gate.
-      host.capabilities.requiresLogin = body.requiresLogin;
-      return { authenticated: true, hasOwner: body.hasOwner };
-    },
+    restore: runRestore,
     login: async (password) => {
       const response = await post("/auth/login", { password });
       if (!response.ok) throw await toAppError(response);
       const body = (await response.json()) as { csrfToken: string };
       setCsrfToken(body.csrfToken);
     },
-    claim: async (secret, password) => {
-      const claimed = await post("/auth/bootstrap", { secret, password });
+    claim: async (password) => {
+      const claimed = await post("/auth/claim", { password });
       if (!claimed.ok) throw await toAppError(claimed);
       await host.session.login(password);
     },
@@ -267,7 +308,8 @@ export const host: Host = {
   openExternal: async (url) => {
     // Validated and opened with no opener handle, so a link cannot reach back into the app.
     const parsed = new URL(url);
-    if (parsed.protocol !== "https:") throw new Error("only https links can be opened");
+    if (parsed.protocol !== "https:")
+      throw new Error("only https links can be opened");
     window.open(parsed.href, "_blank", "noopener,noreferrer");
   },
   // There is no server filesystem to browse from a browser; the web flows upload instead.
@@ -287,6 +329,25 @@ export const host: Host = {
     });
     if (!response.ok) throw await toAppError(response);
     return (await response.json()) as RestoreSelection;
+  },
+  // Two steps because the server only hands a backup over once: producing it returns an id,
+  // and the download consumes and deletes it, so a retry means producing a fresh one.
+  createBackup: async (password) => {
+    const created = await post("/backups", { password });
+    if (!created.ok) throw await toAppError(created);
+    const { artifactId } = (await created.json()) as { artifactId: string };
+    const download = await post(`/backups/${artifactId}/download`, {});
+    if (!download.ok) throw await toAppError(download);
+    const name = `portal-wallet-backup-${Math.floor(Date.now() / 1000)}.json`;
+    const url = URL.createObjectURL(await download.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+    // Revoked on the next turn, not immediately: some browsers read the URL after `click`
+    // returns, and a revoked one downloads nothing.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return name;
   },
 };
 

@@ -1,10 +1,12 @@
 import { Check, Save } from "lucide-react";
 import { useEffect, useState } from "react";
-import { backupWallet, checkBackend } from "../../api/commands";
+import { checkBackend } from "../../api/commands";
+import { createBackup } from "../../platform";
 import type { BackendStatus } from "../../api/types";
 import { Card } from "../../components/ui/display";
 import { Button, PasswordField } from "../../components/ui/inputs";
 import { useToastStore } from "../../store/toast";
+import { formatNumber } from "../../lib/wallet-format";
 
 const MIN_BACKUP_PASSWORD = 8;
 
@@ -43,7 +45,7 @@ export function WalletFooterCard() {
   async function run() {
     setBusy(true);
     try {
-      const displayName = await backupWallet(password);
+      const displayName = await createBackup(password);
       pushToast("success", `Encrypted backup created: ${displayName}`);
       setOpen(false);
     } catch (e) {
@@ -93,7 +95,7 @@ export function WalletFooterCard() {
           {status === null
             ? "Checking"
             : status.reachable
-              ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · ${status.blocks.toLocaleString()}` : ""}`
+              ? `${status.chain ?? "connected"}${status.blocks !== undefined ? ` · ${formatNumber(status.blocks)}` : ""}`
               : "Not connected"}
         </span>
       </div>

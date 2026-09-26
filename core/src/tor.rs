@@ -1,6 +1,7 @@
 //! Portal's own Tor, never a host one: the app must not depend on someone else's config or
-//! disturb it. One instance serves the whole process — `tor_main` cannot run twice, and a
-//! single Tor carries every maker's onion service anyway.
+//! disturb it. One instance per process — `tor_main` cannot run twice, and a single Tor carries
+//! every maker's onion service anyway — and never shared with another Portal process: a desktop
+//! app and a web server each run their own, so quitting one cannot cut the other off.
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -47,15 +48,15 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
         match slot.as_ref() {
             Some(runtime) => runtime.clone(),
             None => {
-                // Load-then-store rather than swap, and stored only once `tor_main` has actually
-                // been spawned: picking ports or creating the Tor directory can fail without
-                // ever reaching it, and latching the flag there would answer every later retry
-                // with the permanent error below over a transient fault. Safe as two steps
-                // because the `RUNTIME` lock is held across both.
+                // `STARTED` is load-then-store rather than a swap, and stored only once
+                // `tor_main` has actually been spawned: picking ports or creating the Tor
+                // directory can fail without ever reaching it, and latching the flag there
+                // would answer every later retry with a permanent error over a transient
+                // fault. Safe as two steps because the `RUNTIME` lock is held across both.
                 if STARTED.load(Ordering::SeqCst) {
                     return Err(
-                        "Portal's Tor already ran once this session and cannot be started again \
-                         in place. Quit and reopen Portal to try a fresh one."
+                        "Portal's Tor already ran once this session and cannot be started \
+                         again in place. Quit and reopen Portal to try a fresh one."
                             .to_string(),
                     );
                 }
@@ -167,12 +168,72 @@ pub fn runtime() -> Option<TorRuntime> {
     RUNTIME.lock().ok()?.clone()
 }
 
-/// Shared by the taker and every maker, but kept under the taker data dir so the layout
-/// stays inside the directories the openswap crate already owns.
+/// Shared by the taker and every maker in *this* process, but never between processes.
+///
+/// Suffixed with the process id so a desktop app and a web server on one data root each run
+/// their own Tor without fighting over it. Tor refuses to start against a directory another
+/// Tor already holds — it waits five seconds, logs "No, it's still there. Exiting.", and dies,
+/// which takes Portal down with it moments after it has announced itself as listening.
 fn tor_dir() -> Result<PathBuf, String> {
-    openswap::utill::get_taker_dir()
-        .map(|dir| dir.join("tor-manager"))
-        .map_err(|e| e.to_string())
+    crate::storage::openswap_root()
+        .map(|dir| dir.join(format!("tor-manager-{}", std::process::id())))
+        .map_err(|e| e.message)
+}
+
+/// Where Tor keeps the consensus and microdescriptors, shared across launches.
+///
+/// This is deliberately *not* under `tor_dir()`. That one is per-process and swept when the
+/// process is gone, which meant every launch handed Tor an empty directory and it re-fetched
+/// the whole directory — around 40MB over a half-bootstrapped circuit, which is most of what
+/// a cold start spends its time on. Only `DataDirectory` needs to be private: it holds the
+/// lock, the keys and the state. The cache is exactly what Tor's `CacheDirectory` is for.
+#[cfg(feature = "embedded-tor")]
+fn tor_cache_dir() -> Result<PathBuf, String> {
+    crate::storage::openswap_root()
+        .map(|dir| dir.join("tor-cache"))
+        .map_err(|e| e.message)
+}
+
+/// Removes `tor-manager` directories left by processes that are no longer running.
+///
+/// Each run gets its own, so without this they accumulate — one per launch, each holding a
+/// Tor identity. Called at startup rather than shutdown: a process killed outright never gets
+/// to tidy up after itself, and that is exactly when the directory is left behind.
+pub fn sweep_stale_tor_dirs() {
+    let Ok(root) = crate::storage::openswap_root() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mine = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("tor-manager-"))
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == mine || process_is_alive(pid) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    // Signal 0 checks for the process without delivering anything.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    // Without a cheap liveness check, keeping the directory is the safe answer: a live Tor
+    // losing its data directory is worse than a stale one lingering.
+    true
 }
 
 /// Picks a free loopback port pair. Holding both listeners until each port is known stops the
@@ -272,8 +333,10 @@ fn start_embedded_tor(
     use libtor::{Tor, TorFlag};
 
     let data_dir = tor_dir.join("data");
+    let cache_dir = tor_cache_dir()?;
     crate::security::fs::ensure_private_dir(tor_dir).map_err(|e| e.message)?;
     crate::security::fs::ensure_private_dir(&data_dir).map_err(|e| e.message)?;
+    crate::security::fs::ensure_private_dir(&cache_dir).map_err(|e| e.message)?;
 
     let handle = Tor::new()
         // Tor writes its startup notices straight to the console before any Log config is
@@ -282,6 +345,11 @@ fn start_embedded_tor(
         .flag(TorFlag::Quiet())
         .flag(TorFlag::DataDirectory(
             data_dir.to_string_lossy().to_string(),
+        ))
+        // Survives the per-process data directory, so a relaunch starts from a warm consensus
+        // instead of downloading one.
+        .flag(TorFlag::CacheDirectory(
+            cache_dir.to_string_lossy().to_string(),
         ))
         .flag(TorFlag::SocksPort(socks_port))
         .flag(TorFlag::ControlPort(control_port))

@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use openswap::maker::MakerServerConfig;
-use openswap::utill::get_maker_dir;
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::AppState;
@@ -98,18 +97,14 @@ fn default_time_relative_fee_pct() -> f64 {
 static SETTINGS_IO: Mutex<()> = Mutex::new(());
 
 fn settings_path() -> Result<PathBuf, AppError> {
-    Ok(get_maker_dir()?.join("makers.json"))
+    crate::storage::makers_registry()
 }
 
 fn maker_data_dir(settings: &MakerSettingsDto) -> Result<PathBuf, AppError> {
-    if let Some(data_dir) = settings.data_dir.as_deref() {
-        return Ok(PathBuf::from(data_dir));
+    match settings.data_dir.as_deref() {
+        Some(data_dir) => Ok(PathBuf::from(data_dir)),
+        None => crate::storage::maker_data_dir(&settings.router_id),
     }
-    let legacy = get_maker_dir()?;
-    Ok(legacy
-        .parent()
-        .map(|base| base.join(&settings.router_id))
-        .unwrap_or_else(|| legacy.join(&settings.router_id)))
 }
 
 fn apply_runtime_config(settings: &mut MakerSettingsDto) -> Result<(), AppError> {

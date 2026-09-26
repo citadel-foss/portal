@@ -35,9 +35,6 @@ export const host: Host = {
     localDashboardImport: true,
     // The desktop app owns its process; a browser session cannot stop the server.
     canQuit: true,
-    // The process belongs to whoever launched it; a second password here would protect
-    // nothing that the OS account does not already protect.
-    requiresLogin: false,
   },
   // Desktop commands do not go through the operations journal, so nothing is ever blocked
   // and there is nothing to settle.
@@ -46,11 +43,16 @@ export const host: Host = {
     reconcile: async () => {},
     acknowledge: async () => {},
   },
+  // Rust owns whether the app is signed in, so a webview reload keeps it and a relaunch asks
+  // again — the same lifetime a web session has against its server.
   session: {
-    restore: async () => ({ authenticated: true, hasOwner: true }),
-    login: async () => {},
-    claim: async () => {},
-    logout: async () => {},
+    restore: () => host.invoke("auth_session"),
+    login: (password) => host.invoke("auth_login", { password }),
+    claim: async (password) => {
+      await host.invoke("auth_claim", { password });
+      await host.invoke("auth_login", { password });
+    },
+    logout: () => host.invoke("auth_logout"),
   },
   openExternal: (url) => openUrl(url),
   pickDirectory: async (defaultPath) => {
@@ -63,4 +65,5 @@ export const host: Host = {
   },
   // Rust owns the picker so the renderer only ever sees the opaque selection ID.
   selectBackup: () => tauriInvoke<RestoreSelection>("choose_restore_backup"),
+  createBackup: (password) => tauriInvoke<string>("backup_wallet", { password }),
 };

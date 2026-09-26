@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use openswap::maker::api::MIN_SWAP_AMOUNT;
 use openswap::maker::{start_server, MakerServer, MakerServerConfig};
-use openswap::utill::get_maker_dir;
 use openswap::wallet::Wallet;
 use crate::events::AppEvent;
 
@@ -34,18 +33,10 @@ fn valid_id(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-fn default_maker_data_dir(router_id: &str) -> Result<PathBuf, AppError> {
-    let legacy = get_maker_dir()?;
-    Ok(legacy
-        .parent()
-        .map(|base| base.join(router_id))
-        .unwrap_or_else(|| legacy.join(router_id)))
-}
-
 fn resolve_maker_data_dir(config: &MakerInitConfig) -> Result<PathBuf, AppError> {
     match &config.data_dir {
         Some(dir) => Ok(PathBuf::from(dir)),
-        None => default_maker_data_dir(&config.router_id),
+        None => crate::storage::maker_data_dir(&config.router_id),
     }
 }
 
@@ -104,9 +95,27 @@ fn validate_maker_config(config: &MakerInitConfig) -> Result<(), AppError> {
     Ok(())
 }
 
-fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> Result<MakerServerConfig, AppError> {
+/// What a new router should be configured with, taken from the crate rather than restated.
+pub fn router_defaults() -> crate::types::RouterDefaultsDto {
+    let core = MakerServerConfig::default();
+    crate::types::RouterDefaultsDto {
+        min_swap_amount: core.min_swap_amount,
+        fidelity_amount: core.fidelity_amount,
+        fidelity_timelock: core.fidelity_timelock,
+        required_confirms: core.required_confirms,
+        base_fee: core.base_fee,
+        amount_relative_fee_pct: core.amount_relative_fee_pct,
+        time_relative_fee_pct: core.time_relative_fee_pct,
+    }
+}
+
+fn build_config(
+    session: &str,
+    config: MakerInitConfig,
+    data_dir: PathBuf,
+) -> Result<MakerServerConfig, AppError> {
     let tor = crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
-    let backend = chain_backend::resolve(&config.wallet_name, Some(tor.socks_port))?;
+    let backend = chain_backend::resolve(session, &config.wallet_name, Some(tor.socks_port))?;
     Ok(MakerServerConfig {
         data_dir,
         network_port: config.network_port,
@@ -129,10 +138,11 @@ fn build_config(config: MakerInitConfig, data_dir: PathBuf) -> Result<MakerServe
 }
 
 async fn construct_server(
+    session: &str,
     config: MakerInitConfig,
     data_dir: PathBuf,
 ) -> Result<Arc<MakerServer>, AppError> {
-    let server_config = build_config(config, data_dir)?;
+    let server_config = build_config(session, config, data_dir)?;
     let server = tokio::task::spawn_blocking(move || MakerServer::init(server_config))
         .await
         .map_err(from_wallet_join_error)?
@@ -243,6 +253,7 @@ fn ensure_unique_settings_update(settings: &MakerSettingsDto) -> Result<(), AppE
 /// Creates and registers a new maker wallet. This does not start its server.
 pub async fn init_maker(
     state: &Arc<AppState>,
+    session: &str,
     mut config: MakerInitConfig,
 ) -> Result<MakerStatusDto, AppError> {
     config.router_id = config.router_id.trim().to_string();
@@ -311,7 +322,7 @@ pub async fn init_maker(
     emit_phase(state, &router_id, MakerPhase::Initializing);
 
     crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
-    let server = match construct_server(config, data_dir.clone()).await {
+    let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
             abort_failed_creation(state, &router_id, &wallet_file, &error)?;
@@ -426,6 +437,7 @@ fn insert_saved_registration(state: &Arc<AppState>, settings: MakerSettingsDto) 
 /// reconstructed from persisted settings and the supplied wallet password.
 pub async fn start_maker(
     state: &Arc<AppState>,
+    session: &str,
     router_id: String,
     wallet_password: Option<String>,
 ) -> Result<(), AppError> {
@@ -480,7 +492,7 @@ pub async fn start_maker(
     ] {
         if TcpListener::bind(("127.0.0.1", port)).is_err() {
             let message = format!(
-                "Router {label} port {port} is already in use. Stop the other router process using this port before starting. Do not change the network port of a fidelity-bonded router."
+                "Router {label} port {port} is already in use — most likely this router is already running in another Portal on this machine (the desktop app or the web server). Manage it there. Do not change the network port of a fidelity-bonded router."
             );
             if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
                 entry.phase = MakerPhase::Failed {
@@ -541,7 +553,7 @@ pub async fn start_maker(
     }
     let data_dir = resolve_maker_data_dir(&config)?;
     crate::logging::register_maker(router_id.clone(), data_dir.clone(), settings.network_port);
-    let server = match construct_server(config, data_dir.clone()).await {
+    let server = match construct_server(session, config, data_dir.clone()).await {
         Ok(server) => server,
         Err(error) => {
             if let Some(entry) = state.makers.lock()?.get_mut(&router_id) {
@@ -566,6 +578,7 @@ pub async fn start_maker(
     entry.runtime = Some(MakerRuntime {
         server,
         thread: None,
+        chain_backend: chain_backend::load(session),
     });
 
     entry.generation = entry.generation.wrapping_add(1);

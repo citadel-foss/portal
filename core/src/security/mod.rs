@@ -4,3 +4,5 @@ pub mod fs;
 pub mod input;
 /// Authorization and serialization guards for sensitive UI operations.
 pub mod operation;
+/// The owner password both hosts sign in with.
+pub mod owner;

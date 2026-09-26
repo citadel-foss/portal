@@ -45,6 +45,18 @@ export function scriptTypeFromAddress(address: string | undefined): "Taproot" | 
   return "SegWit";
 }
 
+/**
+ * Which kind of coin a transaction moved, in the same four buckets the UTXO list uses.
+ *
+ * A separate axis from `getTransactionKind`, which answers in/out/swap for the filter tabs.
+ * The backend has no dedicated field for this, so it reads the same category and label text
+ * `classifySpendType` reads off a UTXO — one classifier, so a row and the coin it produced
+ * can never disagree about what they are.
+ */
+export function classifyTransactionType(category: string, label: string | undefined): UtxoBucket {
+  return classifySpendType(`${category} ${label ?? ""}`);
+}
+
 export type TxKind = "received" | "sent" | "swap";
 
 export function getTransactionKind(category: string, label: string | undefined, amountSats: number): TxKind {
@@ -59,6 +71,12 @@ export const EXPLORER_BASE_URL = "https://mempool.citadelfoss.xyz";
 
 export function explorerTxUrl(txid: string): string {
   return `${EXPLORER_BASE_URL}/tx/${encodeURIComponent(txid)}`;
+}
+
+/** The address page, which lists every transaction that ever touched a coin — what you want
+ *  when the row you clicked is a UTXO rather than the transaction that created it. */
+export function explorerAddressUrl(address: string): string {
+  return `${EXPLORER_BASE_URL}/address/${encodeURIComponent(address)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,15 +113,27 @@ export function unitStringToSats(input: string, unit: Unit, btcPriceUsd: number 
 /** Display string for `sats` expressed in `unit`, e.g. the two non-selected units shown under an amount input. */
 export function formatUnitAmount(sats: number, unit: Unit, btcPriceUsd: number | null): string | null {
   if (sats <= 0) return null;
-  if (unit === "sats") return `${Math.round(sats).toLocaleString()} sats`;
+  if (unit === "sats") return `${formatNumber(sats)} sats`;
   const btc = sats / SATS_PER_BTC;
   if (unit === "btc") return `${trimTrailingZeros(btc.toFixed(8))} BTC`;
   return btcPriceUsd ? `≈ $${(btc * btcPriceUsd).toFixed(2)}` : null;
 }
 
+/**
+ * Digit grouping for every number the app prints, pinned rather than taken from the host.
+ *
+ * A bare `toLocaleString()` follows the machine's locale, and on an en-IN one that is lakh
+ * grouping: 212,238 sats renders as "2,12,238". Bitcoin amounts are read in thousands the
+ * world over, and a swap figure that regroups itself depending on whose laptop it is on is
+ * unreadable rather than localized. Dates are not covered by this — those stay local.
+ */
+export function formatNumber(value: number, maximumFractionDigits = 0): string {
+  return value.toLocaleString("en-US", { maximumFractionDigits });
+}
+
 // Fee rates come back as raw floats from a live market API (e.g. 1.0070000000000001) — round for display.
 export function formatFeeRate(rate: number): string {
-  return rate.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  return formatNumber(rate, 1);
 }
 
 // ---------------------------------------------------------------------------

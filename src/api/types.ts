@@ -18,11 +18,32 @@ export interface NodeBackend {
   zmqPort: number;
 }
 
+/** One server the connection gate offers. Fixed in Rust; the choice is never persisted. */
+export interface ElectrumPreset {
+  label: string;
+  url: string;
+  /** "bitcoin" or "signet" — the picker colours by this, since one spends real money. */
+  network: string;
+}
+
 export interface ChainBackendConfig {
   kind: ChainBackendKind;
   electrum: ElectrumBackend;
   /** Prefilled with the standard local-node values so the connection gate can show them. */
   node: NodeBackend | null;
+}
+
+/** Mirrors `RouterDefaultsDto`. Deliberately not duplicated as constants here: these are the
+ *  protocol crate's own `MakerServerConfig::default()`, and a second copy in the UI is exactly
+ *  how the app ended up running ten times core's figures without anyone noticing. */
+export interface RouterDefaults {
+  minSwapAmount: number;
+  fidelityAmount: number;
+  fidelityTimelock: number;
+  requiredConfirms: number;
+  baseFee: number;
+  amountRelativeFeePct: number;
+  timeRelativeFeePct: number;
 }
 
 export interface BackendStatus {
@@ -34,6 +55,9 @@ export interface BackendStatus {
   /** Bitcoin Core only; Electrum has no version string to report. */
   subversion?: string;
   verificationProgress?: number;
+  /** Hex of the signet challenge script, on signet only. Absent over Electrum even on a
+   *  signet — it has no way to report one. */
+  signetChallenge?: string;
 }
 
 // bootstrapProgress is informational only — openswap's own init doesn't gate on it.
@@ -45,9 +69,6 @@ export interface TorStatus {
   bootstrapProgress?: number;
   /** Tor's own name for the phase it is in, e.g. "Loading relay descriptors". */
   bootstrapSummary?: string;
-  /** Why Tor says its own bootstrap is struggling. Distinct from `error`, which is Portal
-   * failing to reach or authenticate against Tor rather than Tor failing to connect. */
-  bootstrapWarning?: string;
   error?: string;
   /** Loopback ports Portal's own Tor was started on; freshly chosen each run. */
   socksPort?: number;
@@ -73,6 +94,10 @@ export interface InitConfig {
 export interface InitResult {
   walletName: string;
   dataDir: string;
+  /** The wallet was already open in another browser and this one joined it. */
+  joined: boolean;
+  /** Something worth telling the user about how they joined. */
+  note?: string;
 }
 
 /** Whether a wallet is open. Never an error — "nothing open" is the ordinary answer. */
@@ -131,6 +156,8 @@ export type ErrorCode =
   | "WALLET_NOT_FOUND"
   | "WALLET_WRONG_PASSWORD"
   | "WALLET_LOAD_FAILED"
+  | "WALLET_OPEN_ELSEWHERE"
+  | "WALLET_NETWORK_MISMATCH"
   | "NOT_INITIALIZED"
   | "SWAP_IN_PROGRESS"
   | "INSUFFICIENT_FUNDS"
@@ -338,7 +365,8 @@ export interface FidelityBond {
 
 export interface RouterSwapReportSummary {
   swapId: string;
-  status: string;
+  /** Same `SwapStatus` enum the wallet's own reports carry — one `status_label` serves both. */
+  status: SwapStatus;
   startTimestamp: number;
   endTimestamp: number;
   incomingAmountSats: number;
@@ -370,6 +398,10 @@ export interface SwapRequest {
   routerCount?: number;
   outpoints?: Outpoint[];
   preferredRouters?: string[];
+  /** Funding transactions per hop, 1..=10. Omitted keeps the backend default. */
+  txCount?: number;
+  /** Pay a third party instead of the wallet: `amountSats` is then what the receiver gets. */
+  paymentAddress?: string;
 }
 
 export interface SwapFundingEstimate {
@@ -377,6 +409,11 @@ export interface SwapFundingEstimate {
   inputCount: number;
   vbytes: number;
   feeSats: number;
+  /** Wallet UTXOs the funding transactions consume. */
+  outgoingUtxoCount: number;
+  /** Most the last hop can pay back — one UTXO per contract. A ceiling: a router short of
+   *  liquidity commits to fewer splits, and the rest of the route inherits that. */
+  incomingUtxoCount: number;
   /** Agreed once for the whole swap — the same rate funds the route and signs every contract. */
   feeRateSatsPerVb: number;
   /** Ceiling: a router's funding splits at the full input budget plus one claim per contract. */
@@ -403,8 +440,22 @@ export interface SwapSummary {
   /** Ceiling: router fees, every hop's funding and sweep reimbursement at its negotiated
    * maximum, and the wallet's own funding tx. The settled cost can only come in under it. */
   totalEstimatedFeeSats: number;
-  /** What the wallet gets back if every cost hits its ceiling, so a floor, not a forecast. */
+  /** What the wallet gets back if every cost hits its ceiling, so a floor, not a forecast.
+   *  Zero when paying a third party: the receiver is paid and nothing comes back. */
   estimatedReceiveAmountSats: number;
+  /** `totalEstimatedFeeSats`, split the same way the summary panel and the report split it. */
+  routerFeeSats: number;
+  miningFeeSats: number;
+  /** Present only when this swap pays a third-party receiver. */
+  payment?: PaymentQuote;
+}
+
+export interface PaymentQuote {
+  address: string;
+  /** Exact amount the receiver gets. */
+  amountSats: number;
+  /** Reserved on the final hop to settle the receiver's output. */
+  settlementBudgetSats: number;
 }
 
 // Coarse in-memory lifecycle — for live per-router detail, see SwapTrackerProgress/getSwapTracker.
@@ -465,9 +516,12 @@ export interface SwapTrackerProgress {
    * `txCount` splits, not one transaction, and these fill in as each txid is recorded.
    * `watchonly` is one flat list across every router-to-router leg, with no per-hop grouping.
    */
-  outgoingContractCount: number;
-  incomingContractCount: number;
-  watchonlyContractCount: number;
+  outgoingContractTxids: string[];
+  incomingContractTxids: string[];
+  watchonlyContractTxids: string[];
+  /** Echoed from the tracker, so a remounted page knows a PaySwap without the prepared quote. */
+  paymentAddress?: string;
+  paymentAmountSats?: number;
 }
 
 /** How far a blocking `prepareSwap` has got, read off the crate's own tracker file. */

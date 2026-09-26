@@ -1,0 +1,21 @@
+services:
+  app_proxy:
+    environment:
+      APP_HOST: portal_web_1
+      APP_PORT: 3000
+
+  web:
+    # Local testing: load this image into Umbrel's own Docker engine first.
+    # Before submission, replace with a public multi-arch image tag AND index digest:
+    # ghcr.io/<owner>/portal:0.1.0@sha256:<manifest-index-digest>
+    image: portal:umbrel-test
+    restart: on-failure
+    environment:
+      PORTAL_BIND: 0.0.0.0:3000
+      PORTAL_ASSETS_DIR: /opt/portal/web
+      PORTAL_ACCESS_PROFILE: trusted-http-proxy
+      PORTAL_PUBLIC_ORIGIN: http://${DEVICE_DOMAIN_NAME}:${APP_PROXY_PORT}
+      PORTAL_SHUTDOWN_TIMEOUT_SECS: "110"
+    volumes:
+      - ${APP_DATA_DIR}/data/portal:/data
+    stop_grace_period: 120s

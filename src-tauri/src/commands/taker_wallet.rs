@@ -12,7 +12,9 @@ use portal_core::error::{AppError, ErrorCode};
 use portal_core::ops::taker_wallet;
 use portal_core::security::input::validate_password;
 use portal_core::security::operation::{SensitiveOperation, SensitiveOperationGuard};
-use portal_core::state::AppState;
+use portal_core::state::{AppState, DESKTOP_SESSION};
+
+use super::desktop_taker;
 use portal_core::types::*;
 use tauri_plugin_dialog::DialogExt;
 
@@ -28,29 +30,30 @@ pub async fn init_taker(
     state: tauri::State<'_, Arc<AppState>>,
     config: InitConfig,
 ) -> Result<InitResult, AppError> {
-    taker_wallet::init_taker(&state, config).await
+    taker_wallet::init_taker(&state, DESKTOP_SESSION, config).await
 }
 
-/// Releases the wallet so another can be unlocked, without stopping the process. Routers
-/// keep running: they are a separate role and do not belong to this wallet session.
+/// Closes the wallet so another can be unlocked, without stopping the process. Returns at once:
+/// the Taker finishes dropping in the background. Routers keep running — they are a separate
+/// role and do not belong to this wallet session.
 #[tauri::command]
-pub fn shutdown_taker(state: tauri::State<'_, Arc<AppState>>) -> Result<(), AppError> {
-    taker_wallet::shutdown(&state)
+pub fn shutdown_taker(state: tauri::State<'_, Arc<AppState>>) {
+    taker_wallet::release_session(&state, DESKTOP_SESSION);
 }
 
 #[tauri::command]
 pub fn get_paths(state: tauri::State<'_, Arc<AppState>>) -> Result<PathsDto, AppError> {
-    taker_wallet::get_paths(&state)
+    taker_wallet::get_paths(&state, DESKTOP_SESSION)
 }
 
 #[tauri::command]
 pub fn get_session_state(state: tauri::State<'_, Arc<AppState>>) -> SessionStateDto {
-    taker_wallet::get_session_state(&state)
+    taker_wallet::get_session_state(&state, DESKTOP_SESSION)
 }
 
 #[tauri::command]
 pub fn get_wallet_info(state: tauri::State<'_, Arc<AppState>>) -> Result<WalletInfo, AppError> {
-    taker_wallet::get_wallet_info(&state)
+    taker_wallet::get_wallet_info(&*desktop_taker(&state)?)
 }
 
 #[tauri::command]
@@ -82,14 +85,14 @@ pub async fn choose_restore_backup(
             "restore selection is not a local filesystem path",
         )
     })?;
-    taker_wallet::register_restore_selection(&state, operation, path)
+    taker_wallet::register_restore_selection(&state, operation, path, false)
 }
 
 #[tauri::command]
 pub async fn restore_wallet(
     state: tauri::State<'_, Arc<AppState>>, data_dir: Option<String>, wallet_name: String, socks_port: Option<u16>, selection_id: Uuid, password: Option<String>,
 ) -> Result<(), AppError> {
-    taker_wallet::restore_wallet(&state, data_dir, wallet_name, socks_port, selection_id, password).await
+    taker_wallet::restore_wallet(&state, DESKTOP_SESSION, data_dir, wallet_name, socks_port, selection_id, password).await
 }
 
 #[tauri::command]
@@ -126,7 +129,7 @@ pub async fn backup_wallet(
             "backup destination is not a local filesystem path",
         )
     })?;
-    taker_wallet::write_backup(&state, operation, destination, password).await
+    taker_wallet::write_backup(&*desktop_taker(&state)?, operation, destination, password).await
 }
 
 #[tauri::command]
@@ -136,33 +139,33 @@ pub fn validate_address(address: String) -> AddressValidation {
 
 #[tauri::command]
 pub async fn get_balances(state: tauri::State<'_, Arc<AppState>>) -> Result<BalancesDto, AppError> {
-    taker_wallet::get_balances(&state).await
+    taker_wallet::get_balances(&*desktop_taker(&state)?).await
 }
 
 #[tauri::command]
 pub async fn get_new_address(
     state: tauri::State<'_, Arc<AppState>>, address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    taker_wallet::get_new_address(&state, address_type).await
+    taker_wallet::get_new_address(&*desktop_taker(&state)?, address_type).await
 }
 
 #[tauri::command]
 pub async fn verify_last_address(
     state: tauri::State<'_, Arc<AppState>>, address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    taker_wallet::verify_last_address(&state, address_type).await
+    taker_wallet::verify_last_address(&*desktop_taker(&state)?, address_type).await
 }
 
 #[tauri::command]
 pub async fn get_transactions(
     state: tauri::State<'_, Arc<AppState>>, count: Option<usize>, skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
-    taker_wallet::get_transactions(&state, count, skip).await
+    taker_wallet::get_transactions(&*desktop_taker(&state)?, count, skip).await
 }
 
 #[tauri::command]
 pub async fn list_utxos(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<UtxoEntry>, AppError> {
-    taker_wallet::list_utxos(&state).await
+    taker_wallet::list_utxos(&*desktop_taker(&state)?).await
 }
 
 #[tauri::command]
@@ -175,12 +178,12 @@ pub async fn send_to_address(
     outpoints: Option<Vec<Outpoint>>,
 ) -> Result<SendResult, AppError> {
     ensure_main_window(&window)?;
-    taker_wallet::send_to_address(&state, address, amount_sats, fee_rate, outpoints).await
+    taker_wallet::send_to_address(&state, &*desktop_taker(&state)?, address, amount_sats, fee_rate, outpoints).await
 }
 
 #[tauri::command]
 pub async fn sync_wallet(state: tauri::State<'_, Arc<AppState>>) -> Result<(), AppError> {
-    taker_wallet::sync_wallet(&state).await
+    taker_wallet::sync_wallet(&*desktop_taker(&state)?).await
 }
 
 #[tauri::command]

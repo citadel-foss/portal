@@ -33,11 +33,12 @@ impl WebState {
         journal: Journal,
         data_root: PathBuf,
     ) -> Self {
+        let ended = runtime.clone();
         let auth = Auth::load(
             config.owner_credential_file.as_deref(),
-            config.bootstrap_file.as_deref(),
-            Some(data_root.join("portal").join("auth").join("owner")),
-        );
+            Some(portal_core::security::owner::owner_file(&data_root)),
+        )
+        .on_session_end(move |session| portal_core::ops::taker_wallet::end_session(&ended, session));
         WebState {
             config: Arc::new(config),
             auth: Arc::new(auth),
@@ -49,13 +50,11 @@ impl WebState {
         }
     }
 
-    /// Whether this request path authenticates. False only for a plain local run that has
-    /// never been claimed: loopback, development profile, nothing provisioned, no owner on
-    /// disk. Once an owner exists the password is honoured for the rest of the install's
-    /// life — a restart without `--bootstrap-file` must not quietly drop protection from a
-    /// server the user deliberately secured.
-    pub fn open_local(&self) -> bool {
-        self.config.open_local() && !self.auth.has_owner()
+    pub fn ctx(&self, caller: &crate::routes::Caller) -> crate::commands::Ctx {
+        crate::commands::Ctx {
+            rt: self.runtime.clone(),
+            session: caller.session.clone(),
+        }
     }
 
     /// Cached enough to answer a readiness probe without touching a wallet lock or the chain.

@@ -1,8 +1,8 @@
 import { AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../ui/inputs";
-import { Notice, SatsAmount } from "../ui/display";
-import { formatRelativeTime, truncateMiddle } from "../../lib/wallet-format";
+import { Identifier, Notice, SatsAmount } from "../ui/display";
+import { formatRelativeTime } from "../../lib/wallet-format";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 
 /**
@@ -53,7 +53,7 @@ export function UnresolvedPayments({ verb }: { verb: "sending" | "swapping" }) {
             <div key={op.operationId} className="flex flex-col gap-2 border-t border-line pt-3">
               <span className="text-[12.5px] text-foreground">
                 {amount !== undefined && <SatsAmount sats={amount} />}
-                {address && <> to <span className="font-mono">{truncateMiddle(address, 10, 6)}</span></>}
+                {address && <> to <Identifier value={address} /></>}
                 {" · "}
                 {formatRelativeTime(op.createdAt)}
               </span>

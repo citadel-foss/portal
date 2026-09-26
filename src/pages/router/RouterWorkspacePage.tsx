@@ -11,6 +11,7 @@ import {
   WalletCards,
   ShieldCheck,
 } from "lucide-react";
+import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Link,
@@ -33,11 +34,13 @@ import {
   listRouterUtxos,
   startRouter,
   stopRouter,
+  sendRouterToAddress,
   syncRouterWallet,
   updateRouterSettings,
 } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type {
+  AddressType,
   Balances,
   FidelityBond,
   LogLine,
@@ -52,6 +55,9 @@ import type {
 import {
   BackButton,
   Card,
+  ExternalLinkButton,
+  IconButton,
+  Identifier,
   LogViewer,
   Modal,
   SatsAmount,
@@ -61,11 +67,13 @@ import {
 import {
   Button,
   PasswordField,
+  TextField,
   SegmentedToggle,
   SummaryGroup,
   SummaryRow,
 } from "../../components/ui/inputs";
 import { formatTorEndpoint } from "../../lib/market-format";
+import { copyText } from "../../lib/clipboard";
 import {
   formatRelativeTime,
   logLevel,
@@ -76,7 +84,7 @@ import { useToastStore } from "../../store/toast";
 type Tab = "overview" | "wallet" | "logs" | "settings";
 const TAB_OPTIONS: { value: Tab; label: string }[] = [
   { value: "overview", label: "Overview" },
-  { value: "wallet", label: "Wallet" },
+  { value: "wallet", label: "Tx" },
   { value: "logs", label: "Logs" },
   { value: "settings", label: "Settings" },
 ];
@@ -300,9 +308,7 @@ function ReportList({
               className="grid grid-cols-[1fr_auto_auto] items-center gap-5 px-5 py-3.5 hover:bg-[var(--color-hover)]"
             >
               <div className="min-w-0">
-                <strong className="block truncate font-mono text-[11.5px]">
-                  {report.swapId}
-                </strong>
+                <Identifier value={report.swapId} className="block text-[11.5px] font-semibold leading-[1.45]" />
                 <span className="mt-1 block text-[10px] text-subtle">
                   {formatRelativeTime(report.endTimestamp)}
                 </span>
@@ -321,6 +327,99 @@ function ReportList({
   );
 }
 
+/**
+ * Spending out of a router's wallet.
+ *
+ * Deliberately the plain half of the taker's Send page — recipient, amount, fee rate. A router
+ * wallet is not where anyone composes a careful payment; it is where fees accumulate and
+ * occasionally need to leave, and before this the only way out was to stop the router and open
+ * its file somewhere else.
+ */
+function RouterSendPanel({
+  routerId,
+  utxos,
+  onSent,
+}: {
+  routerId: string;
+  utxos: UtxoEntry[];
+  onSent: () => Promise<void>;
+}) {
+  const pushToast = useToastStore((state) => state.push);
+  const [recipient, setRecipient] = useState("");
+  const [amount, setAmount] = useState("");
+  const [feeRate, setFeeRate] = useState("2");
+  const [sending, setSending] = useState(false);
+
+  const spendable = utxos
+    .filter((u) => u.spendable && u.solvable)
+    .reduce((sum, u) => sum + u.amountSats, 0);
+  const amountSats = Math.floor(Number(amount)) || 0;
+  const rate = Number(feeRate);
+  const blocked =
+    recipient.trim().length === 0 ||
+    amountSats <= 0 ||
+    amountSats > spendable ||
+    !Number.isFinite(rate) ||
+    rate <= 0;
+
+  async function send() {
+    setSending(true);
+    try {
+      const { txid } = await sendRouterToAddress(routerId, recipient.trim(), amountSats, rate);
+      setRecipient("");
+      setAmount("");
+      pushToast("success", `Sent. Transaction ${txid}`);
+      await onSent();
+    } catch (e) {
+      pushToast("error", (e as { message?: string })?.message ?? "Could not send from this router.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Card className="border-line-strong p-5">
+      <div className="flex items-center justify-between gap-4">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+          Send Bitcoin
+        </span>
+        <span className="text-[11px] text-subtle">
+          Spendable: <SatsAmount sats={spendable} className="text-foreground" />
+        </span>
+      </div>
+      <div className="mt-4 flex flex-col gap-3">
+        <TextField
+          label="Recipient address"
+          placeholder="bc1… or tb1…"
+          value={recipient}
+          onChange={(e) => setRecipient(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <div className="grid grid-cols-[1fr_110px] gap-3">
+          <TextField
+            label="Amount"
+            inputMode="numeric"
+            placeholder="0"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            error={amountSats > spendable ? "More than this wallet holds." : undefined}
+          />
+          <TextField
+            label="s/vB"
+            inputMode="decimal"
+            value={feeRate}
+            onChange={(e) => setFeeRate(e.target.value)}
+          />
+        </div>
+        <Button className="w-full" disabled={blocked} loading={sending} onClick={() => void send()}>
+          Send
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function WalletPanel({
   routerId,
   running,
@@ -332,7 +431,22 @@ function WalletPanel({
   const [utxos, setUtxos] = useState<UtxoEntry[]>([]);
   const [transactions, setTransactions] = useState<TxSummary[]>([]);
   const [address, setAddress] = useState<NewAddress | null>(null);
+  const [addressType, setAddressType] = useState<AddressType>("p2wpkh");
+  const [generating, setGenerating] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    setQrDataUrl(null);
+    if (!address) return;
+    let cancelled = false;
+    void QRCode.toDataURL(address.address, { width: 184, margin: 1 }).then((url) => {
+      if (!cancelled) setQrDataUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [address]);
+
   const load = useCallback(async () => {
     if (!running) return;
     setLoading(true);
@@ -361,89 +475,125 @@ function WalletPanel({
     );
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 max-[780px]:grid-cols-1">
-        <Card className="border-line-strong p-5">
+      <div className="grid grid-cols-2 gap-4 max-[900px]:grid-cols-1">
+      <RouterSendPanel routerId={routerId} utxos={utxos} onSent={load} />
+      <Card className="border-line-strong p-5">
+        <div className="flex items-center justify-between gap-4">
           <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
             Receive Bitcoin
           </span>
-          {address ? (
-            <code
-              className="mt-4 block break-all rounded-control border border-line bg-surface p-3
-                text-[11px] text-foreground"
-            >
-              {address.address}
-            </code>
-          ) : (
-            <p className="mt-4 text-[12px] text-muted">
-              Generate a fresh P2WPKH router-wallet address.
-            </p>
-          )}
-          <Button
-            className="mt-4 w-full"
-            onClick={() =>
-              void getRouterNewAddress(routerId, "p2wpkh")
-                .then(setAddress)
-                .catch((e) => pushToast("error", e.message))
-            }
+          <SegmentedToggle
+            groupId="router-address-type"
+            value={addressType}
+            onChange={(next) => {
+              setAddressType(next);
+              // Cleared rather than left standing: the panel is labelled with the selected
+              // type, so holding the previous one offers the wrong address to copy — and the
+              // QR is a picture of that same wrong address.
+              setAddress(null);
+              setQrDataUrl(null);
+            }}
+            options={[
+              { value: "p2wpkh", label: "SegWit" },
+              { value: "p2tr", label: "Taproot" },
+            ]}
+          />
+        </div>
+        <div className="mt-4 flex justify-center">
+          {/* The plate is always here, empty or not: a button that reaches the wallet and comes
+              back with nothing on screen reads as a button that did nothing. The white ground
+              only appears with a QR on it — a bare white square waiting looks like a broken
+              image rather than something loading. */}
+          <div
+            className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
+              qrDataUrl
+                ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
+                : "border border-line bg-surface"
+            }`}
           >
-            Generate address
-          </Button>
-        </Card>
-        <Card className="border-line-strong p-5">
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-            Wallet synchronization
-          </span>
-          <p className="mt-4 text-[12px] leading-5 text-muted">
-            Refresh the router wallet from its configured chain backend before
-            spending or reviewing balances.
-          </p>
-          <Button
-            variant="secondary"
-            className="mt-4 w-full"
-            loading={loading}
-            onClick={() =>
-              void syncRouterWallet(routerId)
-                .then(load)
-                .catch((e) => pushToast("error", e.message))
-            }
+            {qrDataUrl ? (
+              <img src={qrDataUrl} alt="Router receive address QR code" width={184} height={184} />
+            ) : generating ? (
+              <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
+            ) : (
+              <span className="px-4 text-center text-[11.5px] leading-5 text-subtle">
+                Generate a fresh {addressType === "p2tr" ? "Taproot" : "SegWit"} address to
+                receive into this router's wallet.
+              </span>
+            )}
+          </div>
+        </div>
+        {address && (
+          <code
+            className="mt-4 block break-all rounded-control border border-line bg-surface p-3
+              text-[11px] text-foreground"
           >
-            <RefreshCw size={14} />
-            Sync wallet
-          </Button>
-        </Card>
+            {address.address}
+          </code>
+        )}
+        <Button
+          className="mt-4 w-full"
+          loading={generating}
+          onClick={() => {
+            setGenerating(true);
+            void getRouterNewAddress(routerId, addressType)
+              .then(setAddress)
+              .catch((e) => pushToast("error", e.message))
+              .finally(() => setGenerating(false));
+          }}
+        >
+          Generate address
+        </Button>
+      </Card>
       </div>
       <Card className="border-line-strong">
-        <div className="border-b border-line px-5 py-4">
+        <div className="flex items-center justify-between gap-4 border-b border-line px-5 py-3">
           <h2 className="font-header text-[14px] font-bold">
             UTXOs{" "}
             <span className="ml-2 font-mono text-[10px] text-subtle">
               {utxos.length}
             </span>
           </h2>
+          <IconButton
+            label="Sync wallet"
+            disabled={loading}
+            onClick={() =>
+              void syncRouterWallet(routerId)
+                .then(load)
+                .catch((e) => pushToast("error", e.message))
+            }
+            icon={<RefreshCw size={16} strokeWidth={1.8} className={loading ? "animate-spin" : ""} />}
+          />
         </div>
         <div className="max-h-[330px] overflow-auto">
           <table className="w-full text-left text-[11px]">
             <thead className="sticky top-0 bg-surface">
               <tr className="text-subtle">
-                <th className="px-5 py-3">Outpoint</th>
+                <th className="px-5 py-3">Address</th>
                 <th className="px-5 py-3">Type</th>
                 <th className="px-5 py-3">Confirmations</th>
                 <th className="px-5 py-3 text-right">Amount</th>
+                <th className="w-[52px] px-5 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
               {utxos.map((utxo) => (
                 <tr key={`${utxo.txid}:${utxo.vout}`}>
-                  <td
-                    className="max-w-[260px] truncate px-5 py-3 font-mono"
-                    title={`${utxo.txid}:${utxo.vout}`}
-                  >
-                    {utxo.txid.slice(0, 14)}…:{utxo.vout}
+                  <td className="max-w-[300px] px-5 py-3 align-top">
+                    <Identifier
+                      value={utxo.address ?? `${utxo.txid}:${utxo.vout}`}
+                      className="leading-[1.45]"
+                    />
                   </td>
-                  <td className="px-5 py-3 text-muted">{utxo.spendType}</td>
-                  <td className="px-5 py-3 font-mono">{utxo.confirmations}</td>
-                  <td className="px-5 py-3 text-right font-mono">
+                  <td className="px-5 py-3 align-top text-muted">{utxo.spendType}</td>
+                  <td className="px-5 py-3 align-top font-mono">{utxo.confirmations}</td>
+                  <td className="px-5 py-3 text-right align-top font-mono">
                     <SatsAmount sats={utxo.amountSats} />
+                  </td>
+                  <td className="px-5 py-3 align-top">
+                    {/* The address page, not the funding transaction: this row is a coin, and
+                        what you want is everything that ever touched it. */}
+                    <ExternalLinkButton address={utxo.address} txid={utxo.txid} />
                   </td>
                 </tr>
               ))}
@@ -466,14 +616,15 @@ function WalletPanel({
               key={`${tx.txid}:${tx.category}`}
               className="flex items-center justify-between gap-4 px-5 py-3"
             >
-              <code className="min-w-0 truncate text-[11px] text-muted">
-                {tx.txid}
-              </code>
-              <strong
-                className={`font-mono text-[11.5px] ${tx.amountSats >= 0 ? "text-success" : "text-danger"}`}
-              >
-                <SatsAmount sats={tx.amountSats} />
-              </strong>
+              <Identifier value={tx.txid} className="min-w-0 text-[11px] leading-[1.45] text-muted" />
+              <span className="flex flex-none items-center gap-2">
+                <strong
+                  className={`font-mono text-[11.5px] ${tx.amountSats >= 0 ? "text-success" : "text-danger"}`}
+                >
+                  <SatsAmount sats={tx.amountSats} />
+                </strong>
+                <ExternalLinkButton txid={tx.txid} />
+              </span>
             </div>
           ))}
           {transactions.length === 0 && (
@@ -639,12 +790,14 @@ function SettingsPanel({
   settings,
   routerId,
   running,
+  walletEncrypted,
   transitioning,
   onSaved,
 }: {
   settings: RouterSettings;
   routerId: string;
   running: boolean;
+  walletEncrypted: boolean;
   transitioning: boolean;
   onSaved: () => Promise<void>;
 }) {
@@ -656,6 +809,11 @@ function SettingsPanel({
   const [torPorts, setTorPorts] = useState<{ socksPort: number; controlPort: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmSave, setConfirmSave] = useState(false);
+  const [restartPassword, setRestartPassword] = useState("");
+  /** Set once the config is on disk but the router is still down — the dialog then has one
+   *  job left, and asking again is all it takes. */
+  const [restartPending, setRestartPending] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   useEffect(() => setForm(settingsToForm(settings)), [routerId]);
   useEffect(() => {
@@ -693,21 +851,68 @@ function SettingsPanel({
     />
   );
 
+  /** The start half, on its own: once the config is written this is all that is left, and a
+   *  wrong password should cost another attempt rather than the whole dialog. */
+  async function start(): Promise<boolean> {
+    try {
+      await startRouter(routerId, walletEncrypted ? restartPassword : undefined);
+      return true;
+    } catch (e) {
+      setRestartPending(true);
+      setRestartError(
+        (e as { message?: string }).message ?? "The router did not start.",
+      );
+      await onSaved().catch(() => {});
+      return false;
+    }
+  }
+
+  async function retryStart() {
+    setSaving(true);
+    setRestartError(null);
+    try {
+      if (!(await start())) return;
+      setConfirmSave(false);
+      setRestartPending(false);
+      setRestartPassword("");
+      await onSaved();
+      pushToast("success", `${routerId} is running again.`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /**
+   * A running router has to come down to have its config.toml rewritten, so saving is really
+   * stop → write → start. Portal drives all three rather than dropping the operator on a
+   * stopped router and asking them to remember to bring it back: an unattended router that
+   * silently stayed down is a router not earning and a fidelity bond locked for nothing.
+   *
+   * Which is also why a refused password does not end the dialog. The settings are on disk by
+   * then and only the start is outstanding, so the dialog keeps the prompt and asks again.
+   */
   async function save(next: RouterSettings) {
-    const shouldStop = running;
+    const shouldRestart = running;
     let settingsWereSaved = false;
     setSaving(true);
+    setRestartError(null);
     try {
-      if (shouldStop) await stopRouter(routerId);
+      if (shouldRestart) await stopRouter(routerId);
       const saved = await updateRouterSettings(routerId, next);
       settingsWereSaved = true;
       setForm(settingsToForm(saved));
+      // Its own failure, reported as its own thing: the settings are already on disk by
+      // here, and saying "could not save" for a restart that did not take would send
+      // someone back to re-enter changes that are no longer pending.
+      if (shouldRestart && !(await start())) return;
       setConfirmSave(false);
+      setRestartPending(false);
+      setRestartPassword("");
       await onSaved();
       pushToast(
         "success",
-        shouldStop
-          ? "Router settings saved. Re-enter the wallet password to restart the router."
+        shouldRestart
+          ? "Router settings saved and the router restarted."
           : "Router settings saved to config.toml.",
       );
     } catch (e) {
@@ -718,7 +923,7 @@ function SettingsPanel({
         "error",
         settingsWereSaved
           ? `Settings were saved, but the view could not refresh: ${message}`
-          : shouldStop
+          : shouldRestart
             ? `Could not apply settings. The router may be stopped: ${message}`
             : message,
       );
@@ -866,7 +1071,7 @@ function SettingsPanel({
               onClick={requestSave}
             >
               <Save size={14} />
-              {running ? "Save & stop" : "Save changes"}
+              {running ? "Save & restart" : "Save changes"}
             </Button>
           </div>
         </div>
@@ -894,27 +1099,69 @@ function SettingsPanel({
       </Card>
       {confirmSave && typeof parsed !== "string" && (
         <Modal
-          title={running ? "Save and stop router?" : "Save router settings?"}
-          onClose={() => setConfirmSave(false)}
+          title={
+            restartPending
+              ? `Start ${routerId} again`
+              : running
+                ? "Save and restart router?"
+                : "Save router settings?"
+          }
+          onClose={() => {
+            setConfirmSave(false);
+            setRestartPending(false);
+            setRestartError(null);
+          }}
           footer={
             <>
               <Button
                 variant="secondary"
-                onClick={() => setConfirmSave(false)}
+                onClick={() => {
+                  setConfirmSave(false);
+                  setRestartPending(false);
+                  setRestartError(null);
+                }}
               >
-                Cancel
+                {restartPending ? "Leave it stopped" : "Cancel"}
               </Button>
-              <Button onClick={() => void save(parsed)} loading={saving}>
-                {running ? "Save & stop" : "Save changes"}
+              <Button
+                onClick={() => void (restartPending ? retryStart() : save(parsed))}
+                loading={saving}
+                disabled={
+                  (running || restartPending) &&
+                  walletEncrypted &&
+                  restartPassword.length === 0
+                }
+              >
+                {restartPending ? "Start router" : running ? "Save & restart" : "Save changes"}
               </Button>
             </>
           }
         >
           <div className="space-y-3 text-[12px] leading-5 text-muted">
             <p>
-              The changes will be written to this router’s config.toml.
-              {running && " The router will stop; re-enter its wallet password to restart it."}
+              {restartPending
+                ? "Your settings are already written to config.toml. All that is left is starting the router again."
+                : running
+                  ? "The changes will be written to this router’s config.toml. The router stops while that happens and Portal starts it again."
+                  : "The changes will be written to this router’s config.toml."}
             </p>
+            {restartError && (
+              <p className="rounded-control border border-danger/35 bg-danger/[0.06] px-3 py-2 text-danger">
+                {restartError}
+              </p>
+            )}
+            {(running || restartPending) && walletEncrypted && (
+              <PasswordField
+                label="Router wallet password"
+                autoComplete="current-password"
+                value={restartPassword}
+                onChange={(e) => {
+                  setRestartPassword(e.target.value);
+                  setRestartError(null);
+                }}
+                hint="Needed to unlock the wallet again once the config is written."
+              />
+            )}
             {parsed.networkPort !== settings.networkPort && (
               <div className="flex gap-3 rounded-control border border-warning/30 bg-warning/[0.07] p-3">
                 <AlertTriangle className="mt-0.5 shrink-0 text-warning" size={18} />
@@ -1091,7 +1338,8 @@ export function RouterWorkspacePage() {
                 disabled={!tor}
                 onClick={() =>
                   tor &&
-                  navigator.clipboard.writeText(tor).then(() => {
+                  void copyText(tor).then((ok) => {
+                    if (!ok) return;
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1200);
                   })
@@ -1171,6 +1419,10 @@ export function RouterWorkspacePage() {
               settings={settings}
               routerId={id}
               running={running}
+              // Unknown means the wallet file could not be inspected, and the safe guess is
+              // "encrypted": asking for a password that turns out not to be needed costs a
+              // keystroke, while not asking for one that is needed fails the restart.
+              walletEncrypted={status?.walletEncrypted ?? true}
               transitioning={transitioning}
               onSaved={load}
             />

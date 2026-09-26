@@ -1,11 +1,11 @@
 /** What every host must provide. Kept apart from `transport.ts` so both hosts can import the
  *  shape without importing each other. */
-/** What the host knows about the current viewer. Desktop is always "in": the process is the
- *  user's own. Web has to ask the server. */
+/** What the host knows about the current viewer: whether it has signed in with the owner
+ *  password. Both hosts ask their backend. */
 export interface SessionInfo {
   authenticated: boolean;
-  /** False on a fresh self-hosted install: the first visitor must claim it with the
-   *  one-time bootstrap secret before any password exists to log in with. */
+  /** False on a fresh self-hosted install: the first visitor chooses the owner password
+   *  before there is one to log in with. */
   hasOwner: boolean;
 }
 
@@ -13,8 +13,8 @@ export interface HostSession {
   /** Called once at startup, before any command runs. */
   restore(): Promise<SessionInfo>;
   login(password: string): Promise<void>;
-  /** Claim an unowned installation with its one-time secret, then log in. */
-  claim(secret: string, password: string): Promise<void>;
+  /** Set the owner password on an unowned installation, then log in. */
+  claim(password: string): Promise<void>;
   logout(): Promise<void>;
 }
 
@@ -26,9 +26,6 @@ export interface HostCapabilities {
   nativeFilePicker: boolean;
   /** Quitting the process is offered. Web offers logout — the supervisor owns the daemon. */
   canQuit: boolean;
-  /** Whether the UI must show a login gate at all. Constant on desktop; on web the server
-   *  decides, because a local run with no credential configured has nothing to log in to. */
-  requiresLogin: boolean;
 }
 
 /** A durable operation whose outcome the server could not confirm. */
@@ -66,6 +63,9 @@ export interface Host {
    *  restore consumes. Desktop opens a native picker; web uploads the bytes. Either way the
    *  browser never learns a server path. */
   selectBackup(): Promise<RestoreSelection>;
+  /** Writes an encrypted backup of the open wallet and returns the file's name. Desktop saves
+   *  it where a native dialog says; web has the server produce it and downloads it. */
+  createBackup(password: string): Promise<string>;
 }
 
 /** Mirrors `RestoreSelectionView` in core. */

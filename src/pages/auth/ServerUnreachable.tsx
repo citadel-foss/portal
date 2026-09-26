@@ -21,8 +21,7 @@ export function ServerUnreachable({ onRetry }: { onRetry: () => void }) {
             <p className="text-[13px] leading-6 text-muted">
               This page loaded, but nothing is serving Portal's API. In development that
               usually means only the UI half started — <code className="text-foreground">npm
-              run web:dev</code> runs both, and prints an error if the backend could not take
-              the data directory because another Portal already has it.
+              run web:dev</code> runs both.
             </p>
             <Button onClick={onRetry}>Try again</Button>
           </div>

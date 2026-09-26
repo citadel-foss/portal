@@ -29,7 +29,9 @@ CLAUDE.md
 /target/
 
 # Container bootstrap secrets — never commit these.
-deploy/container/*.secret
+umbrel/*.secret
+umbrel/portal/data/portal/*
+!umbrel/portal/data/portal/.gitkeep
 
 # Working notes and audits — local only, like .claude/
 docs/

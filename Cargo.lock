@@ -3259,7 +3259,7 @@ dependencies = [
 [[package]]
 name = "openswap"
 version = "0.2.2"
-source = "git+https://github.com/citadel-foss/openswap?branch=master#69cdf2e26bdcf3cd39eda6eab236c8780644c4de"
+source = "git+https://github.com/citadel-foss/openswap?branch=master#4e525c759f2d0953752d65375d7343b1b3736444"
 dependencies = [
  "aes-gcm",
  "bip39",
@@ -3272,7 +3272,6 @@ dependencies = [
  "electrum-client",
  "log",
  "log4rs",
- "minreq",
  "nostr",
  "pbkdf2",
  "rust-coinselect",
@@ -3575,6 +3574,7 @@ dependencies = [
 name = "portal-core"
 version = "0.1.0"
 dependencies = [
+ "argon2",
  "dirs 6.0.0",
  "libc",
  "libtor",
@@ -3593,7 +3593,6 @@ dependencies = [
 name = "portal-web"
 version = "0.1.0"
 dependencies = [
- "argon2",
  "async-stream",
  "axum",
  "clap",

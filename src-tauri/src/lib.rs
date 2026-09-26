@@ -2,15 +2,14 @@ mod commands;
 mod native;
 
 use commands::{
-    chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet, market, setup,
+    auth, chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet, market, setup,
     shutdown, taker_reports, taker_swap, taker_wallet,
 };
 use tauri::menu::{Menu, MenuItem};
-use tauri_plugin_dialog::DialogExt;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use std::sync::Arc;
 
-use portal_core::events::AppEvent;
+use portal_core::events::Envelope;
 use portal_core::state::AppState;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tokio::sync::broadcast::error::RecvError;
@@ -29,12 +28,13 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 
 /// Forwards core's domain events onto Tauri's per-window event channel. Core publishes without
 /// knowing which host is listening; this is the desktop half of that contract.
-fn bridge_events(app: AppHandle, mut events: Receiver<AppEvent>) {
+fn bridge_events(app: AppHandle, mut events: Receiver<Envelope>) {
     tauri::async_runtime::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(event) => {
-                    let _ = app.emit(event.name(), event.payload());
+                // One window, one session: every wallet event is this window's.
+                Ok(envelope) => {
+                    let _ = app.emit(envelope.event.name(), envelope.event.payload());
                 }
                 // Keep serving: a lagging bridge has missed notifications, not the state
                 // itself, and every page reconciles from a fresh read on its next poll.
@@ -45,6 +45,27 @@ fn bridge_events(app: AppHandle, mut events: Receiver<AppEvent>) {
             }
         }
     });
+}
+
+/// Commands that run before signing in: the sign-in itself, and quitting.
+const OPEN_COMMANDS: &[&str] = &["auth_session", "auth_claim", "auth_login", "quit_app"];
+
+/// Refuses every other command until the owner password has been given, in Rust rather than
+/// only by hiding screens — the same line the web host draws with its session check.
+fn require_sign_in<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        let open = OPEN_COMMANDS.contains(&invoke.message.command());
+        if !open && !invoke.message.webview().state::<Arc<auth::DesktopAuth>>().signed_in() {
+            invoke.resolver.reject(portal_core::error::AppError::new(
+                portal_core::error::ErrorCode::AuthorizationDenied,
+                "sign in first",
+            ));
+            return true;
+        }
+        handler(invoke)
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -73,12 +94,19 @@ pub fn run() {
         // can own a handle that outlives the request. Managing the wrong shape compiles and
         // then fails every stateful command at runtime.
         .manage(Arc::new(portal_core::state::AppState::default()))
-        .invoke_handler(tauri::generate_handler![
+        .manage(Arc::new(auth::DesktopAuth::load()))
+        .invoke_handler(require_sign_in(tauri::generate_handler![
+            // signing in with the owner password
+            auth::auth_session,
+            auth::auth_claim,
+            auth::auth_login,
+            auth::auth_logout,
             // setup / connectivity
             setup::check_tor,
             setup::restart_tor_bootstrap,
             // chain backend selection
             chain_backend::get_chain_backend,
+            chain_backend::get_electrum_presets,
             chain_backend::set_chain_backend,
             chain_backend::check_backend,
             // taker wallet lifecycle
@@ -140,6 +168,7 @@ pub fn run() {
             maker_wallet::list_maker_utxos,
             maker_wallet::get_maker_new_address,
             maker_wallet::get_maker_transactions,
+            maker_wallet::send_maker_to_address,
             maker_wallet::sync_maker_wallet,
             maker_wallet::list_maker_fidelity_bonds,
             // maker settings (persisted, non-secret config)
@@ -148,13 +177,14 @@ pub fn run() {
             maker_settings::list_dashboard_imports,
             maker_settings::import_dashboard_makers,
             maker_settings::clear_maker_settings,
+            maker::get_router_defaults,
             maker_settings::get_suggested_maker_ports,
             maker_settings::check_maker_ports,
             // maker logs
             logs::get_maker_logs,
             // app lifecycle
             shutdown::quit_app,
-        ])
+        ]))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the UI must not tear down a running swap or an active maker,
@@ -169,27 +199,12 @@ pub fn run() {
             // command has been able to emit yet and the bridge cannot miss a startup event.
             bridge_events(app.handle().clone(), app.state::<Arc<AppState>>().events.subscribe());
 
-            // Before Tor or any wallet work: a second Portal on this root would share its
-            // Tor identity directory and report a bootstrap failure rather than the conflict.
-            match portal_core::storage::resolve_data_dir(&None)
-                .and_then(|root| portal_core::storage::lock_data_root(&root))
-            {
-                Ok(lock) => {
-                    // Parked in app state so it lives as long as the process does.
-                    app.manage(lock);
-                }
-                Err(error) => {
-                    app.dialog()
-                        .message(error.message)
-                        .title("Portal is already running")
-                        .blocking_show();
-                    std::process::exit(1);
-                }
+            // Before anything logs, so startup, Tor and a restore that runs before any wallet is
+            // open all reach the app's `debug.log` rather than the terminal.
+            if let Ok(root) = portal_core::storage::openswap_root() {
+                portal_core::logging::set_log_dir(root);
             }
-
-            // Ahead of everything else: Tor, the wallet and the config cleanup below all
-            // resolve paths under the data dir, and Tor in particular creates part of it.
-            portal_core::storage::migrate_legacy_data_dir();
+            portal_core::tor::sweep_stale_tor_dirs();
 
             // Earlier versions persisted the backend, RPC password included. Ceasing to
             // write it is not enough — the old file has to go.
@@ -207,14 +222,21 @@ pub fn run() {
             // already inside the OS termination watchdog — too late to stop a maker's closing
             // wallet sync properly. Tauri builds the macOS app submenu first with Quit last.
             let menu = Menu::default(app.handle())?;
-            let app_quit =
-                MenuItem::with_id(app, "quit", "Quit Portal", true, Some("CmdOrCtrl+Q"))?;
+            // macOS only: it is the platform with an application submenu holding a predefined
+            // Quit, and the only one where the menu bar is the usual way out. Everywhere else
+            // the tray item below is that route, so building this item off macOS would leave
+            // it unattached — dead on Linux and Windows, and a build failure under
+            // `-D warnings`.
             #[cfg(target_os = "macos")]
-            if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
-                if let Some(predefined_quit) = app_menu.items()?.last() {
-                    app_menu.remove(predefined_quit)?;
+            {
+                let app_quit =
+                    MenuItem::with_id(app, "quit", "Quit Portal", true, Some("CmdOrCtrl+Q"))?;
+                if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
+                    if let Some(predefined_quit) = app_menu.items()?.last() {
+                        app_menu.remove(predefined_quit)?;
+                    }
+                    app_menu.append(&app_quit)?;
                 }
-                app_menu.append(&app_quit)?;
             }
             app.set_menu(menu)?;
             app.on_menu_event(|app, event| {

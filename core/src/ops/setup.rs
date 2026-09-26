@@ -20,7 +20,6 @@ pub async fn check_tor() -> Result<TorStatus, AppError> {
             authenticated: false,
             bootstrap_progress: None,
             bootstrap_summary: None,
-            bootstrap_warning: None,
             error: Some(error),
             socks_port: None,
             control_port: None,
@@ -47,7 +46,6 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
         authenticated: false,
         bootstrap_progress: None,
         bootstrap_summary: None,
-        bootstrap_warning: None,
         error: Some(err),
         socks_port: Some(socks_port),
         control_port: Some(control_port),
@@ -119,7 +117,6 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
             authenticated: false,
             bootstrap_progress: None,
             bootstrap_summary: None,
-            bootstrap_warning: None,
             error: Some("Tor control-port authentication failed".into()),
             socks_port: Some(socks_port),
             control_port: Some(control_port),
@@ -136,7 +133,6 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
             authenticated: true,
             bootstrap_progress: None,
             bootstrap_summary: None,
-            bootstrap_warning: None,
             error: None,
             socks_port: Some(socks_port),
             control_port: Some(control_port),
@@ -159,7 +155,6 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
         authenticated: true,
         bootstrap_progress,
         bootstrap_summary: quoted_field(&resp, "SUMMARY"),
-        bootstrap_warning: quoted_field(&resp, "WARNING"),
         error: None,
         socks_port: Some(socks_port),
         control_port: Some(control_port),
@@ -168,6 +163,10 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
 
 /// Pulls `KEY="..."` out of a Tor control-port reply. Tor emits these as plain quoted strings
 /// with no escaping in the bootstrap phase line, so the first closing quote ends the value.
+///
+/// Only `SUMMARY` is read. Tor also emits `WARNING`, but its value is frequently a bare reason
+/// code — a relay closing cleanly mid-handshake reports `WARNING="DONE"` — and Tor retries
+/// past those on its own. `tor.log` keeps them for diagnosis; the gate does not show them.
 fn quoted_field(line: &str, key: &str) -> Option<String> {
     let needle = format!("{key}=\"");
     let start = line.find(&needle)? + needle.len();
@@ -179,17 +178,16 @@ fn quoted_field(line: &str, key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Real `GETINFO status/bootstrap-phase` replies, the warning form taken from a Tor that
-    /// could not reach a relay — the case the connection gate has to be able to explain.
+    /// A real `GETINFO status/bootstrap-phase` reply, both while progressing and while Tor is
+    /// reporting trouble — the summary has to survive the extra fields the warning form adds.
     #[test]
-    fn reads_summary_and_warning_from_the_bootstrap_phase() {
+    fn reads_the_summary_from_the_bootstrap_phase() {
         let progressing = "250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=50 \
              TAG=loading_descriptors SUMMARY=\"Loading relay descriptors\"\r\n";
         assert_eq!(
             quoted_field(progressing, "SUMMARY").as_deref(),
             Some("Loading relay descriptors")
         );
-        assert_eq!(quoted_field(progressing, "WARNING"), None);
 
         let struggling = "250-status/bootstrap-phase=WARN BOOTSTRAP PROGRESS=10 TAG=conn_done \
              SUMMARY=\"Connected to a relay\" WARNING=\"Connection timed out\" REASON=TIMEOUT \
@@ -197,10 +195,6 @@ mod tests {
         assert_eq!(
             quoted_field(struggling, "SUMMARY").as_deref(),
             Some("Connected to a relay")
-        );
-        assert_eq!(
-            quoted_field(struggling, "WARNING").as_deref(),
-            Some("Connection timed out")
         );
     }
 }

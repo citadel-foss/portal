@@ -1,0 +1,33 @@
+manifestVersion: 1
+id: portal
+category: bitcoin
+name: Portal
+version: "0.1.0"
+tagline: A Bitcoin wallet with private swaps over Tor
+description: >-
+  Portal is under active development. Mainnet use is not recommended.
+
+
+  Portal is a Bitcoin wallet and OpenSwap client with Wallet and Router modes.
+  It includes Tor and supports a public Electrum server or your own Bitcoin Core
+  RPC connection. No other Umbrel app is required.
+
+
+  On first launch, create your Portal owner password, configure your chain
+  connection, and wait for Tor and the chain backend to connect. Then create or
+  open a wallet. Portal runs entirely in your browser; no desktop app is needed.
+releaseNotes: ""
+developer: Citadel FOSS
+website: https://citadelfoss.xyz
+dependencies: []
+repo: https://github.com/citadel-foss/portal
+support: https://github.com/citadel-foss/portal/issues
+# Local test port. Recheck availability in the current App Store before submission.
+port: 3100
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+submitter: Citadel FOSS
+# Fill in the actual App Store PR URL after opening the PR.
+submission: ""

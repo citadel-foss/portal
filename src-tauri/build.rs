@@ -25,9 +25,14 @@ fn main() {
     // here gets no generated permission, so `capabilities/default.json` cannot grant it and
     // every call is rejected at the IPC boundary — see the sync test in `lib.rs`.
     const COMMANDS: &[&str] = &[
+        "auth_session",
+        "auth_claim",
+        "auth_login",
+        "auth_logout",
         "check_tor",
         "restart_tor_bootstrap",
         "get_chain_backend",
+        "get_electrum_presets",
         "set_chain_backend",
         "check_backend",
         "list_wallets",
@@ -80,6 +85,7 @@ fn main() {
         "list_maker_utxos",
         "get_maker_new_address",
         "get_maker_transactions",
+        "send_maker_to_address",
         "sync_maker_wallet",
         "list_maker_fidelity_bonds",
         "list_makers",
@@ -87,6 +93,7 @@ fn main() {
         "list_dashboard_imports",
         "import_dashboard_makers",
         "clear_maker_settings",
+        "get_router_defaults",
         "get_suggested_maker_ports",
         "check_maker_ports",
         "get_maker_logs",

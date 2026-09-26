@@ -17,7 +17,7 @@ interface SessionState {
   initialized: boolean | null;
   walletName: string | null;
   dataDir: string | null;
-  setInitialized: (result: InitResult) => void;
+  setInitialized: (result: Pick<InitResult, "walletName" | "dataDir">) => void;
   setNotInitialized: () => void;
   reset: () => void;
 }

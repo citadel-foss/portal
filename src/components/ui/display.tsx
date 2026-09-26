@@ -14,11 +14,8 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { HTMLAttributes, ReactNode } from "react";
 import type { LogLine } from "../../api/types";
-import {
-  explorerTxUrl,
-  LOG_LEVEL_TONE,
-  logLevel,
-} from "../../lib/wallet-format";
+import { explorerAddressUrl, explorerTxUrl, formatNumber, LOG_LEVEL_TONE, logLevel } from "../../lib/wallet-format";
+import { copyText } from "../../lib/clipboard";
 import { walletIdentity } from "../../lib/wallet-identity";
 
 // Keep cards on stable painted layers. Per-card backdrop filters caused WebKit to repeatedly
@@ -215,7 +212,7 @@ export function SatsAmount({
     <span
       className={`inline-flex items-baseline gap-1.5 font-numeric tabular-nums ${className}`}
     >
-      <span>{Math.round(sats).toLocaleString()}</span>
+      <span>{formatNumber(Math.round(sats))}</span>
       <SatsGlyph className="text-subtle" scale={glyphScale} />
     </span>
   );
@@ -348,16 +345,36 @@ export function LogViewer({
   );
 }
 
-export function ExternalLinkButton({ txid }: { txid: string }) {
+/**
+ * A txid, address or swap id, in full. Sixty-odd characters with no space in them: without an
+ * explicit break opportunity the browser will not wrap them and they push whatever column they
+ * are in out of the grid. Selectable by design, so a value can still be lifted by hand on a
+ * page where the clipboard API is unavailable.
+ */
+export function Identifier({
+  value,
+  className = "",
+}: {
+  value: string;
+  className?: string;
+}) {
+  return <span className={`break-all font-mono ${className}`}>{value}</span>;
+}
+
+/** Opens a transaction on the explorer, or — with `address` — the address page, which is the
+ *  useful destination when the row names a coin rather than the transaction that made it. */
+export function ExternalLinkButton({ txid, address }: { txid?: string; address?: string }) {
+  const url = address ? explorerAddressUrl(address) : txid ? explorerTxUrl(txid) : null;
+  if (!url) return null;
   return (
     <button
       type="button"
-      title="View on explorer"
+      title={address ? "View address on explorer" : "View on explorer"}
       onClick={(e) => {
         e.stopPropagation();
-        void openExternal(explorerTxUrl(txid));
+        void openExternal(url);
       }}
-      aria-label="View transaction on explorer"
+      aria-label={address ? "View address on explorer" : "View transaction on explorer"}
       className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border border-line text-muted outline-none transition-colors hover:border-primary/60 hover:bg-primary/[0.14] hover:text-primary-hover focus-visible:shadow-ring active:translate-y-px"
     >
       <ExternalLink size={16} strokeWidth={1.8} />
@@ -386,7 +403,7 @@ export function CopyButton({
       title={title}
       onClick={(e) => {
         e.stopPropagation();
-        void navigator.clipboard.writeText(text).then(() => setCopied(true));
+        void copyText(text).then(setCopied);
       }}
       aria-label={title}
       className={`flex h-[34px] w-[34px] flex-none items-center justify-center rounded-control border outline-none transition-colors focus-visible:shadow-ring active:translate-y-px ${

@@ -26,7 +26,7 @@ pub async fn upload(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     check_origin(&state, &headers)?;
-    let caller = authenticate(&state, &headers, true)?;
+    let caller = authenticate(&state, &headers)?;
     check_csrf(&caller, &headers)?;
 
     if body.len() > MAX_UPLOAD_BYTES {
@@ -56,6 +56,7 @@ pub async fn upload(
         &state.runtime,
         guard,
         path,
+        true,
     )?;
     Ok((StatusCode::OK, Json(serde_json::to_value(view).unwrap_or(json!({})))).into_response())
 }
@@ -68,12 +69,13 @@ pub async fn create_backup(
     Json(body): Json<BackupBody>,
 ) -> Result<Response, ApiError> {
     check_origin(&state, &headers)?;
-    let caller = authenticate(&state, &headers, true)?;
+    let caller = authenticate(&state, &headers)?;
     check_csrf(&caller, &headers)?;
 
     // The desktop wrapper enforces this before opening its save dialog; a backup reachable
     // over HTTP must clear the same floor rather than a weaker one.
     portal_core::security::input::validate_password(&body.password, "backup password")?;
+    let taker = state.runtime.taker_for(&caller.session)?;
     let guard = SensitiveOperationGuard::acquire(
         &state.runtime.sensitive_operation_active,
         SensitiveOperation::BackupPrivateKey,
@@ -88,7 +90,7 @@ pub async fn create_backup(
         destination.parent().expect("transfers has a parent"),
     )?;
     portal_core::ops::taker_wallet::write_backup(
-        &state.runtime,
+        &taker,
         guard,
         destination,
         body.password,
@@ -110,7 +112,7 @@ pub async fn download_backup(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     check_origin(&state, &headers)?;
-    let caller = authenticate(&state, &headers, true)?;
+    let caller = authenticate(&state, &headers)?;
     check_csrf(&caller, &headers)?;
 
     // The id names a file we created, so it must be a UUID and nothing else — never a path.

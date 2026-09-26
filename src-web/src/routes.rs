@@ -70,20 +70,21 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 /// A session plus the CSRF token bound to it.
 pub(crate) struct Caller {
     pub(crate) csrf: String,
+    pub(crate) session: String,
 }
 
-/// `refresh` distinguishes operator activity from background polling: only the former should
-/// push the idle deadline out.
-pub(crate) fn authenticate(state: &WebState, headers: &HeaderMap, refresh: bool) -> Result<Caller, ApiError> {
-    if state.open_local() {
-        return Ok(Caller { csrf: String::new() });
-    }
+/// Every request carries a session earned by logging in. Sessions are not exclusive: any
+/// number of browsers, and the desktop app, may hold one at the same time.
+pub(crate) fn authenticate(state: &WebState, headers: &HeaderMap) -> Result<Caller, ApiError> {
     let token = cookie(headers, SESSION_COOKIE).ok_or_else(|| unauthorized(state))?;
-    let csrf = state
+    let session = state
         .auth
-        .validate(&token, refresh)
+        .validate(&token)
         .ok_or_else(|| unauthorized(state))?;
-    Ok(Caller { csrf })
+    Ok(Caller {
+        csrf: session.csrf,
+        session: session.id,
+    })
 }
 
 /// Same-origin enforcement. A browser always sends `Origin` on a cross-origin request, so a
@@ -166,7 +167,7 @@ fn session_cookie(state: &WebState, token: &str) -> String {
 pub fn router(state: WebState) -> Router {
     let c = state.config.clone();
     Router::new()
-        .route(&c.route("/api/v1/auth/bootstrap"), post(bootstrap))
+        .route(&c.route("/api/v1/auth/claim"), post(claim))
         .route(&c.route("/api/v1/auth/login"), post(login))
         .route(&c.route("/api/v1/auth/logout"), post(logout))
         .route(&c.route("/api/v1/session"), get(session))
@@ -209,18 +210,17 @@ async fn ready(State(state): State<WebState>) -> impl IntoResponse {
 }
 
 #[derive(serde::Deserialize)]
-struct BootstrapBody {
-    secret: String,
+struct ClaimBody {
     password: String,
 }
 
-async fn bootstrap(
+async fn claim(
     State(state): State<WebState>,
     headers: HeaderMap,
-    Json(body): Json<BootstrapBody>,
+    Json(body): Json<ClaimBody>,
 ) -> Result<Response, ApiError> {
     check_origin(&state, &headers)?;
-    state.auth.bootstrap(&body.secret, &body.password).map_err(|message| {
+    state.auth.claim(&body.password).map_err(|message| {
         ApiError(
             StatusCode::FORBIDDEN,
             AppError::new(ErrorCode::AuthorizationDenied, message),
@@ -255,7 +255,8 @@ async fn login(
 }
 
 async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    // Accepted work keeps running: logging out ends a viewing session, not a swap.
+    // Accepted work keeps running: logging out takes this browser off its wallet, and the
+    // wallet closes only if no other browser is on it and no swap is running.
     if let Some(token) = cookie(&headers, SESSION_COOKIE) {
         state.auth.logout(&token);
     }
@@ -275,12 +276,14 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Result<Res
     Ok(response)
 }
 
+/// Where a returning browser picks its session back up. Without one this is a 401, which is
+/// what sends the page to the login screen.
 async fn session(
     State(state): State<WebState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
-    let caller = authenticate(&state, &headers, true)?;
-    Ok(Json(json!({
+) -> Result<Response, ApiError> {
+    let caller = authenticate(&state, &headers)?;
+    let body = Json(json!({
         "installationId": state.installation_id,
         "runtimeId": state.runtime_id,
         "csrfToken": caller.csrf,
@@ -288,22 +291,20 @@ async fn session(
             "nativeFilePicker": false,
             "canQuit": false,
         },
-        // Tells the UI whether to show a login gate at all, so a local run looks exactly
-        // like the desktop app.
-        "requiresLogin": !state.open_local(),
         "storageLabel": state.storage_label(),
         "hasOwner": state.auth.has_owner(),
-    })))
+    }));
+    Ok(body.into_response())
 }
 
 async fn events(
     State(state): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    // A stream must not keep a session alive on heartbeats alone, so this read does not
-    // refresh the idle deadline.
-    authenticate(&state, &headers, false)?;
-    Ok(crate::sse::stream(state.runtime.events.subscribe()).into_response())
+    let token = cookie(&headers, SESSION_COOKIE).ok_or_else(|| unauthorized(&state))?;
+    // Held for the life of the stream: it is how the session knows this tab is still open.
+    let guard = state.auth.open_stream(&token).ok_or_else(|| unauthorized(&state))?;
+    Ok(crate::sse::stream(state.runtime.clone(), guard).into_response())
 }
 
 async fn command(
@@ -313,29 +314,33 @@ async fn command(
     body: Option<Json<Value>>,
 ) -> Result<Response, ApiError> {
     check_origin(&state, &headers)?;
-    let caller = authenticate(&state, &headers, true)?;
+    let caller = authenticate(&state, &headers)?;
     let args = body.map(|Json(v)| v).unwrap_or(Value::Null);
 
-    if let Some(operation) = commands::lookup_durable(&name) {
-        return durable(&state, &caller, &headers, &name, operation, args).await;
-    }
-    let Some(operation) = commands::lookup(&name) else {
+    let outcome = if let Some(operation) = commands::lookup_durable(&name) {
+        durable(&state, &caller, &headers, &name, operation, args).await
+    } else if let Some(operation) = commands::lookup(&name) {
+        if operation.mutates {
+            check_csrf(&caller, &headers)?;
+        }
+        (operation.run)(state.ctx(&caller), args)
+            .await
+            .map(|result| Json(result).into_response())
+            .map_err(ApiError::from)
+    } else {
         // Unknown or desktop-only: a 404 rather than a fall-through into arbitrary dispatch.
-        return Err(ApiError(
+        Err(ApiError(
             StatusCode::NOT_FOUND,
             AppError::new(ErrorCode::InvalidInput, "no such operation on this host"),
-        ));
+        ))
     };
-    if operation.mutates {
-        check_csrf(&caller, &headers)?;
-    }
-    let result = (operation.run)(state.runtime.clone(), args).await?;
-    Ok(Json(result).into_response())
+
+    outcome
 }
 
-/// Durable submission. Acceptance is persisted before the worker starts and before this
+/// Durable submission. Acceptance is recorded before the worker starts and before this
 /// returns, so a response lost in transit can be reconciled with the key the client already
-/// has rather than resubmitted blind.
+/// has rather than resubmitted blind. The record lives in memory only.
 async fn durable(
     state: &WebState,
     caller: &Caller,
@@ -364,8 +369,13 @@ async fn durable(
     // other fund-moving work. Recovery is never held — it is the remedy for a stuck swap, and
     // blocking it would strand the funds it exists to reclaim. Reading an existing key is
     // still allowed, since that is how one gets settled.
+    // Per wallet: a payment stuck on one wallet cannot double-spend another wallet's coins.
+    let wallet_id = state
+        .runtime
+        .wallet_of(&caller.session)
+        .map(|dir| dir.display().to_string());
     if portal_core::operations::moves_funds(name) && state.journal.get(&key).is_none() {
-        let blocking = state.journal.blocking_conflicts();
+        let blocking = state.journal.blocking_conflicts(wallet_id.as_deref());
         if !blocking.is_empty() {
             let mut error = AppError::new(
                 ErrorCode::SwapInProgress,
@@ -379,31 +389,27 @@ async fn durable(
         }
     }
 
-    match state.journal.admit(&key, name, None, 0, &args)? {
+    match state.journal.admit(&key, name, wallet_id, 0, &args)? {
         portal_core::operations::Admission::Replayed(record) => {
             // Not an error: this is the answer the client came back for.
             Ok((StatusCode::OK, Json(serde_json::to_value(record).unwrap_or(Value::Null)))
                 .into_response())
         }
         portal_core::operations::Admission::Accepted(record) => {
-            let runtime = state.runtime.clone();
+            let ctx = state.ctx(caller);
             let journal = state.journal.clone();
             let run = operation.run;
             let id = record.operation_id.clone();
             // Owned by the server from here: closing the tab or losing the connection does
             // not cancel work that has already been accepted.
             tokio::spawn(async move {
-                // Must be the first thing here, and nothing side-effecting may precede it:
-                // `Journal::open` treats a record still in `Accepted` as proof the operation
-                // never ran, which is what keeps a crash from blocking future spends. So if
-                // this write fails, the work must not start either — running it anyway would
-                // spend against a record that recovery is entitled to read as unexecuted, and
-                // a later retry would move the funds a second time.
+                // First, before anything with an effect: if the record cannot say the work
+                // started, the work must not start, or a replay could read it as never run.
                 if let Err(e) = journal.mark_running(&id) {
                     log::error!("refusing to start {id}: could not record it as running: {e:?}");
                     return;
                 }
-                match run(runtime, args).await {
+                match run(ctx, args).await {
                     Ok(value) => {
                         let _ = journal.mark_succeeded(&id, value);
                     }
@@ -416,6 +422,8 @@ async fn durable(
                             ErrorCode::InvalidInput
                                 | ErrorCode::InsufficientFunds
                                 | ErrorCode::WalletWrongPassword
+                                | ErrorCode::WalletNetworkMismatch
+                                | ErrorCode::WalletOpenElsewhere
                                 | ErrorCode::NotInitialized
                         );
                         let _ = if settled {
@@ -439,11 +447,15 @@ async fn operations(
     State(state): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    authenticate(&state, &headers, true)?;
+    let caller = authenticate(&state, &headers)?;
+    let wallet_id = state
+        .runtime
+        .wallet_of(&caller.session)
+        .map(|dir| dir.display().to_string());
     let recent = state.journal.recent(100);
     Ok(Json(json!({
         "operations": recent,
-        "blockingConflicts": state.journal.blocking_conflicts(),
+        "blockingConflicts": state.journal.blocking_conflicts(wallet_id.as_deref()),
     })))
 }
 
@@ -455,18 +467,17 @@ async fn reconcile_operation(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     check_origin(&state, &headers)?;
-    let caller = authenticate(&state, &headers, true)?;
+    let caller = authenticate(&state, &headers)?;
     check_csrf(&caller, &headers)?;
 
     // The same evidence the wallet page reconciles pending sends against.
-    let known: Vec<String> = portal_core::ops::taker_wallet::get_transactions(
-        &state.runtime,
-        Some(200),
-        None,
-    )
-    .await
-    .map(|txs| txs.into_iter().map(|tx| tx.txid).collect())
-    .unwrap_or_default();
+    let known: Vec<String> = match state.runtime.taker_for(&caller.session) {
+        Ok(taker) => portal_core::ops::taker_wallet::get_transactions(&taker, Some(200), None)
+            .await
+            .map(|txs| txs.into_iter().map(|tx| tx.txid).collect())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
 
     let record = state.journal.reconcile(&id, &known)?;
     Ok(Json(serde_json::to_value(record).map_err(AppError::internal)?))
@@ -480,7 +491,7 @@ async fn acknowledge_operation(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     check_origin(&state, &headers)?;
-    let caller = authenticate(&state, &headers, true)?;
+    let caller = authenticate(&state, &headers)?;
     check_csrf(&caller, &headers)?;
     let record = state.journal.acknowledge(&id)?;
     Ok(Json(serde_json::to_value(record).map_err(AppError::internal)?))
@@ -491,7 +502,7 @@ async fn operation(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    authenticate(&state, &headers, true)?;
+    authenticate(&state, &headers)?;
     let record = state.journal.get(&id).ok_or_else(|| {
         // No durable acceptance record exists under this key. The client should reconcile its
         // view before deliberately resubmitting, keeping the same key.
