@@ -1,0 +1,9 @@
+.git
+node_modules
+target
+dist
+**/node_modules
+**/target
+.env
+.env.*
+umbrel/portal/data

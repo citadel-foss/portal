@@ -8,13 +8,13 @@ use crate::error::AppError;
 use crate::state::AppState;
 use crate::types::LogLine;
 
-/// The taker log is one file per root, not per wallet: the crate's own threads carry no wallet
-/// in their names, so lines from several open wallets cannot be told apart.
+/// The wallet's own log. Lines the logger could not attribute to a wallet are in the app's
+/// `debug.log` under `~/.openswap` instead.
 pub async fn get_logs(
     taker: &crate::state::TakerInstance,
     lines: Option<usize>,
 ) -> Result<Vec<LogLine>, AppError> {
-    let path = taker.root.join("debug.log");
+    let path = taker.data_dir.join("debug.log");
     let want = lines.unwrap_or(100).min(1000);
 
     tokio::task::spawn_blocking(move || -> Result<Vec<LogLine>, AppError> {

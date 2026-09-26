@@ -170,15 +170,14 @@ pub fn runtime() -> Option<TorRuntime> {
 
 /// Shared by the taker and every maker in *this* process, but never between processes.
 ///
-/// Kept under the taker data dir so the layout stays inside the directories the openswap
-/// crate already owns, and suffixed with the process id so a desktop app and a web server on
-/// one data root each run their own Tor without fighting over it. Tor refuses to start against a directory another Tor
-/// already holds — it waits five seconds, logs "No, it's still there. Exiting.", and dies,
+/// Suffixed with the process id so a desktop app and a web server on one data root each run
+/// their own Tor without fighting over it. Tor refuses to start against a directory another
+/// Tor already holds — it waits five seconds, logs "No, it's still there. Exiting.", and dies,
 /// which takes Portal down with it moments after it has announced itself as listening.
 fn tor_dir() -> Result<PathBuf, String> {
-    openswap::utill::get_taker_dir()
+    crate::storage::openswap_root()
         .map(|dir| dir.join(format!("tor-manager-{}", std::process::id())))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.message)
 }
 
 /// Where Tor keeps the consensus and microdescriptors, shared across launches.
@@ -190,9 +189,9 @@ fn tor_dir() -> Result<PathBuf, String> {
 /// lock, the keys and the state. The cache is exactly what Tor's `CacheDirectory` is for.
 #[cfg(feature = "embedded-tor")]
 fn tor_cache_dir() -> Result<PathBuf, String> {
-    openswap::utill::get_taker_dir()
+    crate::storage::openswap_root()
         .map(|dir| dir.join("tor-cache"))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.message)
 }
 
 /// Removes `tor-manager` directories left by processes that are no longer running.
@@ -201,7 +200,7 @@ fn tor_cache_dir() -> Result<PathBuf, String> {
 /// Tor identity. Called at startup rather than shutdown: a process killed outright never gets
 /// to tidy up after itself, and that is exactly when the directory is left behind.
 pub fn sweep_stale_tor_dirs() {
-    let Ok(root) = openswap::utill::get_taker_dir() else {
+    let Ok(root) = crate::storage::openswap_root() else {
         return;
     };
     let Ok(entries) = std::fs::read_dir(&root) else {

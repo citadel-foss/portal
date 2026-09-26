@@ -18,7 +18,7 @@ pub struct DesktopAuth {
 
 impl DesktopAuth {
     pub fn load() -> Self {
-        let store = openswap::utill::get_taker_dir().ok().map(|root| owner_file(&root));
+        let store = portal_core::storage::openswap_root().ok().map(|root| owner_file(&root));
         DesktopAuth {
             owner: OwnerCredential::load(None, store),
             signed_in: AtomicBool::new(false),

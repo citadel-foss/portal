@@ -56,6 +56,7 @@ pub async fn upload(
         &state.runtime,
         guard,
         path,
+        true,
     )?;
     Ok((StatusCode::OK, Json(serde_json::to_value(view).unwrap_or(json!({})))).into_response())
 }

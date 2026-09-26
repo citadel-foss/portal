@@ -372,7 +372,9 @@ pub async fn prepare_swap(
     }
 
     let taker = instance.taker.clone();
+    let log_dir = instance.data_dir.clone();
     let summary = tokio::task::spawn_blocking(move || -> Result<SwapSummary, AppError> {
+        let _log = crate::logging::wallet_scope(log_dir);
         let mut guard = try_lock_taker(&taker)?;
         let taker = guard.as_mut().ok_or_else(AppError::not_initialized)?;
         Ok(taker.prepare_swap(params)?)
@@ -496,6 +498,7 @@ pub async fn start_swap(
     let swap_state = Arc::clone(state);
     let swap_instance = Arc::clone(instance);
     std::thread::spawn(move || {
+        let _log = crate::logging::wallet_scope(swap_instance.data_dir.clone());
         let result = {
             let mut guard = match taker.lock() {
                 Ok(g) => g,
@@ -619,7 +622,9 @@ pub async fn get_swap_tracker(
 /// minute.
 pub async fn recover_swap(instance: &TakerInstance) -> Result<(), AppError> {
     let taker = instance.taker.clone();
+    let log_dir = instance.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let _log = crate::logging::wallet_scope(log_dir);
         let mut guard = try_lock_taker(&taker)?;
         let taker = guard.as_mut().ok_or_else(AppError::not_initialized)?;
         if !taker.is_recovery_complete() {

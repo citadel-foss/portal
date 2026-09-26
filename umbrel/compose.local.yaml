@@ -5,8 +5,8 @@
 services:
   portal:
     build:
-      context: ../..
-      dockerfile: deploy/container/Dockerfile
+      context: ..
+      dockerfile: umbrel/Dockerfile
     image: portal:local
     volumes:
       - portal-local-data:/data

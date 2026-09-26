@@ -85,7 +85,7 @@ pub async fn choose_restore_backup(
             "restore selection is not a local filesystem path",
         )
     })?;
-    taker_wallet::register_restore_selection(&state, operation, path)
+    taker_wallet::register_restore_selection(&state, operation, path, false)
 }
 
 #[tauri::command]

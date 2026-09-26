@@ -3,8 +3,8 @@
 services:
   portal:
     build:
-      context: ../..
-      dockerfile: deploy/container/Dockerfile
+      context: ..
+      dockerfile: umbrel/Dockerfile
     restart: unless-stopped
     volumes:
       - portal-data:/data

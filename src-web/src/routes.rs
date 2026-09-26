@@ -338,9 +338,9 @@ async fn command(
     outcome
 }
 
-/// Durable submission. Acceptance is persisted before the worker starts and before this
+/// Durable submission. Acceptance is recorded before the worker starts and before this
 /// returns, so a response lost in transit can be reconciled with the key the client already
-/// has rather than resubmitted blind.
+/// has rather than resubmitted blind. The record lives in memory only.
 async fn durable(
     state: &WebState,
     caller: &Caller,
@@ -403,12 +403,8 @@ async fn durable(
             // Owned by the server from here: closing the tab or losing the connection does
             // not cancel work that has already been accepted.
             tokio::spawn(async move {
-                // Must be the first thing here, and nothing side-effecting may precede it:
-                // `Journal::open` treats a record still in `Accepted` as proof the operation
-                // never ran, which is what keeps a crash from blocking future spends. So if
-                // this write fails, the work must not start either — running it anyway would
-                // spend against a record that recovery is entitled to read as unexecuted, and
-                // a later retry would move the funds a second time.
+                // First, before anything with an effect: if the record cannot say the work
+                // started, the work must not start, or a replay could read it as never run.
                 if let Err(e) = journal.mark_running(&id) {
                     log::error!("refusing to start {id}: could not record it as running: {e:?}");
                     return;

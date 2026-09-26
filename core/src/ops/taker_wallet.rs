@@ -15,7 +15,6 @@ use openswap::bitcoin::{Address, OutPoint, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
-use openswap::utill::get_taker_dir;
 use openswap::wallet::{AddressType, Wallet};
 use uuid::Uuid;
 
@@ -32,12 +31,12 @@ use crate::types::{
     SessionStateDto, TxSummary, UtxoEntry, WalletInfo,
 };
 
-const BTC_PRICE_CACHE_FILE: &str = "btc-price-cache.json";
-const MAX_PRICE_CACHE_BYTES: u64 = 4096;
-static PRICE_CACHE_IO: Mutex<()> = Mutex::new(());
+/// The price moves far slower than anyone reads it, so one fetch serves every caller for a
+/// while. Memory only: after a restart the first caller fetches it again.
+const PRICE_MAX_AGE_SECS: u64 = 15 * 60;
+static LAST_PRICE: Mutex<Option<CachedBtcPrice>> = Mutex::new(None);
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy)]
 struct CachedBtcPrice {
     usd: f64,
     fetched_at: u64,
@@ -52,47 +51,6 @@ fn unix_timestamp() -> u64 {
 
 fn valid_usd_price(usd: f64) -> bool {
     usd.is_finite() && usd > 0.0
-}
-
-fn price_cache_path() -> Result<PathBuf, AppError> {
-    Ok(get_taker_dir()?.join(BTC_PRICE_CACHE_FILE))
-}
-
-fn load_cached_btc_price() -> Result<Option<CachedBtcPrice>, AppError> {
-    let _guard = PRICE_CACHE_IO.lock()?;
-    let path = price_cache_path()?;
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_PRICE_CACHE_BYTES
-    {
-        return Ok(None);
-    }
-    let cached: CachedBtcPrice = match serde_json::from_slice(&std::fs::read(path)?) {
-        Ok(cached) => cached,
-        Err(error) => {
-            log::warn!("ignoring invalid BTC price cache: {error}");
-            return Ok(None);
-        }
-    };
-    if !valid_usd_price(cached.usd) {
-        return Ok(None);
-    }
-    Ok(Some(cached))
-}
-
-fn save_cached_btc_price(cached: &CachedBtcPrice) -> Result<(), AppError> {
-    let _guard = PRICE_CACHE_IO.lock()?;
-    let path = price_cache_path()?;
-    if let Some(parent) = path.parent() {
-        crate::security::fs::ensure_private_dir(parent)?;
-    }
-    let body = serde_json::to_vec(cached).map_err(AppError::internal)?;
-    crate::security::fs::write_private(&path, &body)
 }
 
 pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<String>, AppError> {
@@ -239,23 +197,23 @@ async fn open_taker(
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
     };
 
-    // Our own dual-role logger, not the crate's setup_taker_logger — see logging.rs. One file
-    // per root: the crate's threads carry no wallet in their names, so per-wallet files could
-    // not be told apart.
-    crate::logging::set_taker_dir(root.to_path_buf());
-
     // `Taker::init` runs startup recovery inline, which blocks on a block being mined and can
     // hold this call for a block interval; the watcher is what lets the UI say which phase of it
     // is running instead of showing one opaque spinner.
     let sink = state.events.clone();
     let wallet_key = key.to_path_buf();
+    // Registered before `Taker::init`, not after: the threads it starts log straight away, and
+    // only a registered wallet can claim their unattributed lines.
+    crate::logging::register_wallet(config.wallet_name.clone(), key.to_path_buf());
     let taker = tokio::task::spawn_blocking(move || {
+        let _log = crate::logging::wallet_scope(wallet_key.clone());
         let _watch = crate::logging::watch_init_phases(sink, wallet_key);
         Taker::init(init_cfg)
     })
     .await
-    .map_err(from_wallet_join_error)?
-    .map_err(AppError::from)?;
+    .map_err(from_wallet_join_error)
+    .and_then(|init| init.map_err(AppError::from))
+    .inspect_err(|_| crate::logging::unregister_wallet(key))?;
 
     let instance = Arc::new(TakerInstance {
         wallet_name: config.wallet_name.clone(),
@@ -432,6 +390,7 @@ fn spawn_release(state: &Arc<AppState>, taker: Arc<TakerInstance>) {
     let spawned = std::thread::Builder::new()
         .name("taker-release".into())
         .spawn(move || {
+            let _log = crate::logging::wallet_scope(taker.data_dir.clone());
             // Blocking on purpose: a command still inside the crate — a prepare, a poll —
             // finishes before the Taker it is using goes away.
             let inner = taker
@@ -443,6 +402,7 @@ fn spawn_release(state: &Arc<AppState>, taker: Arc<TakerInstance>) {
             if let Ok(mut lock) = taker.dir_lock.lock() {
                 lock.take();
             }
+            crate::logging::unregister_wallet(&taker.data_dir);
         });
     match spawned {
         Ok(handle) => {
@@ -520,6 +480,7 @@ pub fn register_restore_selection(
     state: &Arc<AppState>,
     _operation: SensitiveOperationGuard,
     path: PathBuf,
+    staged: bool,
 ) -> Result<RestoreSelectionView, AppError> {
     let metadata = std::fs::symlink_metadata(&path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -541,6 +502,7 @@ pub fn register_restore_selection(
         selection_id,
         PendingFileSelection {
             path: canonical,
+            staged,
             created_at: std::time::Instant::now(),
         },
     );
@@ -548,6 +510,17 @@ pub fn register_restore_selection(
         selection_id,
         display_name,
     })
+}
+
+/// Deletes a host-staged file when dropped.
+struct StagedFile(Option<PathBuf>);
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Restore from a Rust-selected backup before `init_taker`. Bad password/file panics (caught via
@@ -594,6 +567,9 @@ pub async fn restore_wallet(
                 "restore file selection is missing, expired, or already used",
             )
         })?;
+    // Held to the end of this function, so an upload is gone however the restore ends — it
+    // is the whole encrypted wallet, and nothing needs it once the restore has read it.
+    let _staged = StagedFile(selection.staged.then(|| selection.path.clone()));
     if selection.created_at.elapsed() > Duration::from_secs(300) {
         return Err(AppError::new(
             ErrorCode::InvalidFileSelection,
@@ -605,7 +581,9 @@ pub async fn restore_wallet(
     let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
     let backup_path = selection.path;
 
+    let log_dir = dir.clone();
     tokio::task::spawn_blocking(move || {
+        let _log = crate::logging::wallet_scope(log_dir);
         openswap::wallet::ffi::restore_wallet_gui_app(
             Some(dir),
             Some(wallet_name),
@@ -965,7 +943,9 @@ pub async fn send_to_address(
         ));
     }
 
+    let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<SendResult, AppError> {
+        let _log = crate::logging::wallet_scope(log_dir);
         let txid = wallet
             .write()?
             .send_to_address(amount_sats, address, fee_rate, outpoints)?;
@@ -980,7 +960,9 @@ pub async fn send_to_address(
 pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
     let wallet = taker.wallet.clone();
     let cancel = taker.sync_cancel.clone();
+    let log_dir = taker.data_dir.clone();
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        let _log = crate::logging::wallet_scope(log_dir);
         wallet.write()?.sync_and_save(&cancel)?;
         Ok(())
     })
@@ -1039,69 +1021,94 @@ fn read_fee(body: &serde_json::Value, key: &str) -> Result<f64, AppError> {
 }
 
 /// Hits mempool.space/api/v1/prices over clearnet, same as estimate_fees — public market data,
-/// not swap-sensitive, so it isn't routed through Tor. A successful quote is saved locally;
-/// a later network failure falls back to that last known value across app restarts.
+/// not swap-sensitive, so it isn't routed through Tor. A quote younger than
+/// [`PRICE_MAX_AGE_SECS`] is served from memory; a failed fetch falls back to the last one this
+/// process saw.
 pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
-    tokio::task::spawn_blocking(|| -> Result<PriceEstimate, AppError> {
-        let live_quote = (|| -> Result<CachedBtcPrice, AppError> {
-            let response = minreq::get("https://mempool.space/api/v1/prices")
-                .with_timeout(10)
-                .send()
-                .map_err(AppError::internal)?;
-            if !(200..300).contains(&response.status_code) {
-                return Err(AppError::new(
+    let last = *LAST_PRICE.lock()?;
+    if let Some(quote) = last.filter(|q| unix_timestamp().saturating_sub(q.fetched_at) < PRICE_MAX_AGE_SECS) {
+        return Ok(PriceEstimate {
+            usd: quote.usd,
+            cached: false,
+            fetched_at: quote.fetched_at,
+        });
+    }
+    let live = tokio::task::spawn_blocking(|| -> Result<CachedBtcPrice, AppError> {
+        let response = minreq::get("https://mempool.space/api/v1/prices")
+            .with_timeout(10)
+            .send()
+            .map_err(AppError::internal)?;
+        if !(200..300).contains(&response.status_code) {
+            return Err(AppError::new(
+                ErrorCode::Internal,
+                format!("price service returned HTTP {}", response.status_code),
+            ));
+        }
+        let body: serde_json::Value = response.json().map_err(AppError::internal)?;
+        let usd = body
+            .get("USD")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|price| valid_usd_price(*price))
+            .ok_or_else(|| {
+                AppError::new(
                     ErrorCode::Internal,
-                    format!("price service returned HTTP {}", response.status_code),
-                ));
-            }
-            let body: serde_json::Value = response.json().map_err(AppError::internal)?;
-            let usd = body
-                .get("USD")
-                .and_then(serde_json::Value::as_f64)
-                .filter(|price| valid_usd_price(*price))
-                .ok_or_else(|| {
-                    AppError::new(
-                        ErrorCode::Internal,
-                        "price response missing a valid USD value".to_string(),
-                    )
-                })?;
-            Ok(CachedBtcPrice {
-                usd,
-                fetched_at: unix_timestamp(),
-            })
-        })();
+                    "price response missing a valid USD value".to_string(),
+                )
+            })?;
+        Ok(CachedBtcPrice {
+            usd,
+            fetched_at: unix_timestamp(),
+        })
+    })
+    .await
+    .map_err(AppError::internal)?;
 
-        match live_quote {
-            Ok(quote) => {
-                if let Err(error) = save_cached_btc_price(&quote) {
-                    log::warn!("could not save BTC/USD price cache: {error:?}");
-                }
+    match live {
+        Ok(quote) => {
+            *LAST_PRICE.lock()? = Some(quote);
+            Ok(PriceEstimate {
+                usd: quote.usd,
+                cached: false,
+                fetched_at: quote.fetched_at,
+            })
+        }
+        Err(live_error) => match last {
+            Some(quote) => {
+                log::warn!(
+                    "live BTC/USD price unavailable; using the quote from {}: {live_error:?}",
+                    quote.fetched_at
+                );
                 Ok(PriceEstimate {
                     usd: quote.usd,
-                    cached: false,
+                    cached: true,
                     fetched_at: quote.fetched_at,
                 })
             }
-            Err(live_error) => match load_cached_btc_price() {
-                Ok(Some(quote)) => {
-                    log::warn!(
-                        "live BTC/USD price unavailable; using cached quote from {}: {live_error:?}",
-                        quote.fetched_at
-                    );
-                    Ok(PriceEstimate {
-                        usd: quote.usd,
-                        cached: true,
-                        fetched_at: quote.fetched_at,
-                    })
-                }
-                Ok(None) => Err(live_error),
-                Err(cache_error) => {
-                    log::warn!("could not read BTC/USD price cache: {cache_error:?}");
-                    Err(live_error)
-                }
-            },
-        }
-    })
-    .await
-    .map_err(AppError::internal)?
+            None => Err(live_error),
+        },
+    }
+}
+
+#[cfg(test)]
+mod staged_file_tests {
+    use super::StagedFile;
+
+    /// A web upload is the whole encrypted wallet and goes the moment the restore is done; a
+    /// desktop pick is the user's own backup and must never be touched.
+    #[test]
+    fn only_a_staged_file_is_deleted() {
+        let dir = std::env::temp_dir().join(format!("portal-staged-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let upload = dir.join("upload");
+        let picked = dir.join("picked");
+        std::fs::write(&upload, b"x").unwrap();
+        std::fs::write(&picked, b"x").unwrap();
+
+        drop(StagedFile(Some(upload.clone())));
+        drop(StagedFile(None));
+
+        assert!(!upload.exists());
+        assert!(picked.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

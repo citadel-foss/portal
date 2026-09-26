@@ -165,7 +165,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
   async function loadWalletFile() {
     const path = await pickFile(dataDir ?? (await getDefaultWalletsDir()));
     if (path === null) return;
-    // Wallet files live at <root>/wallet-data/<name>/wallets/<name>, so the root is four levels
+    // Wallet files live at <root>/takers/<name>/wallets/<name>, so the root is four levels
     // up. Both hosts hand back a POSIX-or-Windows path, so the split is done here rather than
     // through a native path API.
     const newDataDir = parentDir(parentDir(parentDir(parentDir(path))));
@@ -492,8 +492,8 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
                   {/* The exact file about to be opened. Cheap reassurance in a wallet, and it is
                       the only place the user can confirm which folder they are pointed at. */}
                   {dataDir && (
-                    <p className="mt-1.5 truncate text-center font-mono text-[11px] text-subtle" title={`${dataDir}/wallet-data/${selectedWallet}`}>
-                      {dataDir}/wallet-data/{selectedWallet}
+                    <p className="mt-1.5 truncate text-center font-mono text-[11px] text-subtle" title={`${dataDir}/takers/${selectedWallet}`}>
+                      {dataDir}/takers/{selectedWallet}
                     </p>
                   )}
 
@@ -570,7 +570,7 @@ export function SelectWalletStep({ onSuccess }: SelectWalletStepProps) {
           </Card>
 
           {viewMode === "grid" && dataDir && (
-            <p className="mt-3 text-center text-[11.5px] text-subtle">{dataDir}/wallet-data</p>
+            <p className="mt-3 text-center text-[11.5px] text-subtle">{dataDir}/takers</p>
           )}
         </div>
       </IntroStage>

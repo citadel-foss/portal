@@ -199,6 +199,11 @@ pub fn run() {
             // command has been able to emit yet and the bridge cannot miss a startup event.
             bridge_events(app.handle().clone(), app.state::<Arc<AppState>>().events.subscribe());
 
+            // Before anything logs, so startup, Tor and a restore that runs before any wallet is
+            // open all reach the app's `debug.log` rather than the terminal.
+            if let Ok(root) = portal_core::storage::openswap_root() {
+                portal_core::logging::set_log_dir(root);
+            }
             portal_core::tor::sweep_stale_tor_dirs();
 
             // Earlier versions persisted the backend, RPC password included. Ceasing to

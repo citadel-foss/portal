@@ -9,7 +9,7 @@ One command builds the image and runs it; the frontend, the Rust binary and the 
 all stages of the one Dockerfile, so there is nothing to build beforehand.
 
 ```sh
-docker compose -f deploy/container/compose.local.yaml up --build
+docker compose -f umbrel/compose.local.yaml up --build
 ```
 
 Then open <http://localhost:3000>. Ctrl+C runs the same ordered teardown a supervisor would
@@ -23,7 +23,7 @@ than one host wants `trusted-tls-proxy` and a real proxy instead.
 ## First run
 
 ```sh
-PORTAL_PUBLIC_ORIGIN=https://portal.example docker compose -f deploy/container/compose.yaml up -d
+PORTAL_PUBLIC_ORIGIN=https://portal.example docker compose -f umbrel/compose.standalone.yaml up -d
 ```
 
 Open the origin and choose the owner password; every later visit signs in with it. Until that
@@ -34,12 +34,11 @@ and start it again — wallets are untouched, each still behind its own wallet p
 ## What is where
 
 `/data` is the only volume worth backing up. It holds `home/.openswap/` — wallets, swap
-tracker, reports, router registrations, the operation journal and the login verifier.
+tracker, reports, router registrations and the login verifier.
 
 An encrypted wallet export is **not** a service backup: it has no tracker, recovery or router
 state. Take a service backup with the container stopped.
 
 ## Not covered here
 
-Umbrel and StartOS wrappers are separate packages. Neither is included: see the
-"Remaining external decisions" table in `docs/FINAL_IMPLEMENTATION.md`.
+The Umbrel package is in `portal/`; see [README.md](README.md). StartOS packaging is not included.

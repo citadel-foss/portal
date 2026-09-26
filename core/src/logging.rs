@@ -1,10 +1,12 @@
-//! One process logger with a dynamic per-maker router. Maker server threads
-//! are named `maker-{id}` and most background records include `[port]`; both
-//! signals are used so concurrently running makers keep separate log files.
+//! One process logger with dynamic routers. Maker server threads are named
+//! `maker-{id}` and most maker records include `[port]`; both signals keep
+//! concurrently running makers in separate log files. Wallet records go to the
+//! wallet's own `debug.log` when they can be attributed (see `wallet_log_for`);
+//! everything else goes to the app's `debug.log` under `~/.openswap`.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -26,7 +28,18 @@ static TAKER_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// log file would mean no diagnostics anywhere at all.
 static LOGS_TO_FILE: AtomicBool = AtomicBool::new(false);
 static MAKERS: OnceLock<Mutex<HashMap<String, MakerLogTarget>>> = OnceLock::new();
-static MAKER_WRITE: Mutex<()> = Mutex::new(());
+/// Serializes appends to the router and wallet files, which rotate themselves.
+static ROUTED_WRITE: Mutex<()> = Mutex::new(());
+
+/// Open wallets, by name and data dir, for records that name their wallet or come from a
+/// thread with no wallet of its own.
+static WALLETS: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
+
+thread_local! {
+    /// The wallet the code running on this thread is working for. The crate's own log lines
+    /// carry no wallet, so this is what attributes the ones logged from our threads.
+    static WALLET_SCOPE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TAIL_BYTES: usize = 1024 * 1024;
@@ -74,7 +87,7 @@ fn redact_line(line: &str) -> String {
     redacted
 }
 
-fn rotate_maker_log(path: &Path) {
+fn rotate_log(path: &Path) {
     if path
         .metadata()
         .map(|m| m.len() < MAX_LOG_BYTES)
@@ -90,6 +103,124 @@ fn rotate_maker_log(path: &Path) {
         let _ = std::fs::rename(from, to);
     }
     let _ = std::fs::rename(path, path.with_file_name("debug.log.1"));
+}
+
+/// Appends one record to a routed log file, rotating it first if it has grown too large.
+fn append_line(path: &Path, record: &log::Record<'_>, message: &str) {
+    let Ok(_write_guard) = ROUTED_WRITE.lock() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = crate::security::fs::ensure_private_dir(parent);
+    }
+    rotate_log(path);
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(path) {
+        use log4rs::encode::Encode;
+        // The app log's own encoder, so every file reads the same; the record is rebuilt around
+        // the redacted message.
+        let mut encode = |args: std::fmt::Arguments<'_>| {
+            let redacted = log::Record::builder()
+                .args(args)
+                .level(record.level())
+                .target(record.target())
+                .module_path(record.module_path())
+                .file(record.file())
+                .line(record.line())
+                .build();
+            log4rs::encode::pattern::PatternEncoder::default()
+                .encode(&mut log4rs::encode::writer::simple::SimpleWriter(&mut file), &redacted)
+        };
+        let _ = encode(format_args!("{message}"));
+    }
+}
+
+/// Marks this thread as working for one wallet until the guard drops.
+pub struct WalletScope;
+
+impl Drop for WalletScope {
+    fn drop(&mut self) {
+        WALLET_SCOPE.with(|scope| *scope.borrow_mut() = None);
+    }
+}
+
+#[must_use]
+pub fn wallet_scope(wallet_dir: PathBuf) -> WalletScope {
+    WALLET_SCOPE.with(|scope| *scope.borrow_mut() = Some(wallet_dir));
+    WalletScope
+}
+
+pub fn register_wallet(name: String, wallet_dir: PathBuf) {
+    if let Ok(mut wallets) = WALLETS.lock() {
+        wallets.push((name, wallet_dir));
+    }
+}
+
+pub fn unregister_wallet(wallet_dir: &Path) {
+    if let Ok(mut wallets) = WALLETS.lock() {
+        wallets.retain(|(_, dir)| dir != wallet_dir);
+    }
+}
+
+/// The wallet a record belongs to, if that can be told: the thread is working for one, the
+/// record names one, or only one wallet is open and no router shares the process. The
+/// crate's background threads (watcher, offer sync, recovery) name no wallet, so with several
+/// open their lines stay in the app log rather than being guessed.
+fn wallet_log_for(message: &str) -> Option<PathBuf> {
+    if let Some(dir) = WALLET_SCOPE.with(|scope| scope.borrow().clone()) {
+        return Some(dir.join("debug.log"));
+    }
+    let wallets = WALLETS.lock().ok()?;
+    let named = wallets.iter().find(|(name, dir)| {
+        message.contains(&format!("\"{name}\""))
+            || message.contains(dir.to_string_lossy().as_ref())
+    });
+    if let Some((_, dir)) = named {
+        return Some(dir.join("debug.log"));
+    }
+    let routers_idle = makers().lock().is_ok_and(|makers| makers.is_empty());
+    match wallets.as_slice() {
+        [(_, dir)] if routers_idle => Some(dir.join("debug.log")),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+struct WalletLogRouter;
+
+impl log::Log for WalletLogRouter {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let message = redact_line(&record.args().to_string());
+        if let Some(path) = wallet_log_for(&message) {
+            append_line(&path, record, &message);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+/// Keeps a wallet's records out of the app log once they have gone to the wallet's own.
+#[derive(Debug)]
+struct NotWalletRecord;
+
+impl log4rs::filter::Filter for NotWalletRecord {
+    fn filter(&self, record: &log::Record<'_>) -> log4rs::filter::Response {
+        if wallet_log_for(&redact_line(&record.args().to_string())).is_some() {
+            log4rs::filter::Response::Reject
+        } else {
+            log4rs::filter::Response::Neutral
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -137,23 +268,7 @@ impl log::Log for MakerLogRouter {
         let Some(target) = Self::target_for(&message) else {
             return;
         };
-        let Ok(_write_guard) = MAKER_WRITE.lock() else {
-            return;
-        };
-        if let Some(parent) = target.path.parent() {
-            let _ = crate::security::fs::ensure_private_dir(parent);
-        }
-        rotate_maker_log(&target.path);
-        let mut options = OpenOptions::new();
-        options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        if let Ok(mut file) = options.open(target.path) {
-            let _ = writeln!(file, "{} {} - {}", record.level(), record.target(), message);
-        }
+        append_line(&target.path, record, &message);
     }
 
     fn flush(&self) {}
@@ -301,11 +416,16 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
 
     let root_appender = match taker_dir.and_then(|dir| file_appender(dir)) {
         Some(appender) => {
-            builder = builder.appender(Appender::builder().build("taker_file", Box::new(appender)));
+            builder = builder.appender(
+                Appender::builder()
+                    .filter(Box::new(NotWalletRecord))
+                    .build("taker_file", Box::new(appender)),
+            );
             "taker_file"
         }
         None => "stdout",
     };
+    builder = builder.appender(Appender::builder().build("wallet_router", Box::new(WalletLogRouter)));
 
     builder
         .logger(Logger::builder().build("bitcoincore_rpc", log::LevelFilter::Off))
@@ -326,6 +446,7 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
         .build(
             Root::builder()
                 .appender(root_appender)
+                .appender("wallet_router")
                 .appender("init_phase")
                 .build(log::LevelFilter::Info),
         )
@@ -354,7 +475,8 @@ pub fn logs_to_file() -> bool {
     LOGS_TO_FILE.load(Ordering::SeqCst)
 }
 
-pub fn set_taker_dir(dir: PathBuf) {
+/// Where the app's own `debug.log` lives. Set once at startup, before anything is logged.
+pub fn set_log_dir(dir: PathBuf) {
     *TAKER_DIR.lock().unwrap() = Some(dir);
     rebuild();
 }
@@ -472,6 +594,44 @@ mod tests {
         assert!(note.is_some_and(|note: &str| note.contains("waiting for a block")));
         // The recovery pass re-logs a wallet line from an earlier phase; nothing may rewind.
         assert_eq!(seen(&mut at, "Sync Started for \"w\""), (phase, note));
+    }
+
+    /// The only test touching the wallet registry, which is process-wide.
+    #[test]
+    fn wallet_records_are_attributed_only_when_it_can_be_told() {
+        use super::{register_wallet, unregister_wallet, wallet_log_for, wallet_scope};
+        use std::path::PathBuf;
+        let alpha = PathBuf::from("/tmp/portal-test/takers/alpha");
+        let beta = PathBuf::from("/tmp/portal-test/takers/beta");
+
+        assert_eq!(wallet_log_for("Watcher initiated"), None, "no wallet open");
+
+        register_wallet("alpha".into(), alpha.clone());
+        assert_eq!(
+            wallet_log_for("Watcher initiated"),
+            Some(alpha.join("debug.log")),
+            "the only wallet open gets unnamed lines"
+        );
+
+        register_wallet("beta".into(), beta.clone());
+        assert_eq!(wallet_log_for("Watcher initiated"), None, "two open: not guessed");
+        assert_eq!(
+            wallet_log_for("Sync Started for \"beta\""),
+            Some(beta.join("debug.log")),
+            "a line naming its wallet goes there"
+        );
+        {
+            let _scope = wallet_scope(alpha.clone());
+            assert_eq!(
+                wallet_log_for("Watcher initiated"),
+                Some(alpha.join("debug.log")),
+                "a line from a thread working for a wallet goes there"
+            );
+        }
+        assert_eq!(wallet_log_for("Watcher initiated"), None, "the scope ends with its guard");
+
+        unregister_wallet(&alpha);
+        unregister_wallet(&beta);
     }
 
     #[test]

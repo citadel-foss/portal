@@ -11,11 +11,18 @@ use openswap::utill::get_taker_dir;
 
 use crate::error::{AppError, ErrorCode};
 
-/// Resolves an explicitly chosen root, falling back to the crate's own taker directory.
+/// `~/.openswap`: `takers/` and `makers/` hold one folder per wallet and per router, and
+/// everything that belongs to the app rather than to one of them lives here directly.
+pub fn openswap_root() -> Result<PathBuf, AppError> {
+    let taker = get_taker_dir()?;
+    Ok(taker.parent().map(Path::to_path_buf).unwrap_or(taker))
+}
+
+/// Resolves an explicitly chosen root, falling back to `~/.openswap`.
 pub fn resolve_data_dir(data_dir: &Option<String>) -> Result<PathBuf, AppError> {
     match data_dir {
         Some(dir) => Ok(PathBuf::from(dir)),
-        None => Ok(get_taker_dir()?),
+        None => openswap_root(),
     }
 }
 
@@ -26,14 +33,24 @@ pub fn wallet_data_dir(root: &Path, wallet_name: &str) -> PathBuf {
     root.join(WALLET_DATA_DIR).join(wallet_name)
 }
 
+/// A router's default data dir, `~/.openswap/makers/<id>`.
+pub fn maker_data_dir(router_id: &str) -> Result<PathBuf, AppError> {
+    Ok(openswap_root()?.join("makers").join(router_id))
+}
+
+/// The router registry.
+pub fn makers_registry() -> Result<PathBuf, AppError> {
+    Ok(openswap_root()?.join("makers.json"))
+}
+
 pub fn wallet_path(data_dir: &Path, wallet_name: &str) -> PathBuf {
     data_dir.join("wallets").join(wallet_name)
 }
 
 /// Where the per-wallet data dirs live under a root.
-pub const WALLET_DATA_DIR: &str = "wallet-data";
+pub const WALLET_DATA_DIR: &str = "takers";
 
-/// Wallets under `<root>/wallet-data`, sorted: each is a directory holding its own
+/// Wallets under `<root>/takers`, sorted: each is a directory holding its own
 /// `wallets/<same name>`.
 pub fn list_wallets(data_dir: &Option<String>) -> Result<Vec<String>, AppError> {
     let dir = resolve_data_dir(data_dir)?.join(WALLET_DATA_DIR);

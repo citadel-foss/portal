@@ -65,7 +65,7 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         None => default_root,
     };
     std::fs::create_dir_all(&data_root)?;
-    portal_core::logging::set_taker_dir(data_root.clone());
+    portal_core::logging::set_log_dir(data_root.clone());
     portal_core::tor::sweep_stale_tor_dirs();
 
     // The protocol crate dumps a whole swap report to stdout when a swap ends, which buries
@@ -86,26 +86,29 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let runtime = Arc::new(AppState::default());
-    // Opened before the listener binds: a corrupt or newer-schema journal must stop startup,
-    // not surface once someone is already trying to spend.
-    let journal = portal_core::operations::Journal::open(&data_root).map_err(|e| e.message)?;
-    if journal.has_unsettled() {
-        log::warn!("some operations from a previous run have unknown outcomes; only conflicting spends are held");
-    }
-    let state = WebState::new(config, runtime, journal, data_root.clone());
+    // Earlier versions kept the operation journal on disk — every send's address and amount,
+    // in the clear. It is memory-only now, so whatever an older run left behind goes.
+    let _ = std::fs::remove_dir_all(data_root.join("portal").join("operations"));
+    // Staged backups are the whole encrypted wallet and only ever needed for seconds; anything
+    // a previous run left there is an orphan.
+    let _ = std::fs::remove_dir_all(data_root.join("portal").join("transfers"));
+    let state = WebState::new(config, runtime, portal_core::operations::Journal::default(), data_root.clone());
     let bind = state.config.bind;
     let shutdown_timeout = state.config.shutdown_timeout_secs;
 
     let app = routes::router(state.clone()).merge(assets::router(&state).with_state(state.clone()));
 
     // Expiry has a side effect — the session's wallet may close — so it cannot wait for the
-    // session's own next request, which for a closed tab never comes.
+    // session's own next request, which for a closed tab never comes. The same tick clears
+    // staged backups nobody came back for: a download never fetched, an upload never restored.
     let reaper = state.auth.clone();
+    let transfers_root = data_root.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
             reaper.reap();
+            portal_core::storage::sweep_stale_transfers(&transfers_root, Duration::from_secs(300));
         }
     });
 

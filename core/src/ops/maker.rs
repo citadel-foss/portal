@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use openswap::maker::api::MIN_SWAP_AMOUNT;
 use openswap::maker::{start_server, MakerServer, MakerServerConfig};
-use openswap::utill::get_maker_dir;
 use openswap::wallet::Wallet;
 use crate::events::AppEvent;
 
@@ -34,18 +33,10 @@ fn valid_id(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-fn default_maker_data_dir(router_id: &str) -> Result<PathBuf, AppError> {
-    let legacy = get_maker_dir()?;
-    Ok(legacy
-        .parent()
-        .map(|base| base.join(router_id))
-        .unwrap_or_else(|| legacy.join(router_id)))
-}
-
 fn resolve_maker_data_dir(config: &MakerInitConfig) -> Result<PathBuf, AppError> {
     match &config.data_dir {
         Some(dir) => Ok(PathBuf::from(dir)),
-        None => default_maker_data_dir(&config.router_id),
+        None => crate::storage::maker_data_dir(&config.router_id),
     }
 }
 

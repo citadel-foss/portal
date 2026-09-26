@@ -124,7 +124,7 @@ async function settle(operationId: string): Promise<unknown> {
     }
     // Never reported as a plain failure: the effect may have happened, and saying otherwise
     // is what invites someone to send the same payment twice.
-    if (record.state === "indeterminate" || record.state === "interrupted") {
+    if (record.state === "indeterminate") {
       throw {
         code: "OPERATION_UNRESOLVED",
         message:
