@@ -25,12 +25,11 @@ jobs:
           - name: Linux x86_64
             platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - name: macOS Apple Silicon
+            rust_targets: x86_64-unknown-linux-gnu
+          - name: macOS Universal
             platform: macos-latest
-            target: aarch64-apple-darwin
-          - name: macOS Intel
-            platform: macos-latest
-            target: x86_64-apple-darwin
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
 
     steps:
       - name: Checkout
@@ -53,6 +52,10 @@ jobs:
             pkg-config \
             xdg-utils
 
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        run: brew install automake autoconf libtool pkg-config
+
       - name: Install Node.js
         uses: actions/setup-node@v7
         with:
@@ -62,7 +65,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2.9.2
