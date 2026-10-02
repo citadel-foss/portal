@@ -836,15 +836,6 @@ pub async fn get_recovery_status(
             let locked_sats = guard.get_balances()?.contract.to_sat();
             (live, locked_sats)
         };
-        // The crate records a UTXO's confirmations when it first caches it and never updates
-        // them, so a contract first seen in the mempool reads 0 for good and the refund lock
-        // never appears to count. Its own connection, like the swap page's: the recovery loop
-        // holds the wallet across its waits.
-        let chain = crate::ops::chain_backend::resolve_bounded(&config, &wallet_name, Some(socks_port))
-            .ok()
-            .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
-            .and_then(|chain| Some((chain.get_block_count().ok()?, chain)));
-
         let tracker = SwapTracker::load_or_create(&data_dir)?;
         // `incomplete_swaps` already excludes anything cleaned up. With no `swap_id` the newest
         // failed record is the one to report against — the crate recovers all outstanding
@@ -869,6 +860,23 @@ pub async fn get_recovery_status(
                 .cloned(),
             None => candidates.iter().max_by_key(|r| r.updated_at).copied().cloned(),
         };
+
+        // The crate records a UTXO's confirmations when it first caches it and never updates
+        // them, so recovery needs a live height read for its countdown. Do not open an Electrum
+        // connection for the common idle case, or for contracts belonging only to a healthy swap.
+        let needs_chain = !live.is_empty() && (!candidates.is_empty() || !swap_running);
+        let chain = needs_chain
+            .then(|| {
+                crate::ops::chain_backend::resolve_bounded(
+                    &config,
+                    &wallet_name,
+                    Some(socks_port),
+                )
+                .ok()
+                .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
+                .and_then(|chain| Some((chain.get_block_count().ok()?, chain)))
+            })
+            .flatten();
 
         // The taker's own refund delay, taken across *every* unfinished swap rather than the
         // selected one: `pending` below is the wallet's whole contract pool, which cannot be

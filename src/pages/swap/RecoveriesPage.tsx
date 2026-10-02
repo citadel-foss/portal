@@ -17,8 +17,9 @@ import { Button } from "../../components/ui/inputs";
 import { formatRelativeTime } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 
-// Matches the detail page: the crate's own recovery loop retries once a minute.
-const POLL_MS = 12_000;
+// Matches the detail page and the crate's own once-a-minute recovery pass. The status read
+// consults the chain, so polling faster only adds redundant Electrum connections.
+const POLL_MS = 60_000;
 
 const PHASE_LABEL: Record<string, string> = {
   incoming_recovered: "Incoming leg reclaimed",

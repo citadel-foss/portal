@@ -2,7 +2,7 @@ import { AlertTriangle, ArrowDownLeft, ArrowLeft, ArrowUpRight, Check, CheckCirc
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { chainName, useConnectionStore, watchConnection } from "../../store/connection";
+import { chainName, loadConnectionStatus, useConnectionStore } from "../../store/connection";
 import logoUrl from "../../assets/logo.png";
 import { Background } from "../ui/layout";
 import { useHeaderActionsStore } from "../../store/header-actions";
@@ -51,15 +51,16 @@ function LiveDot({ live }: { live: boolean | null }) {
 }
 
 /**
- * Which chain this session is on and whether it is still answering. The backend itself is
- * read-only — adopted at the connection gate and held for the session — but its liveness is
- * not, so the status half is re-probed rather than resolved once at mount.
+ * Which chain this session is on and whether it answered when the shell opened. Operations make
+ * their own reachability checks, so this does not continuously probe the backend for a badge.
  */
 function ConnectionChip() {
   const config = useConnectionStore((s) => s.config);
   const status = useConnectionStore((s) => s.status);
 
-  useEffect(watchConnection, []);
+  useEffect(() => {
+    void loadConnectionStatus();
+  }, []);
 
   const network = chainName(status);
   // null until the first probe lands, so "not asked yet" never renders as "down".
@@ -325,7 +326,9 @@ function TopNav({
   );
 }
 
-const RECOVERY_POLL_MS = 30_000;
+// The crate retries recovery once a minute. Polling faster cannot reveal a new recovery pass and
+// can add another live chain read while that pass is using Electrum itself.
+const RECOVERY_POLL_MS = 60_000;
 
 const MAX_VISIBLE_TOASTS = 3;
 
@@ -554,6 +557,7 @@ export function AppShell() {
   const walletUnlocked = useSessionStore((s) => s.initialized === true);
   const refreshRecovery = useRecoveryStore((s) => s.refresh);
   const clearRecovery = useRecoveryStore((s) => s.clear);
+  const recoveryPageOpen = pathname.startsWith("/swap/recover");
 
   // Recovery can take hours and outlives any one page, so the shell is what watches it. Slow
   // cadence: the crate's own loop only retries once a minute, and this read is off disk.
@@ -563,10 +567,12 @@ export function AppShell() {
       clearRecovery();
       return;
     }
+    // The recovery list and detail pages perform their own fuller status reads.
+    if (recoveryPageOpen) return;
     void refreshRecovery();
     const id = setInterval(() => void refreshRecovery(), RECOVERY_POLL_MS);
     return () => clearInterval(id);
-  }, [walletUnlocked, refreshRecovery, clearRecovery]);
+  }, [walletUnlocked, recoveryPageOpen, refreshRecovery, clearRecovery]);
 
   useEffect(() => {
     let settleTimer: ReturnType<typeof setTimeout> | undefined;

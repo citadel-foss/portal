@@ -18,6 +18,9 @@
           "url": "https://mempool.space/*"
         },
         {
+          "url": "https://blockstream.info/*"
+        },
+        {
           "url": "https://github.com/citadel-tech/coinswap/*"
         },
         {

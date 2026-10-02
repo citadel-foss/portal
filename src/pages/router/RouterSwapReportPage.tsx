@@ -20,7 +20,6 @@ import {
   ReportLoading,
   Row,
   SectionCard,
-  TxArtifact,
   satsToBtc,
 } from "../../components/ui/report";
 import { formatDuration, formatNumber } from "../../lib/wallet-format";
@@ -93,47 +92,25 @@ export function RouterSwapReportPage() {
           />
 
           <SectionCard title="UTXOs">
-            {report.incomingContractOutpoint && (
-              <TxArtifact
-                label="Incoming UTXO"
-                caption="The contract the previous hop paid into this router"
-                txid={report.incomingContractOutpoint.txid}
-                vout={report.incomingContractOutpoint.vout}
-                accent={HOP_ACCENTS[0]}
-                arrow="↙"
-              />
-            )}
-            {report.incomingUtxos.length > 0 && (
-              <CoinRow
-                label="Incoming UTXOs"
-                caption="The coins this router swept out of the incoming contract"
-                coins={report.incomingUtxos}
-                accent={HOP_ACCENTS[0]}
-                arrow="↙"
-              />
-            )}
-            {report.outgoingContractOutpoint && (
-              <TxArtifact
-                label="Outgoing UTXO"
-                caption="The contract this router funded for the next hop"
-                txid={report.outgoingContractOutpoint.txid}
-                vout={report.outgoingContractOutpoint.vout}
-                accent={OUTGOING_ACCENT}
-                arrow="↗"
-              />
-            )}
             {report.outgoingUtxos.length > 0 && (
               <CoinRow
                 label="Outgoing UTXOs"
-                caption="The router's own coins spent to fund the outgoing contract"
+                caption="The coins we spent for this swap."
                 coins={report.outgoingUtxos}
                 accent={OUTGOING_ACCENT}
                 arrow="↗"
               />
             )}
-            {!report.incomingContractOutpoint &&
-              !report.outgoingContractOutpoint &&
-              report.incomingUtxos.length === 0 &&
+            {report.incomingUtxos.length > 0 && (
+              <CoinRow
+                label="Incoming UTXOs"
+                caption="The coins we got back from this swap."
+                coins={report.incomingUtxos}
+                accent={HOP_ACCENTS[0]}
+                arrow="↙"
+              />
+            )}
+            {report.incomingUtxos.length === 0 &&
               report.outgoingUtxos.length === 0 && (
                 <p className="text-[12px] text-subtle">No UTXO data recorded for this swap.</p>
               )}

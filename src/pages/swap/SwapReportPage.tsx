@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getIncomingSwapUtxo, getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
 import type { ReportRouterFee, Offer, SwapReportDetail, SwapUtxo } from "../../api/types";
-import { Identifier, ExternalLinkButton, Modal, SatsAmount } from "../../components/ui/display";
+import { Modal, SatsAmount } from "../../components/ui/display";
 import { routerName } from "../../lib/market-format";
 import { Button, LinkButton } from "../../components/ui/inputs";
 import {
@@ -55,9 +55,6 @@ export function SwapReportPage() {
   // Only entries we can actually name. An unnamed one must not satisfy this, or the chain
   // lookup below never runs and the page settles for showing nothing useful.
   const reportedIncoming = (report?.incomingUtxos ?? []).filter(identifiedAddress);
-  // Flattened and de-duplicated: the crate groups them per hop, but the section names the
-  // transactions that funded the route, and one can fund more than one hop.
-  const fundingTxids = [...new Set((report?.fundingTxids ?? []).flat())];
   useEffect(() => {
     if (swapId && report && reportedIncoming.length === 0 && utxoState === "idle") {
       loadIncomingUtxo();
@@ -82,8 +79,6 @@ export function SwapReportPage() {
       })
       .catch(() => {});
   }
-
-  const outgoingContract = report?.outgoingContractOutpoint ?? null;
 
   if (notFound) {
     return (
@@ -152,51 +147,19 @@ export function SwapReportPage() {
           />
 
           <SectionCard title="UTXOs">
-            {outgoingContract && (
-              <TxArtifact
-                label="Outgoing UTXO"
-                caption="The coin this wallet paid into the route"
-                txid={outgoingContract.txid}
-                vout={outgoingContract.vout}
-                accent={OUTGOING_ACCENT}
-                arrow="↗"
-              />
-            )}
             {report.outgoingUtxos.length > 0 && (
               <CoinRow
                 label="Outgoing UTXOs"
-                caption="The wallet coins spent to fund the outgoing contract"
+                caption="The coins we spent for this swap."
                 coins={report.outgoingUtxos}
                 accent={OUTGOING_ACCENT}
                 arrow="↗"
               />
             )}
-            {fundingTxids.length > 0 && (
-              <div className="rounded-control border border-line bg-surface-raised p-5">
-                <h4 className="mb-3.5 flex items-center gap-3 text-[15px] font-extrabold text-foreground">
-                  <span className="font-mono" style={{ color: OUTGOING_ACCENT }} aria-hidden>
-                    ↗
-                  </span>
-                  Funding Txs
-                </h4>
-                <div className="flex flex-col gap-3">
-                  {fundingTxids.map((txid) => (
-                    <div key={txid} className="grid grid-cols-[minmax(0,1fr)_34px] items-start gap-2.5">
-                      <Identifier value={txid} className="text-[12px] leading-relaxed text-muted" />
-                      <ExternalLinkButton txid={txid} />
-                    </div>
-                  ))}
-                </div>
-                <p className="mt-3 text-[11.5px] leading-5 text-subtle">
-                  The transactions that funded the route. Amounts and addresses belong to the
-                  coins above; these name the transactions that moved them.
-                </p>
-              </div>
-            )}
             {reportedIncoming.length > 0 ? (
               <CoinRow
                 label="Incoming UTXOs"
-                caption="The coins the route paid back into this wallet"
+                caption="The coins we got back from this swap."
                 coins={reportedIncoming}
                 accent={HOP_ACCENTS[0]}
                 arrow="↙"
@@ -204,11 +167,7 @@ export function SwapReportPage() {
             ) : incomingUtxo ? (
               <TxArtifact
                 label="Incoming UTXO"
-                caption={
-                  incomingUtxo.address
-                    ? `The coin the route paid back, at ${incomingUtxo.address}`
-                    : "The coin the route paid back"
-                }
+                caption="The coins we got back from this swap."
                 txid={incomingUtxo.txid}
                 vout={incomingUtxo.vout}
                 amountSats={incomingUtxo.amountSats}
@@ -220,6 +179,9 @@ export function SwapReportPage() {
               // is written, so it has to be read off the chain.
               <div className="flex flex-col gap-2 rounded-control border border-dashed border-line bg-surface-raised p-5">
                 <h4 className="text-[15px] font-extrabold text-foreground">Incoming UTXO</h4>
+                <p className="text-[11.5px] leading-5 text-subtle">
+                  The coins we got back from this swap.
+                </p>
                 {/* The amount is recorded even when the outpoint is not, and it is the part
                     worth reading — so the card always carries it rather than being nothing
                     but an apology for what could not be resolved. */}
@@ -249,30 +211,13 @@ export function SwapReportPage() {
                 )}
               </div>
             )}
-            {!outgoingContract &&
-              !incomingUtxo &&
+            {!incomingUtxo &&
               report.outgoingUtxos.length === 0 &&
               reportedIncoming.length === 0 &&
               utxoState === "done" && (
                 <p className="text-[12px] text-subtle">No UTXO data recorded for this swap.</p>
               )}
           </SectionCard>
-
-          {report.fundingTxids.flat().length > 0 && (
-            <SectionCard title="Funding Transactions">
-              {report.fundingTxids.map((hopTxids, hopIdx) =>
-                hopTxids.map((txid, i) => (
-                  <TxArtifact
-                    key={`${hopIdx}-${i}`}
-                    label={`Hop ${hopIdx + 1}`}
-                    txid={txid}
-                    accent={HOP_ACCENTS[hopIdx % HOP_ACCENTS.length]}
-                    arrow="→"
-                  />
-                )),
-              )}
-            </SectionCard>
-          )}
         </div>
 
         <div className="flex flex-col gap-4">

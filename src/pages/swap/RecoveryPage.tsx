@@ -31,8 +31,9 @@ import { useToastStore } from "../../store/toast";
 import { SwapCircuit } from "./circuit/SwapCircuit";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
 
-// The crate's recovery loop retries once a minute, so anything faster only re-reads the same file.
-const POLL_MS = 12_000;
+// The crate's recovery loop retries once a minute. This status read also consults the chain, so
+// matching that cadence avoids opening several redundant Electrum connections per recovery pass.
+const POLL_MS = 60_000;
 const PHASE_LABEL: Record<string, string> = {
   preimage_stamped: "Preimage stamped",
   swapcoins_persisted: "Swapcoins persisted",
