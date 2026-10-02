@@ -179,10 +179,10 @@ export function SwapPage() {
   const [customRouterCount, setCustomRouterCount] = useState(String(CUSTOM_ROUTER_COUNT));
   const [selectedRouters, setSelectedRouters] = useState<string[]>([]);
   const [txCount, setTxCount] = useState(DEFAULT_TX_COUNT);
-  const [feeKey, setFeeKey] = useState<FeeChoice>("medium");
+  const [feeKey, setFeeKey] = useState<FeeChoice>("fast");
   const [customFeeRate, setCustomFeeRate] = useState("");
   const { fees, failed: feesFailed, retry: retryFees } = useFeeEstimate();
-  const feeRate = chosenFeeRate(fees, feeKey, customFeeRate, true);
+  const feeRate = chosenFeeRate(fees, feeKey, customFeeRate);
   const [destination, setDestination] = useState<"wallet" | "address">("wallet");
   const [paymentAddress, setPaymentAddress] = useState("");
 
@@ -582,7 +582,7 @@ export function SwapPage() {
     if (amountInput.length > 0 && amountSats <= 0)
       list.push("Enter a valid amount.");
     if (feeRate < 1 && (feeKey === "custom" || feesFailed))
-      list.push("Choose a fee rate: whole sats/vB, at least 1.");
+      list.push("Choose a fee rate of at least 1 sat/vB.");
     if (amountSats > 0 && liquidity && amountSats > liquidity.maxSwappable)
       list.push("Amount exceeds your swappable balance.");
     if (manualCoins && selectedTotal < amountSats)
@@ -1325,7 +1325,6 @@ export function SwapPage() {
               onChoice={setFeeKey}
               custom={customFeeRate}
               onCustom={setCustomFeeRate}
-              whole
             />
           </div>
 

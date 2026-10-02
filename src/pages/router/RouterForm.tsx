@@ -301,7 +301,7 @@ export function FidelityFields({ form }: { form: RouterForm }) {
  *  for bonds. Owns `fidelityFeerate`, so the form holds whichever rate is picked here. */
 export function BondFeeRateField({ form }: { form: RouterForm }) {
   const { fees, failed, retry } = useFeeEstimate();
-  const [choice, setChoice] = useState<FeeChoice>("medium");
+  const [choice, setChoice] = useState<FeeChoice>("fast");
   const [custom, setCustom] = useState("");
   const rate = chosenFeeRate(fees, choice, custom);
   const setFeerate = form.set("fidelityFeerate");

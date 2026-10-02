@@ -392,7 +392,7 @@ function RouterSendPanel({
   const pushToast = useToastStore((state) => state.push);
   const [recipient, setRecipient] = useState("");
   const { fees, failed: feesFailed, retry: retryFees } = useFeeEstimate();
-  const [feeChoice, setFeeChoice] = useState<FeeChoice>("medium");
+  const [feeChoice, setFeeChoice] = useState<FeeChoice>("fast");
   const [customFeeRate, setCustomFeeRate] = useState("");
   const [sending, setSending] = useState(false);
   const [confirming, setConfirming] = useState(false);
