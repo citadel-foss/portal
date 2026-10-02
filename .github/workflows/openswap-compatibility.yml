@@ -1,0 +1,158 @@
+name: OpenSwap master compatibility
+run-name: Portal against OpenSwap ${{ github.event.client_payload.openswap_sha || inputs.openswap_sha || 'latest master' }}
+
+on:
+  repository_dispatch:
+    types: [openswap-updated]
+  workflow_dispatch:
+    inputs:
+      openswap_sha:
+        description: Full OpenSwap master SHA; leave empty for the latest master commit
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Only one run can update the public download links at a time.
+concurrency:
+  group: portal-openswap-master
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  NO_COLOR: "1"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  resolve:
+    name: Resolve OpenSwap master commit
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.context.outputs.sha }}
+    steps:
+      - name: Validate upstream commit
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_SHA: ${{ github.event.client_payload.openswap_sha }}
+          DISPATCH_REF: ${{ github.event.client_payload.openswap_ref }}
+          DISPATCH_REPOSITORY: ${{ github.event.client_payload.openswap_repository }}
+          MANUAL_SHA: ${{ inputs.openswap_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream="citadel-foss/openswap"
+          if [[ "${EVENT_NAME}" == repository_dispatch ]]; then
+            if [[ "${DISPATCH_REF}" != refs/heads/master || "${DISPATCH_REPOSITORY}" != "${upstream}" ]]; then
+              echo "::error::Expected a dispatch from citadel-foss/openswap master."
+              exit 1
+            fi
+            sha="${DISPATCH_SHA}"
+          else
+            sha="${MANUAL_SHA}"
+            if [[ -z "${sha}" ]]; then
+              sha="$(gh api "repos/${upstream}/commits/master" --jq .sha)"
+            fi
+          fi
+          if [[ ! "${sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::openswap_sha must be a full 40-character Git SHA."
+            exit 1
+          fi
+          sha="${sha,,}"
+          ancestor="$(gh api "repos/${upstream}/compare/${sha}...master" --jq .merge_base_commit.sha)"
+          if [[ "${ancestor}" != "${sha}" ]]; then
+            echo "::error::${sha} is not a commit on OpenSwap master."
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          printf 'Building Portal against [OpenSwap `%s`](https://github.com/%s/commit/%s).\n' \
+            "$sha" "$upstream" "$sha" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build supported platforms
+    needs: resolve
+    uses: ./.github/workflows/build.yml
+    with:
+      openswap_sha: ${{ needs.resolve.outputs.sha }}
+
+  publish:
+    name: Publish OpenSwap master downloads
+    needs: [resolve, build]
+    # Manual runs on a development branch can build artifacts, but cannot replace public downloads.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OPENSWAP_SHA: ${{ needs.resolve.outputs.sha }}
+      PORTAL_SHA: ${{ github.sha }}
+      RELEASE_TAG: openswap-master
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: portal-*
+          path: downloads
+
+      - name: Prepare binaries, checksums and download list
+        run: python3 .github/scripts/package-compatibility.py downloads release-assets
+
+      - name: Publish public prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Portal — OpenSwap master"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" \
+              -f sha="$PORTAL_SHA" -F force=true
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$title" --notes-file release-notes.md --prerelease --latest=false
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
+              --target "$PORTAL_SHA" --title "$title" --notes-file release-notes.md \
+              --prerelease --latest=false
+          fi
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+  report:
+    name: Report compatibility failure
+    needs: [resolve, build, publish]
+    if: >-
+      always() && !cancelled() && github.ref == 'refs/heads/main' &&
+      needs.resolve.result == 'success' &&
+      (needs.build.result == 'failure' || needs.publish.result == 'failure')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OPENSWAP_SHA: ${{ needs.resolve.outputs.sha }}
+      PORTAL_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Create or update issue with build errors
+        run: python3 .github/scripts/report-compatibility.py
+
+      - name: Upload complete failure logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: portal-compatibility-failure-${{ needs.resolve.outputs.sha }}
+          path: compatibility-report/
+          if-no-files-found: warn
+          retention-days: 14

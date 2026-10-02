@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      openswap_sha:
+        description: Exact OpenSwap master commit to build; empty keeps the normal dependency
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -74,6 +81,12 @@ jobs:
         with:
           shared-key: ${{ matrix.target }}
 
+      - name: Pin and verify OpenSwap commit
+        if: inputs.openswap_sha != ''
+        env:
+          OPENSWAP_SHA: ${{ inputs.openswap_sha }}
+        run: bash .github/scripts/pin-openswap.sh
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -83,13 +96,28 @@ jobs:
           # Ad-hoc signing keeps unsigned macOS artifacts launchable after download.
           APPLE_SIGNING_IDENTITY: "-"
         with:
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} ${{ inputs.openswap_sha != '' && '-- --locked' || '' }}
           uploadWorkflowArtifacts: true
           # Named per platform: tauri-action's `[platform]` says "darwin" for macOS.
           workflowArtifactNamePattern: portal-${{ matrix.artifact }}-[arch]-[bundle]
 
+      # Archive on macOS before the artifact store strips executable bits and symlinks.
+      - name: Archive macOS application
+        if: runner.os == 'macOS' && inputs.openswap_sha != ''
+        run: |
+          tar -czf portal-macos-universal.app.tar.gz \
+            -C target/universal-apple-darwin/release/bundle/macos Portal.app
+
+      - name: Upload macOS application archive
+        if: runner.os == 'macOS' && inputs.openswap_sha != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: portal-mac-universal-app-archive
+          path: portal-macos-universal.app.tar.gz
+          if-no-files-found: error
+
   # The single-file web host, for testers: the frontend is built into the binary, so there is
-  # nothing to install beside it. Artifacts on the run only — nothing is released.
+  # nothing to install beside it. The compatibility caller publishes these artifacts.
   web:
     name: Server ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
@@ -141,6 +169,12 @@ jobs:
         with:
           shared-key: web-${{ matrix.asset }}
 
+      - name: Pin and verify OpenSwap commit
+        if: inputs.openswap_sha != ''
+        env:
+          OPENSWAP_SHA: ${{ inputs.openswap_sha }}
+        run: bash .github/scripts/pin-openswap.sh
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -152,7 +186,7 @@ jobs:
         env:
           PORTAL_EMBED_WEB: dist/web
         run: |
-          cargo build --release -p portal-web
+          cargo build --release ${{ inputs.openswap_sha != '' && '--locked' || '' }} -p portal-web
           mkdir out && cp target/release/portal-web out/portal-server
 
       - name: Build portal-web (universal)
@@ -160,8 +194,8 @@ jobs:
         env:
           PORTAL_EMBED_WEB: dist/web
         run: |
-          cargo build --release -p portal-web --target aarch64-apple-darwin
-          cargo build --release -p portal-web --target x86_64-apple-darwin
+          cargo build --release ${{ inputs.openswap_sha != '' && '--locked' || '' }} -p portal-web --target aarch64-apple-darwin
+          cargo build --release ${{ inputs.openswap_sha != '' && '--locked' || '' }} -p portal-web --target x86_64-apple-darwin
           mkdir out
           lipo -create -output out/portal-server \
             target/aarch64-apple-darwin/release/portal-web \
