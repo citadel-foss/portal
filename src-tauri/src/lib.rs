@@ -278,7 +278,7 @@ pub fn run() {
                 app.set_menu(menu)?;
                 app.on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => shutdown::begin_quit(app),
-                    "about" => about::show(&app.package_info().version.to_string()),
+                    "about" => about::show(include_str!("../../version.txt").trim()),
                     _ => {}
                 });
             }

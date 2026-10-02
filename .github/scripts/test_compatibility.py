@@ -1,5 +1,6 @@
 """Checks for release completeness and useful compatibility failure diagnostics."""
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -20,6 +21,70 @@ def load(name):
 
 packaging = load('package-compatibility')
 reporting = load('report-compatibility')
+versions = load('build-version')
+
+
+class Versions(unittest.TestCase):
+    def setUp(self):
+        day = patch.object(versions, 'build_date', return_value='20261002')
+        day.start()
+        self.addCleanup(day.stop)
+
+    def fixture(self, root):
+        (root / 'src-tauri').mkdir()
+        (root / 'src-tauri/tauri.conf.json').write_text('{"version": "0.1.0-beta"}\n')
+        (root / 'version.txt').write_text('0.1.0-beta.1+20261002\n')
+
+    def test_counter_increments_for_multiple_builds_on_the_same_day(self):
+        self.assertEqual(versions.next_version('0.1.0-beta.1+20261002', '0.1.0-beta'), '0.1.0-beta.2+20261002')
+        self.assertEqual(versions.next_version('0.1.0-beta.999+20261002', '0.1.0-beta'), '0.1.0-beta.1000+20261002')
+
+    def test_new_day_updates_date_without_resetting_counter(self):
+        self.assertEqual(versions.next_version('0.1.0-beta.2+20261001', '0.1.0-beta'),
+                         '0.1.0-beta.3+20261002')
+
+    def test_invalid_counter_or_date_is_rejected(self):
+        for version in ('0.1.0-beta.0+20261002', '0.1.0-beta.01+20261002',
+                        '0.1.0-beta.1+20260230', '0.1.0-beta.1+2026102'):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                versions.counter(version, '0.1.0-beta')
+
+    def test_display_version_does_not_change_package_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            versions.stamp(root, '0.1.0-beta.2+20261002')
+            self.assertEqual((root / 'version.txt').read_text(), '0.1.0-beta.2+20261002\n')
+            self.assertEqual(versions.package_version(root), '0.1.0-beta')
+            with self.assertRaises(ValueError):
+                versions.stamp(root, '0.2.0-beta.3+20261002')
+            self.assertEqual((root / 'version.txt').read_text(), '0.1.0-beta.2+20261002\n')
+
+    def test_main_reservation_retries_conflict_with_updated_counter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            first = {'encoding': 'base64', 'sha': 'old',
+                     'content': base64.b64encode(b'0.1.0-beta.1+20261002\n').decode()}
+            second = {'encoding': 'base64', 'sha': 'new',
+                      'content': base64.b64encode(b'0.1.0-beta.2+20261002\n').decode()}
+            with patch.object(versions, 'gh', side_effect=[first, versions.GitHubError('HTTP 409'), second, {}]) as api:
+                version = versions.reserve(root, 'citadel-foss/portal', 'refs/heads/main')
+            self.assertEqual(version, '0.1.0-beta.3+20261002')
+            self.assertEqual((root / 'version.txt').read_text(), version + '\n')
+            payload = api.call_args.kwargs['payload']
+            self.assertEqual(payload['sha'], 'new')
+            self.assertEqual(payload['branch'], 'main')
+            self.assertEqual(base64.b64decode(payload['content']), b'0.1.0-beta.3+20261002\n')
+
+    def test_development_branch_does_not_write_repository_counter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            with patch.object(versions, 'gh') as api:
+                version = versions.reserve(root, 'citadel-foss/portal', 'refs/heads/dev')
+            api.assert_not_called()
+            self.assertEqual(version, '0.1.0-beta.2+20261002')
 
 
 class Downloads(unittest.TestCase):
@@ -52,14 +117,17 @@ class Downloads(unittest.TestCase):
                     binary = archive.getmember('portal-server')
                     self.assertEqual(binary.mode, 0o755)
                     self.assertEqual(archive.extractfile(binary).read(), asset.encode())
-            notes = packaging.describe(output, assets, 'citadel-foss/portal', 'openswap-master',
-                                       'a' * 40, 'b' * 40, 'https://example.com/run/1', '0.1.0-beta')
+            notes = packaging.describe(output, assets, 'citadel-foss/portal', '0.1.0-beta',
+                                       'a' * 40, 'b' * 40, 'https://example.com/run/1', '0.1.0-beta', '0.1.0-beta.2+20261002')
             manifest = json.loads((output / 'build.json').read_text())
             self.assertEqual(manifest['openswap_sha'], 'a' * 40)
             self.assertEqual(manifest['portal_sha'], 'b' * 40)
+            self.assertEqual(manifest['portal_version'], '0.1.0-beta')
+            self.assertEqual(manifest['display_version'], '0.1.0-beta.2+20261002')
+            self.assertIn('0.1.0-beta.2+20261002', notes)
             self.assertEqual(len(manifest['assets']), 8)
             for entry in manifest['assets']:
-                self.assertIn('/releases/download/openswap-master/' + entry['name'], entry['url'])
+                self.assertIn('/releases/download/0.1.0-beta/' + entry['name'], entry['url'])
                 self.assertEqual(entry['sha256'], hashlib.sha256((output / entry['name']).read_bytes()).hexdigest())
                 self.assertIn(entry['url'], notes)
             checksums = (output / 'SHA256SUMS').read_text().splitlines()

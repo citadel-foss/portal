@@ -59,7 +59,7 @@ def package(downloads, output):
     return assets
 
 
-def describe(output, assets, repository, tag, openswap_sha, portal_sha, run_url, version):
+def describe(output, assets, repository, tag, openswap_sha, portal_sha, run_url, version, display_version=None):
     base = f"https://github.com/{repository}/releases/download/{tag}"
     entries = []
     for name, platform, kind in assets:
@@ -68,6 +68,7 @@ def describe(output, assets, repository, tag, openswap_sha, portal_sha, run_url,
                         "sha256": checksum, "url": f"{base}/{name}"})
     manifest = {
         "openswap_sha": openswap_sha, "portal_sha": portal_sha, "portal_version": version,
+        "display_version": display_version or version,
         "built_at": datetime.now(timezone.utc).isoformat(), "workflow_run": run_url,
         "assets": entries,
     }
@@ -80,7 +81,7 @@ def describe(output, assets, repository, tag, openswap_sha, portal_sha, run_url,
         "Latest successful Portal build against OpenSwap master. This is a prerelease.", "",
         f"- OpenSwap: [{openswap_sha}](https://github.com/citadel-foss/openswap/commit/{openswap_sha})",
         f"- Portal: [{portal_sha}](https://github.com/{repository}/commit/{portal_sha})",
-        f"- App version: `{version}`",
+        f"- App version: `{display_version or version}`",
         f"- [Build and logs]({run_url})", "",
         "| Platform | Package | Download |", "| --- | --- | --- |",
     ]
@@ -98,6 +99,7 @@ if __name__ == "__main__":
     run_url = f"https://github.com/{repository}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
     version = json.loads(Path("src-tauri/tauri.conf.json").read_text())["version"]
     notes = describe(output, assets, repository, os.environ["RELEASE_TAG"],
-                     os.environ["OPENSWAP_SHA"], os.environ["PORTAL_SHA"], run_url, version)
+                     os.environ["OPENSWAP_SHA"], os.environ["PORTAL_SHA"], run_url, version,
+                     Path("version.txt").read_text().strip())
     Path("release-notes.md").write_text(notes)
     print(notes)

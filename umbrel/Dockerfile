@@ -17,7 +17,7 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config libssl-dev build-essential && rm -rf /var/lib/apt/lists/*
 # Glob: CI has no Cargo.lock, and COPY fails on a missing file.
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml Cargo.lock* version.txt ./
 COPY core ./core
 COPY src-web ./src-web
 COPY src-tauri ./src-tauri

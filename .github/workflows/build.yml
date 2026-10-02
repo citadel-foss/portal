@@ -12,6 +12,11 @@ on:
         required: false
         default: ""
         type: string
+      build_version:
+        description: Display version reserved for this compatibility build
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -80,6 +85,12 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
         with:
           shared-key: ${{ matrix.target }}
+
+      - name: Set display version
+        if: inputs.build_version != ''
+        env:
+          PORTAL_BUILD_VERSION: ${{ inputs.build_version }}
+        run: python3 .github/scripts/build-version.py stamp
 
       - name: Pin and verify OpenSwap commit
         if: inputs.openswap_sha != ''
@@ -168,6 +179,12 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.2
         with:
           shared-key: web-${{ matrix.asset }}
+
+      - name: Set display version
+        if: inputs.build_version != ''
+        env:
+          PORTAL_BUILD_VERSION: ${{ inputs.build_version }}
+        run: python3 .github/scripts/build-version.py stamp
 
       - name: Pin and verify OpenSwap commit
         if: inputs.openswap_sha != ''

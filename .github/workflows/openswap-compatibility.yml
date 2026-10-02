@@ -29,8 +29,11 @@ jobs:
     name: Resolve OpenSwap master commit
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    permissions:
+      contents: write
     outputs:
       sha: ${{ steps.context.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Validate upstream commit
         id: context
@@ -71,12 +74,23 @@ jobs:
           printf 'Building Portal against [OpenSwap `%s`](https://github.com/%s/commit/%s).\n' \
             "$sha" "$upstream" "$sha" >> "$GITHUB_STEP_SUMMARY"
 
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Increment display version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/build-version.py reserve
+
   build:
     name: Build supported platforms
     needs: resolve
     uses: ./.github/workflows/build.yml
     with:
       openswap_sha: ${{ needs.resolve.outputs.sha }}
+      build_version: ${{ needs.resolve.outputs.version }}
 
   publish:
     name: Publish OpenSwap master downloads
@@ -91,7 +105,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       OPENSWAP_SHA: ${{ needs.resolve.outputs.sha }}
       PORTAL_SHA: ${{ github.sha }}
-      RELEASE_TAG: openswap-master
+      RELEASE_TAG: 0.1.0-beta
+      PORTAL_BUILD_VERSION: ${{ needs.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -103,7 +118,9 @@ jobs:
           path: downloads
 
       - name: Prepare binaries, checksums and download list
-        run: python3 .github/scripts/package-compatibility.py downloads release-assets
+        run: |
+          python3 .github/scripts/build-version.py stamp
+          python3 .github/scripts/package-compatibility.py downloads release-assets
 
       - name: Publish public prerelease
         shell: bash
