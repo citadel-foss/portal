@@ -98,7 +98,7 @@ const ROUTER_COUNT_PRESETS = [1, 2, 3] as const;
 const CUSTOM_ROUTER_COUNT = 4;
 
 /** `MAX_TX_COUNT`; the backend rejects anything outside 1..=10. */
-const DEFAULT_TX_COUNT = 1;
+const DEFAULT_TX_COUNT = 2;
 const MAX_TX_COUNT = 10;
 
 
