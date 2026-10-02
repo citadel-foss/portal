@@ -253,7 +253,6 @@ export function FeeRateField({
   onChoice,
   custom,
   onCustom,
-  whole = false,
 }: {
   fees: FeeEstimate | null;
   failed: boolean;
@@ -262,7 +261,6 @@ export function FeeRateField({
   onChoice: (choice: FeeChoice) => void;
   custom: string;
   onCustom: (value: string) => void;
-  whole?: boolean;
 }) {
   const shown = (rate: number) =>
     rate > 0 ? `${formatFeeRate(rate)} s/vB` : fees === null && !failed ? "…" : "—";
@@ -274,7 +272,7 @@ export function FeeRateField({
             key={key}
             size="sm"
             label={label}
-            value={shown(chosenFeeRate(fees, key, "", whole))}
+            value={shown(chosenFeeRate(fees, key, ""))}
             selected={choice === key}
             onClick={() => onChoice(key)}
           />
@@ -282,7 +280,7 @@ export function FeeRateField({
         <PresetTile
           size="sm"
           label="Custom"
-          value={chosenFeeRate(fees, "custom", custom, whole) > 0 ? `${custom.trim()} s/vB` : "—"}
+          value={shown(chosenFeeRate(fees, "custom", custom))}
           selected={choice === "custom"}
           onClick={() => onChoice("custom")}
         />
@@ -300,7 +298,7 @@ export function FeeRateField({
       {choice === "custom" && (
         <TextField
           label="Custom rate (sats/vB)"
-          inputMode={whole ? "numeric" : "decimal"}
+          inputMode="decimal"
           placeholder="e.g. 8"
           value={custom}
           onChange={(e) => onCustom(e.target.value)}
@@ -309,7 +307,7 @@ export function FeeRateField({
               ? `At most ${MAX_FEE_RATE} sats/vB; anything higher is almost certainly a typo.`
               : undefined
           }
-          hint={whole ? "Whole sats/vB only." : undefined}
+          hint="Decimal rates are rounded up to the next whole sat/vB."
         />
       )}
     </div>

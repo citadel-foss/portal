@@ -45,7 +45,7 @@ function SendPanel() {
   const [recipient, setRecipient] = useState("");
   const [recipientValidation, setRecipientValidation] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
   const [recipientError, setRecipientError] = useState<string | undefined>();
-  const [feeKey, setFeeKey] = useState<FeeChoice>("medium");
+  const [feeKey, setFeeKey] = useState<FeeChoice>("fast");
   const [customFeeRate, setCustomFeeRate] = useState("");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
   const [sending, setSending] = useState(false);
