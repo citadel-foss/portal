@@ -100,7 +100,7 @@ export function explorerAddressUrl(address: string): string | null {
 
 // ---------------------------------------------------------------------------
 // Amount input formatting — shared by Send and Swap (btcPriceUsd comes from getBtcPrice(),
-// a live mempool.space quote).
+// a live Coinbase spot quote).
 // ---------------------------------------------------------------------------
 
 export type Unit = "sats" | "btc" | "usd";
