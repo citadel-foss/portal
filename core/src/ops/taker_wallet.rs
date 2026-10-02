@@ -1429,18 +1429,7 @@ pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
     .map_err(AppError::internal)?
 }
 
-/// Hits mempool.space over clearnet regardless of Tor setting.
-///
-/// Mainnet rates even when the wallet is on signet — mempool.space has per-network
-/// endpoints, but a signet rate prices nothing, so the mainnet structure is what gets
-/// reported and the caller picks from it.
-///
-/// Deliberately not the crate's `FeeEstimator`: it averages mempool.space with
-/// Blockstream's `/fee-estimates`, which blends historical data and returns
-/// sub-1 sat/vB rates, dragging the mean below the 1 sat/vB relay minimum so the
-/// resulting transaction can't propagate. Each of its `get_*_priority_rate`
-/// calls also re-runs the whole fan-out, costing six HTTP requests per refresh.
-/// Hits mempool.space/api/v1/prices over clearnet — public market data,
+/// Hits Coinbase's public BTC/USD spot-price endpoint over clearnet. This is public market data,
 /// not swap-sensitive, so it isn't routed through Tor. A quote younger than
 /// [`PRICE_MAX_AGE_SECS`] is served from memory; a failed fetch falls back to the last one this
 /// process saw.
@@ -1456,7 +1445,7 @@ pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
         });
     }
     let live = tokio::task::spawn_blocking(|| -> Result<CachedBtcPrice, AppError> {
-        let response = minreq::get("https://mempool.space/api/v1/prices")
+        let response = minreq::get("https://api.coinbase.com/v2/prices/BTC-USD/spot")
             .with_timeout(10)
             .send()
             .map_err(AppError::internal)?;
@@ -1468,8 +1457,9 @@ pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
         }
         let body: serde_json::Value = response.json().map_err(AppError::internal)?;
         let usd = body
-            .get("USD")
-            .and_then(serde_json::Value::as_f64)
+            .pointer("/data/amount")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|amount| amount.parse::<f64>().ok())
             .filter(|price| valid_usd_price(*price))
             .ok_or_else(|| {
                 AppError::new(
