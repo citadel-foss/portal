@@ -2,15 +2,7 @@ import { create } from "zustand";
 import { checkBackend, getChainBackend } from "../api/commands";
 import type { BackendStatus, ChainBackendConfig } from "../api/types";
 
-/**
- * Whether the chain backend adopted at the connection gate is still answering, re-probed on a
- * timer so the header can say so rather than implying it.
- *
- * `checkBackend` is a real chain query over a fresh connection, not a cached flag, so the
- * interval is generous: liveness is not something that flips between frames, and each probe
- * costs a TLS (and on Tor, a circuit) handshake.
- */
-const PROBE_INTERVAL_MS = 20_000;
+/** Whether the chain backend adopted at the connection gate answered the shell's initial read. */
 
 /** Our signet's challenge script, hex, exactly as bitcoind prints it in `getblockchaininfo`. */
 const OUR_SIGNET_CHALLENGE = "0014a3ec9c731da66d9725d54947aede5c830623f33d";
@@ -54,12 +46,10 @@ export async function currentStatus(): Promise<BackendStatus | null> {
   return useConnectionStore.getState().status;
 }
 
-/** Starts the probe timer once for the app's lifetime. Safe to call from several places. */
-let timer: ReturnType<typeof setInterval> | null = null;
-export function watchConnection() {
-  void useConnectionStore.getState().refresh();
-  if (timer) return;
-  timer = setInterval(() => void useConnectionStore.getState().refresh(), PROBE_INTERVAL_MS);
+/** Reads the backend and network once for header state, filtering and explorer links. Operations
+ * perform their own reachability checks, so keeping a polling connection open adds no guard. */
+export function loadConnectionStatus() {
+  return useConnectionStore.getState().refresh();
 }
 
 /** Electrum and Core disagree on the name of the same chain ("main"/"test" vs the BIP70

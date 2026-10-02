@@ -619,11 +619,11 @@ function WalletPanel({
     if (!running) return;
     await refreshRouterWallet(routerId).catch(() => {});
   }, [routerId, running]);
-  // The backend syncs a running router every 2 minutes; without re-reading, a payment it has
-  // already found stays off this tab until a manual refresh.
+  // Match the running router's two-minute wallet sync. Re-reading more often cannot reveal a new
+  // payment, and resolving Electrum UTXO addresses can otherwise open redundant connections.
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 30_000);
+    const timer = setInterval(() => void load(), 2 * 60 * 1000);
     return () => clearInterval(timer);
   }, [load]);
 

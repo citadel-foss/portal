@@ -71,7 +71,7 @@ export function getTransactionKind(category: string, label: string | undefined, 
 
 const PORTAL_SIGNET_EXPLORER = "https://mempool.citadelfoss.xyz";
 const PUBLIC_EXPLORERS: Record<string, string> = {
-  bitcoin: "https://mempool.space",
+  bitcoin: "https://blockstream.info",
   testnet: "https://mempool.space/testnet",
   testnet4: "https://mempool.space/testnet4",
 };
