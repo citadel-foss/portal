@@ -205,11 +205,23 @@ export function SwapPage() {
 
   const recoveryActive = useRecoveryStore((s) => s.active);
 
+  const routerNames = useMemo(
+    () =>
+      new Map(
+        routers.flatMap((router) => {
+          const name = router.offer?.name.trim();
+          return name ? [[router.address, name] as const] : [];
+        }),
+      ),
+    [routers],
+  );
+
   const circuit = useSwapCircuit(
     tracker,
     summary,
     phase === "failed",
     phase === "finished",
+    routerNames,
   );
 
   const loadReference = useCallback(async () => {

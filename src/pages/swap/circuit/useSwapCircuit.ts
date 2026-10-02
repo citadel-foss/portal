@@ -187,11 +187,14 @@ const STAGE_ORDER: RouterStage[] = [
 const atLeast = (stage: RouterStage, min: RouterStage) =>
   STAGE_ORDER.indexOf(stage) >= STAGE_ORDER.indexOf(min);
 
+const EMPTY_ROUTER_NAMES = new Map<string, string>();
+
 export function useSwapCircuit(
   tracker: SwapTrackerProgress | null,
   summary: SwapSummary | null,
   failure: boolean,
   finished = false,
+  routerNames: ReadonlyMap<string, string> = EMPTY_ROUTER_NAMES,
 ): CircuitView {
   return useMemo<CircuitView>(() => {
     const routerCount = summary?.routers.length ?? tracker?.routerCount ?? 2;
@@ -207,7 +210,7 @@ export function useSwapCircuit(
       return {
         index,
         address,
-        label: `Router ${index + 1}`,
+        label: routerNames.get(address) || `Router ${index + 1}`,
         stage: live?.stage ?? "waiting",
         tone: "idle" as Tone,
         fee,
@@ -378,5 +381,5 @@ export function useSwapCircuit(
       paymentAddress,
       paymentAmountSats: summary?.payment?.amountSats ?? tracker?.paymentAmountSats,
     };
-  }, [tracker, summary, failure, finished]);
+  }, [tracker, summary, failure, finished, routerNames]);
 }
