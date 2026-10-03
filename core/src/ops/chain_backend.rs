@@ -253,16 +253,39 @@ fn pool_key(config: &ChainBackendConfig, wallet_name: &str, socks_port: Option<u
 }
 
 /// Keeps `chain` as the most recently used entry, dropping the least recently used past the cap.
+///
+/// Any earlier entry for the same route goes: with the lock released across the I/O, two callers
+/// on one route can each have opened a connection, and keeping both would hold a route twice
+/// over while evicting another.
 fn hold(held: &mut Vec<(String, AnyBlockchain)>, key: String, chain: AnyBlockchain) {
+    held.retain(|(route, _)| route != &key);
     held.insert(0, (key, chain));
     held.truncate(MAX_HELD);
 }
 
+/// Takes this route's connection out of the set, if one is held.
+fn take(key: &str) -> Option<AnyBlockchain> {
+    let mut held = SIDE_CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let at = held.iter().position(|(route, _)| route == key)?;
+    Some(held.remove(at).1)
+}
+
+/// Puts a working connection back as the most recently used entry.
+fn put(key: String, chain: AnyBlockchain) {
+    let mut held = SIDE_CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    hold(&mut held, key, chain);
+}
+
 /// Runs one chain read against the connection held for this route, opening it if there is none.
 ///
-/// Blocking, and the connection is held for the duration: call it from `spawn_blocking` or a
-/// thread, never on the async runtime. Serializing reads against each other is the point — each
-/// is a single bounded round trip, and a second connection is what this exists to avoid.
+/// Blocking: call it from `spawn_blocking` or a thread, never on the async runtime.
+///
+/// The set's lock is taken only to pick a connection up and to put it back, never across the
+/// handshake or the read. One route's server going quiet can stall a read for
+/// `PROBE_TIMEOUT_SECS`, and holding the lock through that would stall every other route's
+/// reads — a Core wallet's balance behind a silent Electrum server — for the same duration.
+/// Reads on one route therefore run concurrently; what this avoids is a handshake per read, not
+/// overlapping reads.
 ///
 /// Opened with [`resolve_bounded`], so a read the UI waits on stays bounded and nothing sits
 /// through the crate's own reconnect holding the next caller behind it. At most [`MAX_HELD`]
@@ -281,16 +304,15 @@ pub(crate) fn with_chain<T>(
     read: impl Fn(&AnyBlockchain) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let key = pool_key(config, wallet_name, socks_port);
-    let mut held = SIDE_CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Taken out of the set while in use and put back only on success, so a connection a read
-    // has just broken is never left behind for the next caller to inherit.
-    let (chain, reused) = match held.iter().position(|(route, _)| route == &key) {
-        Some(at) => (held.remove(at).1, true),
+    // Taken out of the set while in use and put back only on success, so a connection a read has
+    // just broken is never left behind for the next caller to inherit.
+    let (chain, reused) = match take(&key) {
+        Some(chain) => (chain, true),
         None => (open(config, wallet_name, socks_port)?, false),
     };
     let outcome = read(&chain);
     if outcome.is_ok() {
-        hold(&mut held, key, chain);
+        put(key, chain);
         return outcome;
     }
     drop(chain);
@@ -307,7 +329,7 @@ pub(crate) fn with_chain<T>(
     let fresh = open(config, wallet_name, socks_port)?;
     let retried = read(&fresh);
     if retried.is_ok() {
-        hold(&mut held, key, fresh);
+        put(key, fresh);
     }
     retried
 }
@@ -1086,7 +1108,11 @@ mod tests {
         for key in ["a", "b", "a", "b"] {
             hold(&mut held, key.to_string(), chain());
         }
-        assert_eq!(keys(&held), ["b", "a", "b", "a"], "both routes stay held");
+        assert_eq!(
+            keys(&held),
+            ["b", "a"],
+            "both routes stay held, once each, newest first"
+        );
 
         held.clear();
         for key in ["one", "two", "three", "four", "five"] {
@@ -1098,6 +1124,36 @@ mod tests {
             !keys(&held).iter().any(|k| k == "one"),
             "the least recently used is the one dropped"
         );
+
+        // Two callers on one route can each open a connection while the set is unlocked, and
+        // keeping both would hold that route twice over at another route's expense.
+        held.clear();
+        hold(&mut held, "same".to_string(), chain());
+        hold(&mut held, "same".to_string(), chain());
+        assert_eq!(held.len(), 1, "one entry per route");
+    }
+
+    /// The set's lock must not span the handshake or the read: one route's server going quiet
+    /// would otherwise stall every other route's reads for the same timeout. Under the earlier
+    /// code this closure could not have run at all — the lock was held around it.
+    #[test]
+    fn a_read_runs_with_the_set_unlocked() {
+        let core = node("127.0.0.1", 8332, "u", "p");
+        let checked = std::cell::Cell::new(false);
+        let outcome = with_chain(&core, "w", None, |_| {
+            // Retried briefly: another test may hold the set for its own put, and this is about
+            // `with_chain` not holding it, not about momentary contention.
+            for _ in 0..50 {
+                if SIDE_CHAIN.try_lock().is_ok() {
+                    checked.set(true);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(())
+        });
+        assert!(outcome.is_ok(), "a lazy Core client needs no server to be built");
+        assert!(checked.get(), "the set stayed locked for the whole read");
     }
 
     /// The saved route's verdict is shared by everything that asks at once — the shell on mount,
@@ -1153,9 +1209,16 @@ mod tests {
         });
         assert!(outcome.is_err(), "a refused connection is not a usable one");
         assert_eq!(asked.get(), 0, "the read never ran, so it must not be retried");
+        // The set is process-wide and these tests run in parallel, so this is about this
+        // route's entry, not about the set being empty.
+        let key = pool_key(&dead, "", None);
         assert!(
-            SIDE_CHAIN.lock().unwrap().is_empty(),
-            "a failed open must leave nothing held"
+            !SIDE_CHAIN
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(route, _)| route == &key),
+            "a failed open must leave nothing held for that route"
         );
     }
 

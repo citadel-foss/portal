@@ -1443,13 +1443,21 @@ impl Drop for SyncSlot {
 }
 
 pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
-    // One sync per wallet. A sync abandoned at its deadline leaves its worker holding the
-    // wallet's write lock until the cancel flag reaches it, so a second call must not start
-    // another: it would block on that lock and bring a fresh deadline with it. Reported as done
-    // rather than as a failure — the sync already running fetches exactly the same data, and the
-    // caller re-reads the wallet either way.
-    if taker.sync_in_flight.swap(true, Ordering::SeqCst) {
-        return Ok(());
+    // One sync per wallet, claimed here and released by the worker as it exits. A caller that
+    // finds one already running waits for its turn rather than being told the sync is done: the
+    // caller's whole purpose is to read the wallet afterwards, and that read would queue behind
+    // the running worker's write lock while the page already said it was synced. Waiting also
+    // keeps a second worker off that lock, which is what a sync abandoned at its deadline leaves
+    // behind until the cancel flag reaches it.
+    let waiting_since = std::time::Instant::now();
+    while taker.sync_in_flight.swap(true, Ordering::SeqCst) {
+        if waiting_since.elapsed() >= SYNC_DEADLINE {
+            return Err(AppError::new(
+                ErrorCode::RpcUnreachable,
+                "a wallet sync is still running; the chain backend has not answered it",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let slot = SyncSlot(taker.sync_in_flight.clone());
     let wallet = taker.wallet.clone();
