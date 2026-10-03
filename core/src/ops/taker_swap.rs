@@ -21,7 +21,7 @@ use openswap::taker::{SwapParams, SwapSummary};
 use openswap::utill::{
     funding_fee_policy_sats, sweep_fee_policy_sats, MAX_TX_COUNT, MIN_RELAY_FEE_RATE,
 };
-use openswap::wallet::{AnyBlockchain, Blockchain, UTXOSpendInfo};
+use openswap::wallet::{Blockchain, UTXOSpendInfo};
 use crate::events::AppEvent;
 
 use crate::error::{AppError, ErrorCode};
@@ -690,14 +690,17 @@ pub async fn get_swap_tracker(
                 // Its own connection rather than the wallet's: the swap holds the wallet for most
                 // of the wait, and a `try_read` on it was refused for whole hops at a time.
                 let (config, wallet_name, socks_port) = chain;
-                let confirmed = crate::ops::chain_backend::resolve_bounded(&config, &wallet_name, Some(socks_port))
-                    .ok()
-                    .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
-                    .is_some_and(|chain| {
-                        txids
+                let confirmed = crate::ops::chain_backend::with_chain(
+                    &config,
+                    &wallet_name,
+                    Some(socks_port),
+                    |chain| {
+                        Ok(txids
                             .iter()
-                            .all(|txid| matches!(chain.tx_block_height(txid), Ok(Some(_))))
-                    });
+                            .all(|txid| matches!(chain.tx_block_height(txid), Ok(Some(_)))))
+                    },
+                )
+                .unwrap_or(false);
                 if confirmed {
                     outgoing.confirmed.store(true, Ordering::Relaxed);
                 }
@@ -865,16 +868,26 @@ pub async fn get_recovery_status(
         // them, so recovery needs a live height read for its countdown. Do not open an Electrum
         // connection for the common idle case, or for contracts belonging only to a healthy swap.
         let needs_chain = !live.is_empty() && (!candidates.is_empty() || !swap_running);
-        let chain = needs_chain
+        // One visit to the connection for the tip and every contract's height together, rather
+        // than one per contract: they are all answered off the same socket.
+        let heights = needs_chain
             .then(|| {
-                crate::ops::chain_backend::resolve_bounded(
+                crate::ops::chain_backend::with_chain(
                     &config,
                     &wallet_name,
                     Some(socks_port),
+                    |chain| {
+                        let tip = chain.get_block_count()?;
+                        let seen: std::collections::HashMap<Txid, Option<u64>> = live
+                            .iter()
+                            .map(|(utxo, _)| {
+                                (utxo.txid, chain.tx_block_height(&utxo.txid).ok().flatten())
+                            })
+                            .collect();
+                        Ok((tip, seen))
+                    },
                 )
                 .ok()
-                .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
-                .and_then(|chain| Some((chain.get_block_count().ok()?, chain)))
             })
             .flatten();
 
@@ -901,11 +914,13 @@ pub async fn get_recovery_status(
             .iter()
             .map(|(utxo, info)| {
                 let timelocked = matches!(info, UTXOSpendInfo::TimelockContract { .. });
-                let confirmations = match &chain {
-                    Some((tip, chain)) => match chain.tx_block_height(&utxo.txid) {
-                        Ok(Some(height)) => (tip + 1).saturating_sub(height) as u32,
-                        Ok(None) => 0,
-                        Err(_) => utxo.confirmations,
+                let confirmations = match &heights {
+                    // A txid the backend does not place in a block is in the mempool, which is
+                    // exactly the case the wallet's cached count gets wrong.
+                    Some((tip, seen)) => match seen.get(&utxo.txid) {
+                        Some(Some(height)) => (tip + 1).saturating_sub(*height) as u32,
+                        Some(None) => 0,
+                        None => utxo.confirmations,
                     },
                     None => utxo.confirmations,
                 };

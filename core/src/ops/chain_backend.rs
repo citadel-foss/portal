@@ -20,7 +20,7 @@ use openswap::bitcoind::bitcoincore_rpc::{Auth, Client, RpcApi};
 use openswap::utill::get_taker_dir;
 use openswap::utill::MIN_RELAY_FEE_RATE;
 use openswap::wallet::{
-    AnyBlockchain, BackendConfig, Blockchain, CoreRpcConfig, Electrum, ElectrumConfig, FeePriority,
+    AnyBlockchain, BackendConfig, Blockchain, CoreRpcConfig, ElectrumConfig, FeePriority,
     WalletError,
 };
 
@@ -93,6 +93,21 @@ pub fn electrum_presets() -> Vec<ElectrumPresetDto> {
 
 static ELECTRUM_NETWORK: Mutex<Option<(String, Option<Network>)>> = Mutex::new(None);
 
+/// Portal's own chain reads — the liveness probe, a recovery contract's confirmations, a fee
+/// tier off the session's own server — cannot borrow the wallet's connection: `Wallet::blockchain`
+/// is private to the crate. Building one per call charged a handshake, and over Tor a whole
+/// circuit, to every one of them; one is held here per route instead and lent to each in turn.
+///
+/// One entry rather than a map: every session on this process normally shares a route, and two
+/// that disagree rebuild over each other instead of growing a cache nothing evicts.
+static SIDE_CHAIN: Mutex<Option<(String, AnyBlockchain)>> = Mutex::new(None);
+
+/// A liveness verdict is the same for every caller that asks within a few seconds — the shell on
+/// mount, a router preflight, the check before each wallet sync — so the saved route's is held
+/// briefly, exactly as a fee estimate is. Short enough that a server going down is still noticed.
+const PROBE_CACHE_TTL: Duration = Duration::from_secs(15);
+static PROBE_CACHE: Mutex<Option<(String, std::time::Instant, BackendStatus)>> = Mutex::new(None);
+
 /// Deletes the config earlier versions wrote. Called once at startup: ceasing to write it
 /// would otherwise leave a plaintext RPC password on disk forever.
 pub fn remove_legacy_config() {
@@ -151,15 +166,23 @@ fn electrum_needs_tor(dto: &ElectrumBackendDto) -> bool {
             .ends_with(".onion")
 }
 
+/// Notification ping cadence for a direct connection. The crate's own default there is one
+/// second, which for a watchtower connection is a request per second per router for the life of
+/// the process; its proxied default is ten, and its own note is that every consumer of
+/// watchtower latency reacts on a block timescale. Five seconds sits inside that and costs a
+/// fifth of the traffic. Left to the crate on a proxied route, which already paces itself.
+const DIRECT_PING_SECS: u64 = 5;
+
 fn electrum_config(dto: &ElectrumBackendDto, socks_port: Option<u16>) -> ElectrumConfig {
     let socks_port = live_socks_port(socks_port);
+    let socks5 = electrum_needs_tor(dto)
+        .then(|| socks_port.map(|port| format!("127.0.0.1:{port}")))
+        .flatten();
     ElectrumConfig {
         url: dto.url.clone(),
-        socks5: electrum_needs_tor(dto)
-            .then(|| socks_port.map(|port| format!("127.0.0.1:{port}")))
-            .flatten(),
+        poll_interval_secs: socks5.is_none().then_some(DIRECT_PING_SECS),
+        socks5,
         timeout: None,
-        poll_interval_secs: None,
         max_retries: 3,
     }
 }
@@ -186,6 +209,49 @@ pub(crate) fn resolve_bounded(
         electrum.timeout = Some(PROBE_TIMEOUT_SECS);
     }
     Ok(backend)
+}
+
+/// Which held connection serves this caller.
+fn pool_key(config: &ChainBackendConfig, wallet_name: &str, socks_port: Option<u16>) -> String {
+    match config.kind {
+        // Electrum has no server-side wallet, so one connection serves every wallet on a route.
+        ChainBackendKind::Electrum => fingerprint(config, socks_port),
+        // Core's client is bound to a named watch-only wallet, so one connection per wallet.
+        ChainBackendKind::CoreRpc => format!("{}|{wallet_name}", fingerprint(config, socks_port)),
+    }
+}
+
+/// Runs one chain read against the connection held for this route, opening it if there is none.
+///
+/// Blocking, and the connection is held for the duration: call it from `spawn_blocking` or a
+/// thread, never on the async runtime. Serializing reads against each other is the point — each
+/// is a single bounded round trip, and a second connection is what this exists to avoid.
+///
+/// Opened with [`resolve_bounded`], so a read the UI waits on stays bounded and nothing sits
+/// through a reconnect holding the next caller behind it. A failed read drops the connection, so
+/// the next caller reconnects rather than inheriting a dead socket; that also discards a healthy
+/// one after an unrelated error (an unknown txid, say), which costs one handshake and keeps the
+/// rule simple.
+pub(crate) fn with_chain<T>(
+    config: &ChainBackendConfig,
+    wallet_name: &str,
+    socks_port: Option<u16>,
+    read: impl FnOnce(&AnyBlockchain) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let key = pool_key(config, wallet_name, socks_port);
+    let mut held = SIDE_CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if held.as_ref().is_none_or(|(route, _)| route != &key) {
+        let backend = resolve_bounded(config, wallet_name, socks_port)?;
+        *held = Some((key, AnyBlockchain::from_config(&backend)?));
+    }
+    let outcome = {
+        let (_, chain) = held.as_ref().expect("opened just above");
+        read(chain)
+    };
+    if outcome.is_err() {
+        *held = None;
+    }
+    outcome
 }
 
 /// Build the wallet backend the user selected. `wallet_name` names the watch-only
@@ -386,10 +452,14 @@ pub fn record_network_once(
 
 pub async fn check_backend(
     session: &str,
-    config: Option<ChainBackendConfig>,
+    caller_supplied: Option<ChainBackendConfig>,
     socks_port: Option<u16>,
 ) -> Result<BackendStatus, AppError> {
-    let config = match config {
+    // Only the saved route is answered from the cache. A caller-supplied config is probed live
+    // every time: the settings page asks precisely because the user just changed something, and
+    // a verdict taken seconds ago would describe the server they replaced.
+    let cacheable = caller_supplied.is_none();
+    let config = match caller_supplied {
         Some(config) => merge_preserved_password(session, config),
         None => load(session),
     };
@@ -398,16 +468,35 @@ pub async fn check_backend(
     // otherwise receive the saved RPC password, and the reachability of arbitrary addresses
     // would make this a scanner for whatever the server can see.
     validate(&config)?;
-    tokio::task::spawn_blocking(move || probe(&config, socks_port))
+    let route = fingerprint(&config, socks_port);
+    if cacheable {
+        if let Some(fresh) = cached_probe(&route) {
+            return Ok(fresh);
+        }
+    }
+    let status = tokio::task::spawn_blocking(move || probe(&config, socks_port))
         .await
-        .map_err(AppError::internal)
+        .map_err(AppError::internal)?;
+    if cacheable {
+        if let Ok(mut cache) = PROBE_CACHE.lock() {
+            *cache = Some((route, std::time::Instant::now(), status.clone()));
+        }
+    }
+    Ok(status)
+}
+
+/// The verdict for `route` if one was taken inside [`PROBE_CACHE_TTL`].
+fn cached_probe(route: &str) -> Option<BackendStatus> {
+    let cache = PROBE_CACHE.lock().ok()?;
+    let (cached_route, at, status) = cache.as_ref()?;
+    (cached_route == route && at.elapsed() < PROBE_CACHE_TTL).then(|| status.clone())
 }
 
 /// One bounded attempt. Also what stands between a caller and the crate's sync, which retries
 /// an unreachable backend until it answers or the wallet's owner shuts down.
 pub(crate) fn probe(config: &ChainBackendConfig, socks_port: Option<u16>) -> BackendStatus {
     match config.kind {
-        ChainBackendKind::Electrum => probe_electrum(&config.electrum, socks_port),
+        ChainBackendKind::Electrum => probe_electrum(config, socks_port),
         ChainBackendKind::CoreRpc => match &config.node {
             Some(node) => probe_core_rpc(node),
             None => unreachable("no Bitcoin node is configured".to_string()),
@@ -475,18 +564,21 @@ async fn estimate_fees_uncached(config: ChainBackendConfig) -> Result<FeeEstimat
                 }
             }
             ChainBackendKind::Electrum => {
-                let own = resolve_bounded(&config, "", socks_port)
-                    .ok()
-                    .and_then(|backend| AnyBlockchain::from_config(&backend).ok())
-                    .filter(|chain| {
-                        chain
-                            .get_blockchain_info()
-                            .is_ok_and(|info| info.chain == Network::Bitcoin)
-                    });
-                if let Some(chain) = own {
-                    if let Ok(fees) = fee_tiers(|priority| chain.estimate_feerate(priority)) {
-                        return Ok(fees);
+                // Both reads on the connection already held for this route: the fee pickers ask
+                // on mount, and a handshake apiece is what that used to cost.
+                let own = with_chain(&config, "", socks_port, |chain| {
+                    if !chain
+                        .get_blockchain_info()
+                        .is_ok_and(|info| info.chain == Network::Bitcoin)
+                    {
+                        // Not an error worth dropping the connection for; the presets below are
+                        // the answer for a session that is not itself on mainnet.
+                        return Ok(None);
                     }
+                    Ok(fee_tiers(|priority| chain.estimate_feerate(priority)).ok())
+                });
+                if let Ok(Some(fees)) = own {
+                    return Ok(fees);
                 }
             }
         }
@@ -563,17 +655,14 @@ fn failed(failure: ErrorCode, error: String) -> BackendStatus {
     }
 }
 
-fn probe_electrum(dto: &ElectrumBackendDto, socks_port: Option<u16>) -> BackendStatus {
-    let mut config = electrum_config(dto, socks_port);
-    config.max_retries = 0;
-    config.timeout = Some(PROBE_TIMEOUT_SECS);
-    // Completes the Electrum handshake and checks the server's genesis hash, so this
-    // rejects a reachable server on the wrong chain — a raw socket probe cannot.
-    let client = match Electrum::new(&config) {
-        Ok(c) => c,
-        Err(e) => return unreachable(format!("{e:?}")),
-    };
-    match client.get_blockchain_info() {
+fn probe_electrum(config: &ChainBackendConfig, socks_port: Option<u16>) -> BackendStatus {
+    // On the held connection: the first probe completes the Electrum handshake and checks the
+    // server's genesis hash — which a raw socket probe cannot — and every one after it is a
+    // single round trip on that same socket. A failed read drops the connection, so a server
+    // that went away is still reported as gone.
+    match with_chain(config, "", socks_port, |chain| {
+        chain.get_blockchain_info().map_err(AppError::from)
+    }) {
         Ok(info) => BackendStatus {
             reachable: true,
             failure: None,
@@ -682,10 +771,9 @@ fn electrum_network(config: &ChainBackendConfig, socks_port: Option<u16>) -> Opt
             }
         }
     }
-    let mut electrum = electrum_config(&config.electrum, socks_port);
-    electrum.max_retries = 0;
-    electrum.timeout = Some(PROBE_TIMEOUT_SECS);
-    let network = match Electrum::new(&electrum).and_then(|c| c.get_blockchain_info()) {
+    let network = match with_chain(config, "", socks_port, |chain| {
+        chain.get_blockchain_info().map_err(AppError::from)
+    }) {
         Ok(info) => Some(info.chain),
         Err(e) => {
             log::warn!("could not read network from Electrum; UTXO addresses stay blank: {e:?}");
@@ -852,6 +940,69 @@ mod tests {
             use_tor: false,
         };
         assert!(electrum_config(&dto, Some(9050)).socks5.is_none());
+    }
+
+    /// Only the proxied route is left to the crate, which paces itself at ten seconds there.
+    /// A direct one would otherwise ping once a second, per watcher connection, forever.
+    #[test]
+    fn a_direct_route_paces_its_own_notification_ping() {
+        let direct = ElectrumBackendDto {
+            url: ChainBackendConfig::default().electrum.url,
+            use_tor: false,
+        };
+        assert_eq!(
+            electrum_config(&direct, Some(9050)).poll_interval_secs,
+            Some(DIRECT_PING_SECS)
+        );
+        let onion = ElectrumBackendDto {
+            url: "tcp://abcdef.onion:50001".to_string(),
+            use_tor: false,
+        };
+        assert_eq!(electrum_config(&onion, Some(9050)).poll_interval_secs, None);
+    }
+
+    /// Electrum has no server-side wallet, so every wallet on a route shares one held
+    /// connection; a Core client is bound to one named watch-only wallet, so it cannot.
+    #[test]
+    fn a_held_connection_is_shared_per_route_but_not_across_core_wallets() {
+        let route = ChainBackendConfig::default();
+        assert_eq!(
+            pool_key(&route, "alice", None),
+            pool_key(&route, "bob", None)
+        );
+        let core = node("127.0.0.1", 8332, "u", "p");
+        assert_ne!(pool_key(&core, "alice", None), pool_key(&core, "bob", None));
+    }
+
+    /// The saved route's verdict is shared by everything that asks at once — the shell on mount,
+    /// a router preflight, the check before a sync. A probe of a caller-supplied config is never
+    /// answered from it: the settings page asks because the user just changed something, and a
+    /// stale yes would describe the server they replaced.
+    #[test]
+    fn a_fresh_verdict_is_shared_and_a_stale_one_is_not() {
+        let status = BackendStatus {
+            reachable: true,
+            failure: None,
+            error: None,
+            chain: Some("signet".into()),
+            blocks: Some(1),
+            synced: true,
+            subversion: None,
+            verification_progress: Some(1.0),
+            signet_challenge: None,
+        };
+        *PROBE_CACHE.lock().unwrap() =
+            Some(("route-a".into(), std::time::Instant::now(), status.clone()));
+        assert!(cached_probe("route-a").is_some_and(|s| s.reachable));
+        assert!(cached_probe("route-b").is_none(), "another route is another answer");
+
+        *PROBE_CACHE.lock().unwrap() = Some((
+            "route-a".into(),
+            std::time::Instant::now() - PROBE_CACHE_TTL - Duration::from_secs(1),
+            status,
+        ));
+        assert!(cached_probe("route-a").is_none(), "past its window");
+        *PROBE_CACHE.lock().unwrap() = None;
     }
 
     #[test]
