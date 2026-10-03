@@ -695,9 +695,14 @@ pub async fn get_swap_tracker(
                     &wallet_name,
                     Some(socks_port),
                     |chain| {
-                        Ok(txids
-                            .iter()
-                            .all(|txid| matches!(chain.tx_block_height(txid), Ok(Some(_)))))
+                        // A failed read reaches `with_chain`, which recycles the connection;
+                        // only a txid the backend places in no block answers "not yet".
+                        for txid in &txids {
+                            if chain.tx_block_height(txid)?.is_none() {
+                                return Ok(false);
+                            }
+                        }
+                        Ok(true)
                     },
                 )
                 .unwrap_or(false);
@@ -878,12 +883,16 @@ pub async fn get_recovery_status(
                     Some(socks_port),
                     |chain| {
                         let tip = chain.get_block_count()?;
-                        let seen: std::collections::HashMap<Txid, Option<u64>> = live
+                        // Propagated, not swallowed: a read that failed is not a txid absent
+                        // from every block, and reporting it as one would show a contract as
+                        // unconfirmed with its whole timelock still to run. A failure here
+                        // leaves `heights` unset, and every contract keeps its cached count.
+                        let seen = live
                             .iter()
                             .map(|(utxo, _)| {
-                                (utxo.txid, chain.tx_block_height(&utxo.txid).ok().flatten())
+                                chain.tx_block_height(&utxo.txid).map(|at| (utxo.txid, at))
                             })
-                            .collect();
+                            .collect::<Result<std::collections::HashMap<Txid, Option<u64>>, _>>()?;
                         Ok((tip, seen))
                     },
                 )

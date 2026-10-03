@@ -89,6 +89,11 @@ pub struct TakerInstance {
     /// backend forever and only exits on success or this flag, so without it an Electrum outage
     /// pins a blocking thread for the rest of the process's life.
     pub sync_cancel: Arc<AtomicBool>,
+    /// Held for as long as a sync's blocking worker runs, which outlives the call that started
+    /// it: a sync abandoned at its deadline keeps the wallet's write lock until it notices the
+    /// cancel flag, and a second worker started meanwhile would simply queue behind that lock
+    /// with a deadline of its own.
+    pub sync_in_flight: Arc<AtomicBool>,
     /// Own bookkeeping for syncs we trigger — the crate doesn't expose this
     /// on the public OfferSyncClient.
     pub is_offerbook_syncing: AtomicBool,

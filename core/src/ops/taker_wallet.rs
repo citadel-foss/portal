@@ -258,6 +258,7 @@ async fn open_taker(
         socks_port: tor.socks_port,
         active_swap: Mutex::new(None),
         sync_cancel: Arc::new(AtomicBool::new(false)),
+        sync_in_flight: Arc::new(AtomicBool::new(false)),
         is_offerbook_syncing: AtomicBool::new(false),
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
@@ -1432,7 +1433,25 @@ pub async fn send_to_address(
 /// sync is what catches an unreachable server quickly.
 const SYNC_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
+/// Clears the in-flight flag when the worker thread leaves, however it leaves.
+struct SyncSlot(Arc<AtomicBool>);
+
+impl Drop for SyncSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
 pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
+    // One sync per wallet. A sync abandoned at its deadline leaves its worker holding the
+    // wallet's write lock until the cancel flag reaches it, so a second call must not start
+    // another: it would block on that lock and bring a fresh deadline with it. Reported as done
+    // rather than as a failure — the sync already running fetches exactly the same data, and the
+    // caller re-reads the wallet either way.
+    if taker.sync_in_flight.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let slot = SyncSlot(taker.sync_in_flight.clone());
     let wallet = taker.wallet.clone();
     let log_dir = taker.data_dir.clone();
     // This call's own flag rather than the taker's: raising that one is how a wallet being
@@ -1441,6 +1460,9 @@ pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
     let cancel = Arc::new(AtomicBool::new(false));
     let worker = cancel.clone();
     let work = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        // Moved in, so the slot is freed when this thread exits — not when the call below
+        // stops waiting for it.
+        let _slot = slot;
         let _log = crate::logging::wallet_scope(log_dir);
         wallet.write()?.sync_and_save(&worker)?;
         Ok(())

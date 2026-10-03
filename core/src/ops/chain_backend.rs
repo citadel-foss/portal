@@ -98,15 +98,44 @@ static ELECTRUM_NETWORK: Mutex<Option<(String, Option<Network>)>> = Mutex::new(N
 /// is private to the crate. Building one per call charged a handshake, and over Tor a whole
 /// circuit, to every one of them; one is held here per route instead and lent to each in turn.
 ///
-/// One entry rather than a map: every session on this process normally shares a route, and two
-/// that disagree rebuild over each other instead of growing a cache nothing evicts.
-static SIDE_CHAIN: Mutex<Option<(String, AnyBlockchain)>> = Mutex::new(None);
+/// A few entries, most recently used first: one route is the common case, but two sessions on
+/// different servers — or two Core wallets, which cannot share a client — would otherwise evict
+/// each other on every alternation and reconnect every time. Bounded so it cannot grow into a
+/// cache nothing evicts.
+const MAX_HELD: usize = 4;
+static SIDE_CHAIN: Mutex<Vec<(String, AnyBlockchain)>> = Mutex::new(Vec::new());
 
 /// A liveness verdict is the same for every caller that asks within a few seconds — the shell on
 /// mount, a router preflight, the check before each wallet sync — so the saved route's is held
 /// briefly, exactly as a fee estimate is. Short enough that a server going down is still noticed.
 const PROBE_CACHE_TTL: Duration = Duration::from_secs(15);
 static PROBE_CACHE: Mutex<Option<(String, std::time::Instant, BackendStatus)>> = Mutex::new(None);
+
+/// Opaque identity for a Core node's credentials.
+///
+/// [`fingerprint`] names a node by host and ports only, so a config that differs from the last
+/// one by password alone would otherwise reuse both a connection authenticated with the old
+/// credentials and a verdict taken under them. Hashed rather than carried: this ends up in a
+/// cache key, and a password has no business being one. Only a lookup key, never a password
+/// hash — there is nothing here an attacker does not already supply.
+fn credential_identity(node: &NodeBackendDto) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    node.username.hash(&mut hasher);
+    node.password.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Route identity for the caches here: [`fingerprint`] plus, for a node, who it logs in as.
+fn route_identity(config: &ChainBackendConfig, socks_port: Option<u16>) -> String {
+    let route = fingerprint(config, socks_port);
+    match (&config.kind, &config.node) {
+        (ChainBackendKind::CoreRpc, Some(node)) => {
+            format!("{route}|{}", credential_identity(node))
+        }
+        _ => route,
+    }
+}
 
 /// Deletes the config earlier versions wrote. Called once at startup: ceasing to write it
 /// would otherwise leave a plaintext RPC password on disk forever.
@@ -215,10 +244,18 @@ pub(crate) fn resolve_bounded(
 fn pool_key(config: &ChainBackendConfig, wallet_name: &str, socks_port: Option<u16>) -> String {
     match config.kind {
         // Electrum has no server-side wallet, so one connection serves every wallet on a route.
-        ChainBackendKind::Electrum => fingerprint(config, socks_port),
+        ChainBackendKind::Electrum => route_identity(config, socks_port),
         // Core's client is bound to a named watch-only wallet, so one connection per wallet.
-        ChainBackendKind::CoreRpc => format!("{}|{wallet_name}", fingerprint(config, socks_port)),
+        ChainBackendKind::CoreRpc => {
+            format!("{}|{wallet_name}", route_identity(config, socks_port))
+        }
     }
+}
+
+/// Keeps `chain` as the most recently used entry, dropping the least recently used past the cap.
+fn hold(held: &mut Vec<(String, AnyBlockchain)>, key: String, chain: AnyBlockchain) {
+    held.insert(0, (key, chain));
+    held.truncate(MAX_HELD);
 }
 
 /// Runs one chain read against the connection held for this route, opening it if there is none.
@@ -228,7 +265,8 @@ fn pool_key(config: &ChainBackendConfig, wallet_name: &str, socks_port: Option<u
 /// is a single bounded round trip, and a second connection is what this exists to avoid.
 ///
 /// Opened with [`resolve_bounded`], so a read the UI waits on stays bounded and nothing sits
-/// through the crate's own reconnect holding the next caller behind it.
+/// through the crate's own reconnect holding the next caller behind it. At most [`MAX_HELD`]
+/// routes are kept, most recently used first.
 ///
 /// A read that fails on a *reused* connection is retried once on a fresh one. An idle Electrum
 /// server dropping the session is routine — the crate says so itself — and with no retries
@@ -244,25 +282,32 @@ pub(crate) fn with_chain<T>(
 ) -> Result<T, AppError> {
     let key = pool_key(config, wallet_name, socks_port);
     let mut held = SIDE_CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut opened_now = false;
-    if held.as_ref().is_none_or(|(route, _)| route != &key) {
-        *held = Some((key.clone(), open(config, wallet_name, socks_port)?));
-        opened_now = true;
-    }
-    let outcome = {
-        let (_, chain) = held.as_ref().expect("opened just above");
-        read(chain)
+    // Taken out of the set while in use and put back only on success, so a connection a read
+    // has just broken is never left behind for the next caller to inherit.
+    let (chain, reused) = match held.iter().position(|(route, _)| route == &key) {
+        Some(at) => (held.remove(at).1, true),
+        None => (open(config, wallet_name, socks_port)?, false),
     };
-    let Err(failed) = outcome else { return outcome };
-    *held = None;
-    if opened_now {
+    let outcome = read(&chain);
+    if outcome.is_ok() {
+        hold(&mut held, key, chain);
+        return outcome;
+    }
+    drop(chain);
+    let Err(failed) = outcome else { unreachable!("the Ok arm returned above") };
+    if !reused {
+        // Opened for this very call and it still failed: the server is not answering, and a
+        // second attempt would only pay another handshake to be told so again.
         return Err(failed);
     }
-    log::debug!("reopening the held chain connection after: {}", failed.message);
-    let chain = open(config, wallet_name, socks_port)?;
-    let retried = read(&chain);
+    // Info, not Debug: this happens once per dropped socket, not once per read, and it is the
+    // only evidence that the held connection is being recycled rather than silently failing.
+    // At Debug it is invisible in the default log, where the question is actually asked.
+    log::info!("reopening the held chain connection after: {}", failed.message);
+    let fresh = open(config, wallet_name, socks_port)?;
+    let retried = read(&fresh);
     if retried.is_ok() {
-        *held = Some((key, chain));
+        hold(&mut held, key, fresh);
     }
     retried
 }
@@ -589,15 +634,13 @@ async fn estimate_fees_uncached(config: ChainBackendConfig) -> Result<FeeEstimat
                 // Both reads on the connection already held for this route: the fee pickers ask
                 // on mount, and a handshake apiece is what that used to cost.
                 let own = with_chain(&config, "", socks_port, |chain| {
-                    if !chain
-                        .get_blockchain_info()
-                        .is_ok_and(|info| info.chain == Network::Bitcoin)
-                    {
-                        // Not an error worth dropping the connection for; the presets below are
-                        // the answer for a session that is not itself on mainnet.
+                    // A session not on mainnet is not a failure — the presets below are its
+                    // answer — but a read that failed is, and it has to reach `with_chain` for
+                    // the connection to be recycled.
+                    if chain.get_blockchain_info()?.chain != Network::Bitcoin {
                         return Ok(None);
                     }
-                    Ok(fee_tiers(|priority| chain.estimate_feerate(priority)).ok())
+                    fee_tiers(|priority| chain.estimate_feerate(priority)).map(Some)
                 });
                 if let Ok(Some(fees)) = own {
                     return Ok(fees);
@@ -996,6 +1039,57 @@ mod tests {
         assert_ne!(pool_key(&core, "alice", None), pool_key(&core, "bob", None));
     }
 
+    /// A node whose password changed is a different route to every cache here. Otherwise a
+    /// connection authenticated with the old credentials, and a verdict taken under them, would
+    /// both answer for the new ones.
+    #[test]
+    fn changed_node_credentials_are_a_different_route() {
+        let before = node("127.0.0.1", 8332, "alice", "old-password");
+        let after = node("127.0.0.1", 8332, "alice", "new-password");
+        assert_ne!(
+            pool_key(&before, "w", None),
+            pool_key(&after, "w", None),
+            "the held connection must not be reused across a credential change"
+        );
+        assert_ne!(
+            route_identity(&before, None),
+            route_identity(&after, None),
+            "nor may the cached verdict"
+        );
+        let renamed = node("127.0.0.1", 8332, "bob", "old-password");
+        assert_ne!(route_identity(&before, None), route_identity(&renamed, None));
+        // Electrum has no credentials of its own, so its identity is the route alone.
+        let electrum = ChainBackendConfig::default();
+        assert_eq!(route_identity(&electrum, None), fingerprint(&electrum, None));
+    }
+
+    /// Two routes alternating must not evict each other on every switch — that was the whole
+    /// point of holding one — and the set must still be bounded.
+    #[test]
+    fn the_held_set_keeps_several_routes_and_drops_the_oldest() {
+        // `AnyBlockchain` cannot be built without a server, so the bookkeeping is tested on its
+        // own: `hold` is what decides which routes survive.
+        fn keys(held: &[(String, u8)]) -> Vec<&str> {
+            held.iter().map(|(k, _)| k.as_str()).collect()
+        }
+        fn hold_u8(held: &mut Vec<(String, u8)>, key: &str) {
+            held.insert(0, (key.to_string(), 0));
+            held.truncate(MAX_HELD);
+        }
+        let mut held: Vec<(String, u8)> = Vec::new();
+        for key in ["a", "b", "a", "b"] {
+            hold_u8(&mut held, key);
+        }
+        assert_eq!(keys(&held), ["b", "a", "b", "a"], "both routes stay held");
+        held.clear();
+        for key in ["one", "two", "three", "four", "five"] {
+            hold_u8(&mut held, key);
+        }
+        assert_eq!(held.len(), MAX_HELD, "bounded");
+        assert_eq!(keys(&held)[0], "five", "most recent first");
+        assert!(!keys(&held).contains(&"one"), "the oldest goes");
+    }
+
     /// The saved route's verdict is shared by everything that asks at once — the shell on mount,
     /// a router preflight, the check before a sync. A probe of a caller-supplied config is never
     /// answered from it: the settings page asks because the user just changed something, and a
@@ -1050,7 +1144,7 @@ mod tests {
         assert!(outcome.is_err(), "a refused connection is not a usable one");
         assert_eq!(asked.get(), 0, "the read never ran, so it must not be retried");
         assert!(
-            SIDE_CHAIN.lock().unwrap().is_none(),
+            SIDE_CHAIN.lock().unwrap().is_empty(),
             "a failed open must leave nothing held"
         );
     }
