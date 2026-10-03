@@ -1067,27 +1067,37 @@ mod tests {
     /// point of holding one — and the set must still be bounded.
     #[test]
     fn the_held_set_keeps_several_routes_and_drops_the_oldest() {
-        // `AnyBlockchain` cannot be built without a server, so the bookkeeping is tested on its
-        // own: `hold` is what decides which routes survive.
-        fn keys(held: &[(String, u8)]) -> Vec<&str> {
-            held.iter().map(|(k, _)| k.as_str()).collect()
-        }
-        fn hold_u8(held: &mut Vec<(String, u8)>, key: &str) {
-            held.insert(0, (key.to_string(), 0));
-            held.truncate(MAX_HELD);
-        }
-        let mut held: Vec<(String, u8)> = Vec::new();
+        // A Core client connects on first use, so one can be built here without a node behind
+        // it. That makes this the real `hold`, not a copy of its arithmetic.
+        let chain = || {
+            AnyBlockchain::from_config(&BackendConfig::CoreRpc(CoreRpcConfig {
+                url: "127.0.0.1:8332".into(),
+                auth: Auth::UserPass("u".into(), "p".into()),
+                wallet_name: "w".into(),
+                zmq_addr: "tcp://127.0.0.1:28332".into(),
+            }))
+            .expect("a Core client is built without connecting")
+        };
+        let keys = |held: &Vec<(String, AnyBlockchain)>| -> Vec<String> {
+            held.iter().map(|(k, _)| k.clone()).collect()
+        };
+
+        let mut held = Vec::new();
         for key in ["a", "b", "a", "b"] {
-            hold_u8(&mut held, key);
+            hold(&mut held, key.to_string(), chain());
         }
         assert_eq!(keys(&held), ["b", "a", "b", "a"], "both routes stay held");
+
         held.clear();
         for key in ["one", "two", "three", "four", "five"] {
-            hold_u8(&mut held, key);
+            hold(&mut held, key.to_string(), chain());
         }
         assert_eq!(held.len(), MAX_HELD, "bounded");
-        assert_eq!(keys(&held)[0], "five", "most recent first");
-        assert!(!keys(&held).contains(&"one"), "the oldest goes");
+        assert_eq!(keys(&held)[0], "five", "most recently used first");
+        assert!(
+            !keys(&held).iter().any(|k| k == "one"),
+            "the least recently used is the one dropped"
+        );
     }
 
     /// The saved route's verdict is shared by everything that asks at once — the shell on mount,
