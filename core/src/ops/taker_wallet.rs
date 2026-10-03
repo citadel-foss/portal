@@ -1449,9 +1449,11 @@ pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
     // the running worker's write lock while the page already said it was synced. Waiting also
     // keeps a second worker off that lock, which is what a sync abandoned at its deadline leaves
     // behind until the cancel flag reaches it.
-    let waiting_since = std::time::Instant::now();
+    // One deadline for the whole call, waiting for a turn included: two budgets would let a
+    // caller wait out a stalled sync and then start its own, and return half an hour later.
+    let deadline = std::time::Instant::now() + SYNC_DEADLINE;
     while taker.sync_in_flight.swap(true, Ordering::SeqCst) {
-        if waiting_since.elapsed() >= SYNC_DEADLINE {
+        if std::time::Instant::now() >= deadline {
             return Err(AppError::new(
                 ErrorCode::RpcUnreachable,
                 "a wallet sync is still running; the chain backend has not answered it",
@@ -1485,7 +1487,8 @@ pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
             cancel.store(true, Ordering::Relaxed);
         })
     };
-    let outcome = match tokio::time::timeout(SYNC_DEADLINE, work).await {
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    let outcome = match tokio::time::timeout(left, work).await {
         Ok(joined) => joined.map_err(AppError::internal)?,
         Err(_) => {
             // Blocking work cannot be aborted, so the flag is how it ends: the crate checks it

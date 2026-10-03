@@ -557,28 +557,41 @@ pub async fn check_backend(
     // otherwise receive the saved RPC password, and the reachability of arbitrary addresses
     // would make this a scanner for whatever the server can see.
     validate(&config)?;
-    let route = fingerprint(&config, socks_port);
     if cacheable {
-        if let Some(fresh) = cached_probe(&route) {
+        if let Some(fresh) = cached_probe(&config, socks_port) {
             return Ok(fresh);
         }
     }
-    let status = tokio::task::spawn_blocking(move || probe(&config, socks_port))
+    let probed = config.clone();
+    let status = tokio::task::spawn_blocking(move || probe(&probed, socks_port))
         .await
         .map_err(AppError::internal)?;
     if cacheable {
-        if let Ok(mut cache) = PROBE_CACHE.lock() {
-            *cache = Some((route, std::time::Instant::now(), status.clone()));
-        }
+        remember_probe(&config, socks_port, &status);
     }
     Ok(status)
 }
 
-/// The verdict for `route` if one was taken inside [`PROBE_CACHE_TTL`].
-fn cached_probe(route: &str) -> Option<BackendStatus> {
+/// This route's verdict if one was taken inside [`PROBE_CACHE_TTL`].
+///
+/// Keyed through [`route_identity`], like the held connections, and deliberately not by the
+/// caller: a call site that derived the key itself is how this cache came to answer for a node
+/// whose credentials had changed, while the test asserting otherwise went on passing.
+fn cached_probe(config: &ChainBackendConfig, socks_port: Option<u16>) -> Option<BackendStatus> {
+    let route = route_identity(config, socks_port);
     let cache = PROBE_CACHE.lock().ok()?;
     let (cached_route, at, status) = cache.as_ref()?;
-    (cached_route == route && at.elapsed() < PROBE_CACHE_TTL).then(|| status.clone())
+    (cached_route == &route && at.elapsed() < PROBE_CACHE_TTL).then(|| status.clone())
+}
+
+fn remember_probe(config: &ChainBackendConfig, socks_port: Option<u16>, status: &BackendStatus) {
+    if let Ok(mut cache) = PROBE_CACHE.lock() {
+        *cache = Some((
+            route_identity(config, socks_port),
+            std::time::Instant::now(),
+            status.clone(),
+        ));
+    }
 }
 
 /// One bounded attempt. Also what stands between a caller and the crate's sync, which retries
@@ -1073,11 +1086,30 @@ mod tests {
             pool_key(&after, "w", None),
             "the held connection must not be reused across a credential change"
         );
-        assert_ne!(
-            route_identity(&before, None),
-            route_identity(&after, None),
-            "nor may the cached verdict"
+        // Through the cache itself, not through the key function: keying at the call site is
+        // exactly how this came to answer for changed credentials while a test on
+        // `route_identity` kept passing.
+        let reachable = BackendStatus {
+            reachable: true,
+            failure: None,
+            error: None,
+            chain: Some("main".into()),
+            blocks: Some(1),
+            synced: true,
+            subversion: None,
+            verification_progress: Some(1.0),
+            signet_challenge: None,
+        };
+        remember_probe(&before, None, &reachable);
+        assert!(
+            cached_probe(&before, None).is_some(),
+            "the route it was taken for still reads it"
         );
+        assert!(
+            cached_probe(&after, None).is_none(),
+            "a verdict taken under the old credentials must not answer for the new ones"
+        );
+        *PROBE_CACHE.lock().unwrap() = None;
         let renamed = node("127.0.0.1", 8332, "bob", "old-password");
         assert_ne!(route_identity(&before, None), route_identity(&renamed, None));
         // Electrum has no credentials of its own, so its identity is the route alone.
@@ -1173,17 +1205,29 @@ mod tests {
             verification_progress: Some(1.0),
             signet_challenge: None,
         };
-        *PROBE_CACHE.lock().unwrap() =
-            Some(("route-a".into(), std::time::Instant::now(), status.clone()));
-        assert!(cached_probe("route-a").is_some_and(|s| s.reachable));
-        assert!(cached_probe("route-b").is_none(), "another route is another answer");
+        let here = ChainBackendConfig::default();
+        let elsewhere = ChainBackendConfig {
+            electrum: ElectrumBackendDto {
+                url: "ssl://somewhere.else:50002".into(),
+                use_tor: false,
+            },
+            ..Default::default()
+        };
 
+        remember_probe(&here, None, &status);
+        assert!(cached_probe(&here, None).is_some_and(|s| s.reachable));
+        assert!(
+            cached_probe(&elsewhere, None).is_none(),
+            "another route is another answer"
+        );
+
+        // Aged past its window by hand, since waiting out the TTL is not a test.
         *PROBE_CACHE.lock().unwrap() = Some((
-            "route-a".into(),
+            route_identity(&here, None),
             std::time::Instant::now() - PROBE_CACHE_TTL - Duration::from_secs(1),
             status,
         ));
-        assert!(cached_probe("route-a").is_none(), "past its window");
+        assert!(cached_probe(&here, None).is_none(), "past its window");
         *PROBE_CACHE.lock().unwrap() = None;
     }
 
