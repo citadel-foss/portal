@@ -106,10 +106,14 @@ const MAX_HELD: usize = 4;
 static SIDE_CHAIN: Mutex<Vec<(String, AnyBlockchain)>> = Mutex::new(Vec::new());
 
 /// A liveness verdict is the same for every caller that asks within a few seconds — the shell on
-/// mount, a router preflight, the check before each wallet sync — so the saved route's is held
-/// briefly, exactly as a fee estimate is. Short enough that a server going down is still noticed.
+/// mount, a router preflight, the check before each wallet sync — so a route's is held briefly,
+/// exactly as a fee estimate is. Short enough that a server going down is still noticed.
+///
+/// Bounded and keyed like the held connections, and for the same reason: two sessions on
+/// different routes would otherwise overwrite each other's verdict and probe afresh every time.
 const PROBE_CACHE_TTL: Duration = Duration::from_secs(15);
-static PROBE_CACHE: Mutex<Option<(String, std::time::Instant, BackendStatus)>> = Mutex::new(None);
+const MAX_VERDICTS: usize = 4;
+static PROBE_CACHE: Mutex<Vec<(String, std::time::Instant, BackendStatus)>> = Mutex::new(Vec::new());
 
 /// Opaque identity for a Core node's credentials.
 ///
@@ -580,17 +584,18 @@ pub async fn check_backend(
 fn cached_probe(config: &ChainBackendConfig, socks_port: Option<u16>) -> Option<BackendStatus> {
     let route = route_identity(config, socks_port);
     let cache = PROBE_CACHE.lock().ok()?;
-    let (cached_route, at, status) = cache.as_ref()?;
-    (cached_route == &route && at.elapsed() < PROBE_CACHE_TTL).then(|| status.clone())
+    cache
+        .iter()
+        .find(|(cached, at, _)| cached == &route && at.elapsed() < PROBE_CACHE_TTL)
+        .map(|(_, _, status)| status.clone())
 }
 
 fn remember_probe(config: &ChainBackendConfig, socks_port: Option<u16>, status: &BackendStatus) {
     if let Ok(mut cache) = PROBE_CACHE.lock() {
-        *cache = Some((
-            route_identity(config, socks_port),
-            std::time::Instant::now(),
-            status.clone(),
-        ));
+        let route = route_identity(config, socks_port);
+        cache.retain(|(cached, _, _)| cached != &route);
+        cache.insert(0, (route, std::time::Instant::now(), status.clone()));
+        cache.truncate(MAX_VERDICTS);
     }
 }
 
@@ -1109,7 +1114,7 @@ mod tests {
             cached_probe(&after, None).is_none(),
             "a verdict taken under the old credentials must not answer for the new ones"
         );
-        *PROBE_CACHE.lock().unwrap() = None;
+        PROBE_CACHE.lock().unwrap().clear();
         let renamed = node("127.0.0.1", 8332, "bob", "old-password");
         assert_ne!(route_identity(&before, None), route_identity(&renamed, None));
         // Electrum has no credentials of its own, so its identity is the route alone.
@@ -1221,14 +1226,19 @@ mod tests {
             "another route is another answer"
         );
 
+        // Both routes keep their own verdict rather than overwriting each other.
+        remember_probe(&elsewhere, None, &status);
+        assert!(cached_probe(&here, None).is_some(), "still held");
+        assert!(cached_probe(&elsewhere, None).is_some(), "and so is the other");
+
         // Aged past its window by hand, since waiting out the TTL is not a test.
-        *PROBE_CACHE.lock().unwrap() = Some((
+        *PROBE_CACHE.lock().unwrap() = vec![(
             route_identity(&here, None),
             std::time::Instant::now() - PROBE_CACHE_TTL - Duration::from_secs(1),
             status,
-        ));
+        )];
         assert!(cached_probe(&here, None).is_none(), "past its window");
-        *PROBE_CACHE.lock().unwrap() = None;
+        PROBE_CACHE.lock().unwrap().clear();
     }
 
     /// A connection opened inside the call and refused is the server being down: one attempt,
