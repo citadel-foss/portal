@@ -1420,9 +1420,17 @@ pub async fn send_to_address(
 /// backend forever and leaves only on success or its cancel flag, so a server that accepts the
 /// connection and then stops answering would hold the wallet's write lock for the life of the
 /// process. The probe before a sync cannot catch that — it only rules out a backend already
-/// known to be down. Deliberately generous: a real sync over Tor on a wallet with many watched
-/// scripts is slow, and the page already says so at fifteen seconds.
-const SYNC_DEADLINE: Duration = Duration::from_secs(90);
+/// known to be down.
+///
+/// Very wide on purpose, because a slow sync here is not necessarily a broken one. A wallet whose
+/// first scan never saved a height syncs with the crate's restore window open, and its index
+/// discovery then probes script history forward one address at a time — up to a hundred empty
+/// indices per keychain, per address type, unbatched, and twice over if a fidelity bond is
+/// recovered. Over Tor that is minutes of real work, and cancelling it would leave a restored
+/// wallet unable to sync at all. This is a last resort against a wedge, not a latency budget:
+/// the page already tells the user at fifteen seconds, and the reachability check before the
+/// sync is what catches an unreachable server quickly.
+const SYNC_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
 pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
     let wallet = taker.wallet.clone();

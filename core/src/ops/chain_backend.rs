@@ -228,30 +228,52 @@ fn pool_key(config: &ChainBackendConfig, wallet_name: &str, socks_port: Option<u
 /// is a single bounded round trip, and a second connection is what this exists to avoid.
 ///
 /// Opened with [`resolve_bounded`], so a read the UI waits on stays bounded and nothing sits
-/// through a reconnect holding the next caller behind it. A failed read drops the connection, so
-/// the next caller reconnects rather than inheriting a dead socket; that also discards a healthy
-/// one after an unrelated error (an unknown txid, say), which costs one handshake and keeps the
-/// rule simple.
+/// through the crate's own reconnect holding the next caller behind it.
+///
+/// A read that fails on a *reused* connection is retried once on a fresh one. An idle Electrum
+/// server dropping the session is routine — the crate says so itself — and with no retries
+/// configured its `call` reports that dropped socket as the backend being unreachable. Without
+/// the second attempt, every idle gap would cost one spurious "chain backend unreachable": a
+/// connection chip flipped to down, and a wallet sync cycle refused by the check before it.
+/// A connection opened *in this call* is not retried: the server really is not answering.
 pub(crate) fn with_chain<T>(
     config: &ChainBackendConfig,
     wallet_name: &str,
     socks_port: Option<u16>,
-    read: impl FnOnce(&AnyBlockchain) -> Result<T, AppError>,
+    read: impl Fn(&AnyBlockchain) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
     let key = pool_key(config, wallet_name, socks_port);
     let mut held = SIDE_CHAIN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut opened_now = false;
     if held.as_ref().is_none_or(|(route, _)| route != &key) {
-        let backend = resolve_bounded(config, wallet_name, socks_port)?;
-        *held = Some((key, AnyBlockchain::from_config(&backend)?));
+        *held = Some((key.clone(), open(config, wallet_name, socks_port)?));
+        opened_now = true;
     }
     let outcome = {
         let (_, chain) = held.as_ref().expect("opened just above");
         read(chain)
     };
-    if outcome.is_err() {
-        *held = None;
+    let Err(failed) = outcome else { return outcome };
+    *held = None;
+    if opened_now {
+        return Err(failed);
     }
-    outcome
+    log::debug!("reopening the held chain connection after: {}", failed.message);
+    let chain = open(config, wallet_name, socks_port)?;
+    let retried = read(&chain);
+    if retried.is_ok() {
+        *held = Some((key, chain));
+    }
+    retried
+}
+
+fn open(
+    config: &ChainBackendConfig,
+    wallet_name: &str,
+    socks_port: Option<u16>,
+) -> Result<AnyBlockchain, AppError> {
+    let backend = resolve_bounded(config, wallet_name, socks_port)?;
+    Ok(AnyBlockchain::from_config(&backend)?)
 }
 
 /// Build the wallet backend the user selected. `wallet_name` names the watch-only
@@ -1003,6 +1025,34 @@ mod tests {
         ));
         assert!(cached_probe("route-a").is_none(), "past its window");
         *PROBE_CACHE.lock().unwrap() = None;
+    }
+
+    /// A connection opened inside the call and refused is the server being down: one attempt,
+    /// and nothing left in the pool for the next caller to inherit. (The retry path — a reused
+    /// socket an idle server dropped — needs a live server to exercise, and is covered by the
+    /// reachability behaviour of `probe` in practice.)
+    #[test]
+    fn an_unreachable_route_fails_without_poisoning_the_pool() {
+        let dead = ChainBackendConfig {
+            kind: ChainBackendKind::Electrum,
+            electrum: ElectrumBackendDto {
+                // Port 1: refused immediately, so this never reaches the network.
+                url: "tcp://127.0.0.1:1".to_string(),
+                use_tor: false,
+            },
+            node: None,
+        };
+        let asked = std::cell::Cell::new(0);
+        let outcome = with_chain(&dead, "", None, |_| {
+            asked.set(asked.get() + 1);
+            Ok(())
+        });
+        assert!(outcome.is_err(), "a refused connection is not a usable one");
+        assert_eq!(asked.get(), 0, "the read never ran, so it must not be retried");
+        assert!(
+            SIDE_CHAIN.lock().unwrap().is_none(),
+            "a failed open must leave nothing held"
+        );
     }
 
     #[test]
