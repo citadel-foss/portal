@@ -14,7 +14,7 @@ import {
   ShieldAlert,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   estimateSwapFunding,
@@ -410,6 +410,17 @@ export function SwapPage() {
     () => selectedUtxos.reduce((sum, u) => sum + u.amountSats, 0),
     [selectedUtxos],
   );
+  const exactRequestId = useRef(0);
+  const exactInputs = JSON.stringify([
+    amountInput,
+    selectedOutpoints.map(({ txid, vout }) => [txid, vout]),
+    selectedTotal,
+    protocol,
+    txCount,
+    feeRate,
+  ]);
+  const latestExactInputs = useRef(exactInputs);
+  latestExactInputs.current = exactInputs;
 
   function toggleOutpoint(u: UtxoEntry) {
     const key = `${u.txid}:${u.vout}`;
@@ -428,6 +439,10 @@ export function SwapPage() {
 
   async function useExactSelectedAmount() {
     if (!manualCoins || selectedTotal <= 0 || feeRate < 1) return;
+    const requestId = ++exactRequestId.current;
+    const inputs = exactInputs;
+    const isCurrent = () =>
+      exactRequestId.current === requestId && latestExactInputs.current === inputs;
     setSettingExactAmount(true);
     try {
       // Start with the one-transaction shape that can consume every selected input. OpenSwap may
@@ -446,6 +461,7 @@ export function SwapPage() {
           txCount,
           feeRate,
         );
+        if (!isCurrent()) return;
         const next = selectedTotal - estimate.feeSats;
         if (next === exact) {
           settled = true;
@@ -455,10 +471,12 @@ export function SwapPage() {
         exact = next;
       }
       if (!settled) throw new Error("Could not settle on an exact amount for these coins.");
+      if (!isCurrent()) return;
 
       changeUnit("sats");
       setAmountInput(String(exact));
     } catch (error) {
+      if (!isCurrent()) return;
       pushToast(
         "error",
         isAppError(error)
@@ -468,7 +486,7 @@ export function SwapPage() {
             : "Could not calculate an exact swap amount for the selected coins.",
       );
     } finally {
-      setSettingExactAmount(false);
+      if (exactRequestId.current === requestId) setSettingExactAmount(false);
     }
   }
 
