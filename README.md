@@ -4,10 +4,11 @@
 
 # Portal
 
-A Bitcoin wallet that swaps your coins privately, over Tor, with no trusted third party.
-Runs as a desktop app, or as a server you host yourself and reach from a browser.
+One dashboard for running OpenSwap wallets and routers.
+Make atomic swaps, explore the market, manage multiple routers, and earn sats by providing liquidity.
+Ships as a native desktop app, or as a web app for headless servers.
 
-[![Latest release](https://img.shields.io/github/v/release/citadel-foss/portal?label=release)](https://github.com/citadel-foss/portal/releases/latest)
+[![Latest pre-release](https://img.shields.io/github/v/release/citadel-foss/portal?include_prereleases&label=pre-release)](https://github.com/citadel-foss/portal/releases)
 [![MIT Licensed](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-citadelfoss.xyz-blue)](https://citadelfoss.xyz/)
 
@@ -27,87 +28,121 @@ The app is in active beta and supports experimental mainnet use.
 
 # About
 
-Portal is a desktop and self-hosted wallet for [OpenSwap](https://github.com/citadel-foss/openswap),
-a trustless, self-custodial [atomic swap](https://bitcoinops.org/en/topics/coinswap/) protocol
-built on Bitcoin. Unlike swap services that rely on a central server as a
-[single point of failure](https://en.wikipedia.org/wiki/Single_point_of_failure), OpenSwap's
-marketplace lives in the Bitcoin blockchain itself: there is no central host, and anyone with a
-Bitcoin node can take part.
+Portal is a unified app for [OpenSwap](https://github.com/citadel-foss/openswap), a trustless,
+self-custodial [atomic swap](https://bitcoinops.org/en/topics/coinswap/) protocol built on Bitcoin.
+It brings everything OpenSwap into a single interface.
 
-It is a full wallet (receive, send, coin control, history) with swaps built in. You choose one of
-two roles at launch:
+OpenSwap is a decentralised atomic swap market built on Bitcoin and Lightning, where anyone can take
+part as a client or a server. Unlike swap services that rely on a central server as a
+[single point of failure](https://en.wikipedia.org/wiki/Single_point_of_failure), OpenSwap has no
+central host: the market lives on Nostr and can be recovered from Bitcoin blockchain data alone.
 
-- **Wallet** (a *taker* in the protocol) starts swaps. It pays the fees (swap and mining), needs
-  no bond, and picks routers by bond validity, available liquidity and fee rates.
-- **Router** (a *maker* in the protocol) supplies liquidity and earns a fee on every swap routed
-  through it. Routers compete on fees in an open market and run in *install, fund, forget* mode,
-  with their liquidity kept in the router's hot wallet.
+Portal is a full-featured Bitcoin wallet with built-in atomic swaps and market discovery. It runs in
+two roles:
 
-**Multi-hop routing** works like Lightning: each swap passes through several routers, and no single
-router sees the whole route. Your wallet relays every message between them over Tor. You can use
-the modern Taproot + MuSig2 contracts or the legacy P2WSH ones.
+- **Wallet** (a *client* in the protocol): performs swaps, pays swap fees, discovers and selects
+  makers from the market, and manages UTXOs.
+- **Router** (a *server* in the protocol): supplies liquidity, advertises fidelity bonds, and earns
+  fees from swaps. A router runs as a self-hosted, always-on node with its liquidity in a hot wallet.
 
-**Sybil resistance** comes from
-[fidelity bonds](https://github.com/JoinMarket-Org/joinmarket-clientserver/blob/master/docs/fidelity-bonds.md):
-time-locked UTXOs that make flooding the market with fake routers expensive, and that seed the
-marketplace on-chain.
+A single Portal app manages multiple wallets and routers. It builds as a native desktop app, or as a
+web app for headless servers.
 
-# Download
+Portal connects to third-party or self-hosted Electrum servers, or directly to a Bitcoin full node.
+All network traffic goes over Tor, and Portal manages Tor itself, so no local setup is needed.
 
-Get Portal for macOS, Linux, a self-hosted server or Docker from the
-[latest release](https://github.com/citadel-foss/portal/releases/latest), or install it from
-the Umbrel App Store. Release builds bundle everything they need, Tor included.
+Portal is built entirely on the OpenSwap Core APIs and the Rust-based Tauri framework. The result is
+a small, fast, cross-platform binary that runs comfortably on a low-cost VPS or a Raspberry Pi at
+home: plug-and-play, with no heavy setup or ongoing management.
 
 New to Portal? The [user guide](docs/guide.md) walks you from first launch to your first swap.
 
+# Download
+
+Get Portal Desktop or Portal Server for macOS or Linux from the
+[latest pre-release](https://github.com/citadel-foss/portal/releases).
+
 # Build from source
 
-## Requirements
+## Prerequisites
+
+### Toolchain
 
 - **Node.js** 20.19 or newer
 - **Rust** via [rustup](https://rustup.rs/). The version is pinned in `rust-toolchain.toml` and
   picked up automatically.
-- **System dependencies:**
+
+### System dependencies
+
+**macOS**
 
 ```bash
-# macOS
 xcode-select --install
+```
 
-# Debian / Ubuntu
+**Debian / Ubuntu**
+
+```bash
 sudo apt-get update
 sudo apt-get install -y build-essential curl wget file libssl-dev libayatana-appindicator3-dev \
   librsvg2-dev libwebkit2gtk-4.1-dev libxdo-dev pkg-config
 ```
 
-Tauri's [prerequisites guide](https://tauri.app/start/prerequisites/) covers other platforms.
+For other platforms, see Tauri's [prerequisites guide](https://tauri.app/start/prerequisites/).
 
-## Desktop app
+## Get the source
 
 ```bash
 git clone https://github.com/citadel-foss/portal.git
 cd portal
 npm install
+```
+
+The first build compiles the Rust backend and the OpenSwap library, which takes a few minutes.
+Later builds are incremental.
+
+## Portal Desktop
+
+### Run in development
+
+```bash
 npm run tauri dev
 ```
 
-The first run compiles the Rust backend and the OpenSwap library, which takes a few minutes.
-Later runs are incremental.
-
-`npm run tauri build` produces installers for your platform in `target/release/bundle/`.
-
-## Server version
+### Build installers
 
 ```bash
-npm install
+npm run tauri build
+```
+
+Installers for your platform are written to `target/release/bundle/`.
+
+## Portal Server
+
+### Run in development
+
+```bash
 npm run web:dev
 ```
 
 Then open <http://localhost:1430>.
 
-`npm run web:build` produces the release server: a single binary at
-`target/release/portal-web` with the frontend built in. Run it with `--help` for its options.
+### Build the release binary
 
-To build and run the Docker image locally:
+```bash
+npm run web:build
+```
+
+This produces a single binary at `target/release/portal-web` with the frontend built in. To see
+its options:
+
+```bash
+./target/release/portal-web --help
+```
+
+### Run with Docker
+
+Build and run the Docker image locally:
 
 ```bash
 docker compose -f umbrel/compose.local.yaml up --build
@@ -115,9 +150,9 @@ docker compose -f umbrel/compose.local.yaml up --build
 
 Then open <http://localhost:3000>.
 
-## Layout
+## Repository layout
 
-```
+```text
 src/        React frontend (src/api/ is the typed boundary to the backend)
 core/       wallet, swaps and Tor, shared by both hosts
 src-tauri/  desktop host
