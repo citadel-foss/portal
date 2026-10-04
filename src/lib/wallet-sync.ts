@@ -27,9 +27,9 @@ export function refreshWalletCache(): Promise<void> {
     cache.setSyncing();
     let slowTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Avoid entering openswap's retry-forever sync while the endpoint is already known
-      // to be unreachable — that loop only exits on success or app shutdown. Probes the
-      // saved backend over the same route the sync itself takes.
+      // A sync against an unreachable server is openswap's retry-forever loop, which only the
+      // server answering or a cancel flag ends. Cheap to rule out: Rust answers this off the
+      // connection it holds, or off a verdict taken moments ago.
       const reachability = await checkBackend();
       if (!reachability.reachable) {
         throw new Error(reachability.error ?? "The chain backend is unreachable.");

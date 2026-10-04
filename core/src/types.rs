@@ -83,7 +83,7 @@ pub struct RouterDefaultsDto {
 /// Result of probing a chain backend. Electrum answers the height/chain questions
 /// from its tip subscription, so both backends fill the same shape; `subversion`
 /// is the one field only Core can report.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendStatus {
     pub reachable: bool,

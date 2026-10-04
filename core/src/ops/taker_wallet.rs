@@ -258,6 +258,7 @@ async fn open_taker(
         socks_port: tor.socks_port,
         active_swap: Mutex::new(None),
         sync_cancel: Arc::new(AtomicBool::new(false)),
+        sync_in_flight: Arc::new(AtomicBool::new(false)),
         is_offerbook_syncing: AtomicBool::new(false),
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
@@ -1416,17 +1417,111 @@ pub async fn send_to_address(
     .map_err(AppError::internal)?
 }
 
+/// Bounds a sync that would otherwise never end: the crate's `sync_no_fail` retries a failing
+/// backend forever and leaves only on success or its cancel flag, so a server that accepts the
+/// connection and then stops answering would hold the wallet's write lock for the life of the
+/// process. The probe before a sync cannot catch that — it only rules out a backend already
+/// known to be down.
+///
+/// Very wide on purpose, because a slow sync here is not necessarily a broken one. A wallet whose
+/// first scan never saved a height syncs with the crate's restore window open, and its index
+/// discovery then probes script history forward one address at a time — up to a hundred empty
+/// indices per keychain, per address type, unbatched, and twice over if a fidelity bond is
+/// recovered. Over Tor that is minutes of real work, and cancelling it would leave a restored
+/// wallet unable to sync at all. This is a last resort against a wedge, not a latency budget:
+/// the page already tells the user at fifteen seconds, and the reachability check before the
+/// sync is what catches an unreachable server quickly.
+const SYNC_DEADLINE: Duration = Duration::from_secs(15 * 60);
+
+/// Clears the in-flight flag when the worker thread leaves, however it leaves.
+struct SyncSlot(Arc<AtomicBool>);
+
+impl Drop for SyncSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Stops the worker and its mirror however `sync_wallet` ends — including the one way it can end
+/// without running any of its own code.
+///
+/// `sync_wallet` runs inline in the request handler on the web host, so a browser that closes
+/// the tab mid-sync has its handler future dropped. Nothing in the body runs then: the worker
+/// would keep the wallet's write lock and the in-flight slot while the crate retried an
+/// unresponsive backend, with the flag that stops it never set, and the mirror would poll for
+/// the life of the process. Blocking work cannot be aborted, so the flag is the only way to end
+/// it, and `Drop` is the only place that runs on every exit.
+struct SyncCleanup {
+    cancel: Arc<AtomicBool>,
+    mirror: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SyncCleanup {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.mirror.abort();
+    }
+}
+
 pub async fn sync_wallet(taker: &TakerInstance) -> Result<(), AppError> {
+    // One sync per wallet, claimed here and released by the worker as it exits. A caller that
+    // finds one already running waits for its turn rather than being told the sync is done: the
+    // caller's whole purpose is to read the wallet afterwards, and that read would queue behind
+    // the running worker's write lock while the page already said it was synced. Waiting also
+    // keeps a second worker off that lock, which is what a sync abandoned at its deadline leaves
+    // behind until the cancel flag reaches it.
+    // One deadline for the whole call, waiting for a turn included: two budgets would let a
+    // caller wait out a stalled sync and then start its own, and return half an hour later.
+    let deadline = std::time::Instant::now() + SYNC_DEADLINE;
+    while taker.sync_in_flight.swap(true, Ordering::SeqCst) {
+        if std::time::Instant::now() >= deadline {
+            return Err(AppError::new(
+                ErrorCode::RpcUnreachable,
+                "a wallet sync is still running; the chain backend has not answered it",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let slot = SyncSlot(taker.sync_in_flight.clone());
     let wallet = taker.wallet.clone();
-    let cancel = taker.sync_cancel.clone();
     let log_dir = taker.data_dir.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+    // This call's own flag rather than the taker's: raising that one is how a wallet being
+    // released unwinds a sync, and clearing it here afterwards would un-cancel that release.
+    // It is mirrored onto this flag below instead, so a drop still stops the sync.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker = cancel.clone();
+    let work = tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        // Moved in, so the slot is freed when this thread exits — not when the call below
+        // stops waiting for it.
+        let _slot = slot;
         let _log = crate::logging::wallet_scope(log_dir);
-        wallet.write()?.sync_and_save(&cancel)?;
+        wallet.write()?.sync_and_save(&worker)?;
         Ok(())
-    })
-    .await
-    .map_err(AppError::internal)?
+    });
+    let released = taker.sync_cancel.clone();
+    let mirror = {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            while !released.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            cancel.store(true, Ordering::Relaxed);
+        })
+    };
+    // Owns ending the worker from here on, by every path: the deadline below, an error, and the
+    // dropped future that runs none of them.
+    let _cleanup = SyncCleanup { cancel, mirror };
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    match tokio::time::timeout(left, work).await {
+        Ok(joined) => joined.map_err(AppError::internal)?,
+        // The crate checks the cancel flag between retries, so the thread unwinds and frees the
+        // wallet lock within a few seconds of the guard above raising it. The worker's own error
+        // would only report the interruption we caused.
+        Err(_) => Err(AppError::new(
+            ErrorCode::RpcUnreachable,
+            "the chain backend stopped answering; wallet sync was cancelled",
+        )),
+    }
 }
 
 /// Hits Coinbase's public BTC/USD spot-price endpoint over clearnet. This is public market data,
