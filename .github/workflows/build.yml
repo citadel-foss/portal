@@ -1,8 +1,7 @@
 name: Build
 
+# Main pushes build through openswap-compatibility.yml, which also publishes downloads.
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
   workflow_call:
