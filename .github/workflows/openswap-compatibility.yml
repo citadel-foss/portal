@@ -2,6 +2,8 @@ name: OpenSwap master compatibility
 run-name: Portal against OpenSwap ${{ github.event.client_payload.openswap_sha || inputs.openswap_sha || 'latest master' }}
 
 on:
+  push:
+    branches: [main]
   repository_dispatch:
     types: [openswap-updated]
   workflow_dispatch:
@@ -26,6 +28,7 @@ env:
 
 jobs:
   resolve:
+    # Version counter commits use GITHUB_TOKEN, which does not trigger another push run.
     name: Resolve OpenSwap master commit
     runs-on: ubuntu-22.04
     timeout-minutes: 5
