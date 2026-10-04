@@ -168,4 +168,4 @@ command-line tools use.
 - [User guide](docs/guide.md)
 - [OpenSwap](https://github.com/citadel-foss/openswap) and its
   [protocol specification](https://github.com/citadel-foss/OpenSwap-Protocol-Specification)
-- [Website](https://citadelfoss.xyz/) · [Matrix](https://matrix.to/#/#ciatdel-foss:matrix.org)
+- [Website](https://openswap.live/portal) · [Matrix](https://matrix.to/#/#ciatdel-foss:matrix.org)
