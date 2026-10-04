@@ -3,7 +3,10 @@ import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowLeftRight,
+  ArrowUp,
+  ArrowUpDown,
   CheckCircle2,
   FileText,
   LifeBuoy,
@@ -63,6 +66,7 @@ import { SwapCircuit } from "./circuit/SwapCircuit";
 import { NowPanel, Vitals } from "./circuit/panels";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
 import {
+  estimateRouterFee,
   estimateRouteRouterFees,
   routerName,
 } from "../../lib/market-format";
@@ -99,6 +103,8 @@ const CUSTOM_ROUTER_COUNT = 4;
 
 /** `MAX_TX_COUNT`; the backend rejects anything outside 1..=10. */
 const DEFAULT_TX_COUNT = 2;
+type RouterSortKey = "name" | "fee";
+type SortDirection = "asc" | "desc";
 const MAX_TX_COUNT = 10;
 
 
@@ -174,10 +180,13 @@ export function SwapPage() {
 
   const [utxoFilter, setUtxoFilter] = useState<UtxoFilter>("regular");
   const [selectedOutpoints, setSelectedOutpoints] = useState<Outpoint[]>([]);
+  const [settingExactAmount, setSettingExactAmount] = useState(false);
   const [protocol, setProtocol] = useState<ProtocolVersion>("taproot");
   const [routerCount, setRouterCount] = useState(2);
   const [customRouterCount, setCustomRouterCount] = useState(String(CUSTOM_ROUTER_COUNT));
   const [selectedRouters, setSelectedRouters] = useState<string[]>([]);
+  const [routerSortKey, setRouterSortKey] = useState<RouterSortKey | null>(null);
+  const [routerSortDirection, setRouterSortDirection] = useState<SortDirection>("asc");
   const [txCount, setTxCount] = useState(DEFAULT_TX_COUNT);
   const [feeKey, setFeeKey] = useState<FeeChoice>("fast");
   const [customFeeRate, setCustomFeeRate] = useState("");
@@ -417,6 +426,52 @@ export function SwapPage() {
     setSelectedOutpoints([]);
   }
 
+  async function useExactSelectedAmount() {
+    if (!manualCoins || selectedTotal <= 0 || feeRate < 1) return;
+    setSettingExactAmount(true);
+    try {
+      // Start with the one-transaction shape that can consume every selected input. OpenSwap may
+      // find a cheaper subset; iterating its returned fee then converges on the largest amount the
+      // selected pool itself can fund without borrowing a coin from the other wallet pool.
+      const fundingVbytes = 97 + 68 * selectedOutpoints.length;
+      let exact = selectedTotal - Math.ceil(fundingVbytes * feeRate);
+      if (exact <= 0) throw new Error("The selected coins cannot cover their funding fee.");
+
+      let settled = false;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const estimate = await estimateSwapFunding(
+          exact,
+          protocol,
+          selectedOutpoints,
+          txCount,
+          feeRate,
+        );
+        const next = selectedTotal - estimate.feeSats;
+        if (next === exact) {
+          settled = true;
+          break;
+        }
+        if (next <= 0) throw new Error("The selected coins cannot cover their funding fee.");
+        exact = next;
+      }
+      if (!settled) throw new Error("Could not settle on an exact amount for these coins.");
+
+      changeUnit("sats");
+      setAmountInput(String(exact));
+    } catch (error) {
+      pushToast(
+        "error",
+        isAppError(error)
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : "Could not calculate an exact swap amount for the selected coins.",
+      );
+    } finally {
+      setSettingExactAmount(false);
+    }
+  }
+
   const compatibleRouters = useMemo(
     () =>
       routers.filter((m) => {
@@ -456,11 +511,63 @@ export function SwapPage() {
       ? Math.max(1, Number(customRouterCount) || CUSTOM_ROUTER_COUNT)
       : routerCount;
 
+  const routerLabel = (router: Router) => router.offer?.name || router.address;
+  const firstHopFee = (router: Router) =>
+    Math.ceil(
+      estimateRouterFee({
+        baseFee: router.offer!.baseFee,
+        amountRelativeFeePct: router.offer!.amountRelativeFeePct,
+        timeRelativeFeePct: router.offer!.timeRelativeFeePct,
+        amountSats,
+        routerPosition: 1,
+        totalRouters: Math.max(1, effectiveRouterCount),
+      }).totalFee,
+    );
+
+  const defaultRouterSortKey: RouterSortKey = amountSats > 0 ? "fee" : "name";
+  const activeRouterSortKey = amountSats <= 0 ? "name" : routerSortKey ?? defaultRouterSortKey;
+  const activeRouterSortDirection =
+    routerSortKey === null || (amountSats <= 0 && routerSortKey === "fee")
+      ? "asc"
+      : routerSortDirection;
+
+  function toggleRouterSort(key: RouterSortKey) {
+    if (key === activeRouterSortKey) {
+      setRouterSortKey(key);
+      setRouterSortDirection(activeRouterSortDirection === "asc" ? "desc" : "asc");
+    } else {
+      setRouterSortKey(key);
+      setRouterSortDirection("asc");
+    }
+  }
+
+  const orderedRouters = useMemo(() => {
+    const alphabetical = (a: Router, b: Router) =>
+      routerLabel(a).localeCompare(routerLabel(b), undefined, { sensitivity: "base" });
+    return [...compatibleRouters].sort((a, b) => {
+      if (activeRouterSortKey === "name") {
+        const order = alphabetical(a, b);
+        return activeRouterSortDirection === "asc" ? order : -order;
+      }
+      const feeOrder = firstHopFee(a) - firstHopFee(b);
+      return (activeRouterSortDirection === "asc" ? feeOrder : -feeOrder) || alphabetical(a, b);
+    });
+  }, [
+    compatibleRouters,
+    amountSats,
+    effectiveRouterCount,
+    activeRouterSortKey,
+    activeRouterSortDirection,
+  ]);
+
   const estimateRouters = useMemo(() => {
-    if (manualRouters)
-      return compatibleRouters.filter((m) => selectedRouters.includes(m.address));
-    return compatibleRouters.slice(0, Math.max(0, effectiveRouterCount));
-  }, [compatibleRouters, manualRouters, selectedRouters, effectiveRouterCount]);
+    if (manualRouters) {
+      return selectedRouters
+        .map((address) => compatibleRouters.find((router) => router.address === address))
+        .filter((router): router is Router => router !== undefined);
+    }
+    return orderedRouters.slice(0, Math.max(0, effectiveRouterCount));
+  }, [compatibleRouters, orderedRouters, manualRouters, selectedRouters, effectiveRouterCount]);
 
   // Deliberately not gated on the wallet sync: `estimate_swap_funding` is a `coin_select`
   // over the wallet's stored UTXOs with no network I/O, so it can quote before a sync lands.
@@ -1351,10 +1458,7 @@ export function SwapPage() {
                     aria-label="Funding transactions per hop"
                   />
                   <p className="text-[11.5px] text-subtle">
-                    Every hop is funded by this many contracts instead of one, so an observer
-                    sees several smaller amounts rather than the whole swap in one transaction.
-                    More splits cost more in mining fees. A router short of liquidity may forward
-                    fewer than asked.
+                    This selects how the total amount will be split via multiple transactions. Higher split causes higher fees. No split can cause amount correlation by chainanalysis.
                   </p>
                 </div>
 
@@ -1363,11 +1467,39 @@ export function SwapPage() {
                     <h3 className="font-header text-[12.5px] font-bold text-foreground">
                       Pin Specific Routers
                     </h3>
-                    <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                      {manualRouters
-                        ? `${selectedRouters.length} pinned`
-                        : "Automatic"}
-                    </span>
+                    <div className="flex items-center gap-3 font-mono text-[10.5px] uppercase tracking-[0.12em]">
+                      {(["name", "fee"] as const).map((key) => {
+                        const active = activeRouterSortKey === key;
+                        const disabled = key === "fee" && amountSats <= 0;
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => toggleRouterSort(key)}
+                            className={`flex items-center gap-1 transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
+                              active ? "text-primary" : "text-subtle hover:text-foreground"
+                            }`}
+                          >
+                            {key === "name" ? "Name" : "Fee"}
+                            {active ? (
+                              activeRouterSortDirection === "asc" ? (
+                                <ArrowUp size={11} strokeWidth={2.5} />
+                              ) : (
+                                <ArrowDown size={11} strokeWidth={2.5} />
+                              )
+                            ) : (
+                              <ArrowUpDown size={11} strokeWidth={2} className="opacity-40" />
+                            )}
+                          </button>
+                        );
+                      })}
+                      <span className="tracking-[0.18em] text-subtle">
+                        {manualRouters
+                          ? `${selectedRouters.length} pinned`
+                          : "Automatic"}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-[11.5px] text-subtle">
                     Tick routers to route through them specifically, or leave
@@ -1379,7 +1511,7 @@ export function SwapPage() {
                         No compatible {protocol} routers in the offerbook.
                       </p>
                     )}
-                    {compatibleRouters.map((m) => (
+                    {orderedRouters.map((m) => (
                       <label
                         key={m.address}
                         className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
@@ -1400,12 +1532,16 @@ export function SwapPage() {
                             <span className="font-mono text-[11px] leading-[1.45] text-muted">{routerName(m.address)}</span>
                           )}
                         </span>
-                        <span className="flex flex-none items-center gap-2 font-mono text-[11px] text-subtle">
-                          {m.offer?.amountRelativeFeePct.toFixed(3)}%
-                          <SatsAmount
-                            sats={m.offer?.bondAmountSats ?? 0}
-                            className="text-foreground"
-                          />
+                        <span className="flex flex-none flex-col items-end gap-0.5 font-mono">
+                          <span className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                            <SatsAmount sats={m.offer!.maxSize} />
+                            <span className="font-normal text-subtle">max</span>
+                          </span>
+                          <span className="text-[10px] text-subtle">
+                            {amountSats > 0
+                              ? `≈ ${formatNumber(firstHopFee(m))} sats fee as first router`
+                              : "Enter amount to see fee"}
+                          </span>
                         </span>
                       </label>
                     ))}
@@ -1484,13 +1620,24 @@ export function SwapPage() {
                     })}
                   </div>
                   {manualCoins && (
-                    <p className="text-[11.5px] text-subtle">
-                      Selected:{" "}
-                      <SatsAmount
-                        sats={selectedTotal}
-                        className="text-foreground"
-                      />
-                    </p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[11.5px] text-subtle">
+                        Selected:{" "}
+                        <SatsAmount
+                          sats={selectedTotal}
+                          className="text-foreground"
+                        />
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={settingExactAmount}
+                        disabled={feeRate < 1}
+                        onClick={() => void useExactSelectedAmount()}
+                      >
+                        Swap Exact
+                      </Button>
+                    </div>
                   )}
                 </div>
               </div>
