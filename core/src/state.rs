@@ -97,6 +97,9 @@ pub struct TakerInstance {
     /// Own bookkeeping for syncs we trigger — the crate doesn't expose this
     /// on the public OfferSyncClient.
     pub is_offerbook_syncing: AtomicBool,
+    /// Routers with a poll still queued in the crate, including one whose caller gave up waiting:
+    /// a retry would only queue a second poll behind it.
+    pub polls_in_flight: Arc<Mutex<HashSet<String>>>,
     /// Sessions currently looking at this wallet. The Taker is dropped when the last one leaves,
     /// unless a swap is still running.
     pub sessions: Mutex<HashSet<SessionId>>,

@@ -259,6 +259,7 @@ async fn open_taker(
         sync_cancel: Arc::new(AtomicBool::new(false)),
         sync_in_flight: Arc::new(AtomicBool::new(false)),
         is_offerbook_syncing: AtomicBool::new(false),
+        polls_in_flight: Arc::new(Mutex::new(HashSet::new())),
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
     });

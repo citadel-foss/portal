@@ -1,5 +1,5 @@
 import { Braces, RefreshCw, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getIncomingSwapUtxo, getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
 import type { ReportRouterFee, Offer, SwapReportDetail, SwapUtxo } from "../../api/types";
@@ -66,9 +66,13 @@ export function SwapReportPage() {
   // The report records neither router names nor bonds; both come from the routers' current
   // offers. Best-effort: a router that stopped posting offers keeps its "Router N" label. Read
   // again when a router's details open, since an offerbook still loading at mount has none yet.
+  const offersRequest = useRef(0);
   const loadOffers = useCallback(() => {
+    const request = ++offersRequest.current;
     void getOffers()
       .then((book) => {
+        // An earlier lookup answering last must not replace a newer offerbook.
+        if (request !== offersRequest.current) return;
         const map: Record<string, Offer> = {};
         for (const m of [...book.good, ...book.bad, ...book.unresponsive]) {
           if (m.offer) map[m.address] = m.offer;

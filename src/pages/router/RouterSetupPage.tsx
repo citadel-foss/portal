@@ -94,6 +94,8 @@ export function RouterSetupPage() {
   const [startingWithPassword, setStartingWithPassword] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncAttempt, setSyncAttempt] = useState(0);
   // Which step to mark failed — the stage at the time, since `stage` becomes "error".
   const failedAt = useRef(0);
 
@@ -210,13 +212,19 @@ export function RouterSetupPage() {
 
   // The bond's confirmation can take hours and nothing else is waiting on it: the wallet works
   // meanwhile, so the workspace carries the wait as a notice instead of holding the user here.
-  // Synced first: the crate keeps the coin the bond spent in its list until the bond confirms,
-  // so a send made right away picks that coin and is rejected as a double spend.
+  // Synced first, and only left once that worked: the crate keeps the coin the bond spent in
+  // its list until the bond confirms, so a send made right away picks that coin and is rejected
+  // as a double spend.
   useEffect(() => {
     if (stage !== "bonding") return;
     let cancelled = false;
     void (async () => {
-      await syncRouterWallet(id).catch(() => {});
+      try {
+        await syncRouterWallet(id);
+      } catch (e) {
+        if (!cancelled) setSyncError((e as { message?: string })?.message ?? "The sync failed.");
+        return;
+      }
       if (cancelled) return;
       pushToast("success", "Fidelity bond broadcast. The router goes live once it confirms.");
       navigate(`/router/${encodeURIComponent(id)}`, { replace: true });
@@ -224,7 +232,7 @@ export function RouterSetupPage() {
     return () => {
       cancelled = true;
     };
-  }, [stage, id, navigate, pushToast]);
+  }, [stage, id, navigate, pushToast, syncAttempt]);
 
   function copyAddress() {
     if (!deposit) return;
@@ -336,6 +344,25 @@ export function RouterSetupPage() {
               <p className="text-[11.5px] text-danger">{stopError}</p>
               <Button variant="secondary" size="sm" loading={stopping} onClick={() => void stop()}>
                 Stop router
+              </Button>
+            </div>
+          )}
+
+          {stage === "bonding" && syncError && (
+            <div className="border-t border-line px-8 py-5 text-left">
+              <p className="text-[12.5px] text-danger">
+                The bond was broadcast, but the router wallet could not be refreshed: {syncError}
+              </p>
+              <Button
+                className="mt-4"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setSyncError(null);
+                  setSyncAttempt((n) => n + 1);
+                }}
+              >
+                Try again
               </Button>
             </div>
           )}
