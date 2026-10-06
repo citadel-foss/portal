@@ -1,12 +1,11 @@
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy, RefreshCw } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, Copy } from "lucide-react";
 import { UnresolvedPayments } from "../../components/app/UnresolvedPayments";
 import { spendingBlocked, useUnresolvedStore } from "../../store/unresolved";
-import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { estimateSendFee, getBalances, getBtcPrice, getNewAddress, listAddresses, listUtxos, sendToAddress, validateAddress } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { AddressType, Balances, Outpoint, SendFeeEstimate, UtxoEntry } from "../../api/types";
-import { Card, Identifier, Modal, SatsAmount } from "../../components/ui/display";
+import { AddressQr, Card, Identifier, Modal, SatsAmount } from "../../components/ui/display";
 import { Button, FeeRateField, SegmentedToggle, TextField } from "../../components/ui/inputs";
 import { chosenFeeRate, type FeeChoice, useFeeEstimate } from "../../lib/fee-rate";
 import {
@@ -453,7 +452,6 @@ const receiveRequests = new Set<string>();
 function ReceivePanel() {
   const pushToast = useToastStore((s) => s.push);
   const [addressType, setAddressType] = useState<AddressType>("p2tr");
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [pendingType, setPendingType] = useState<AddressType | null>(null);
   const [recentOpen, setRecentOpen] = useState(false);
   // Both the address and the address list live in the wallet cache, stamped with the sync they
@@ -475,10 +473,7 @@ function ReceivePanel() {
     setPendingType(type);
     void getNewAddress(type)
       .then((next) => {
-        const cache = useWalletCacheStore.getState();
-        // Keeps the object when nothing changed, so the QR is not redrawn.
-        const same = cache.receiveAddresses[type]?.address.address === next.address;
-        cache.setReceiveAddress(type, same ? cache.receiveAddresses[type]!.address : next, syncedAt);
+        useWalletCacheStore.getState().setReceiveAddress(type, next, syncedAt);
       })
       .catch((e) =>
         pushToast("error", (e as { message?: string })?.message ?? "Failed to get an address."),
@@ -504,19 +499,6 @@ function ReceivePanel() {
       .finally(() => receiveRequests.delete(key));
   }, [recentOpen, addressList, syncedAt, pushToast]);
 
-  useEffect(() => {
-    // Cleared, not left standing: the panel is labelled with the selected type, so holding the
-    // previous type's QR while a new address loads offers the wrong address to copy.
-    setQrDataUrl(null);
-    if (!current) return;
-    let cancelled = false;
-    void QRCode.toDataURL(current.address, { width: 184, margin: 1 }).then((url) => {
-      if (!cancelled) setQrDataUrl(url);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [current]);
 
   function copyAddress() {
     if (!current) return;
@@ -553,21 +535,7 @@ function ReceivePanel() {
         />
 
         <div className="flex justify-center py-1">
-          {/* The white plate only appears with the QR on it: a 212px white slab waiting on a dark
-              page reads as a broken image rather than as something loading. */}
-          <div
-            className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
-              qrDataUrl
-                ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
-                : "border border-line bg-surface-raised"
-            }`}
-          >
-            {qrDataUrl ? (
-              <img src={qrDataUrl} alt="Receive address QR code" width={184} height={184} />
-            ) : (
-              <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
-            )}
-          </div>
+          <AddressQr address={current?.address ?? null} alt="Receive address QR code" raised />
         </div>
 
         <label className="flex flex-col gap-2">

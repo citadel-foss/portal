@@ -13,6 +13,7 @@ import {
 import { LinkButton, SegmentedToggle, SortToggle } from "../../components/ui/inputs";
 import { hydrateWalletCache, refreshWalletCache } from "../../lib/wallet-sync";
 import { WalletFooterCard } from "./WalletBackupCard";
+import { BlocklistCard } from "../../components/app/BlocklistCard";
 import { sendConfirmations, usePendingSendsStore } from "../../store/pending-sends";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 import { formatTimestamp } from "../../components/ui/report";
@@ -480,6 +481,10 @@ export function WalletPage() {
 
       <section className="mt-4">
         <WalletFooterCard />
+      </section>
+
+      <section className="mt-4">
+        <BlocklistCard />
       </section>
     </div>
   );

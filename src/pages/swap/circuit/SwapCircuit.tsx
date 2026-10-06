@@ -601,8 +601,8 @@ function NodeBody({ hop, view }: { hop: HopView; view: CircuitView }) {
 }
 
 function EdgeBody({ edge, view }: { edge: EdgeView; view: CircuitView }) {
-  const from = edge.index === 0 ? "Your wallet" : `Router ${edge.index}`;
-  const to = edge.index === view.routerCount ? "Your wallet" : `Router ${edge.index + 1}`;
+  const from = edge.index === 0 ? "Your wallet" : view.hops[edge.index - 1].label;
+  const to = edge.index === view.routerCount ? "Your wallet" : view.hops[edge.index].label;
   return (
     <>
       <Heading tone={STROKE[edge.tone]}>Contract</Heading>

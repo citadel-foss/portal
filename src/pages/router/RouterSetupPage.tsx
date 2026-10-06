@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { subscribe } from "../../api/transport";
 import { getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
-import { Card, Identifier, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
+import { AddressQr, Card, Identifier, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
 import { openExternal } from "../../platform";
 import { explorerTxUrl } from "../../lib/wallet-format";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
@@ -288,6 +288,11 @@ export function RouterSetupPage() {
                 <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Deposit address</span>
                 <FaucetButton />
               </div>
+              {deposit && (
+                <div className="mt-4 flex justify-center">
+                  <AddressQr address={deposit.address} alt="Fidelity bond deposit address QR code" />
+                </div>
+              )}
               {deposit ? (
                 <button
                   type="button"

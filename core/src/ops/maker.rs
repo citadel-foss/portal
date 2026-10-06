@@ -131,6 +131,9 @@ fn build_config(
     server.control_port = tor.control_port;
     server.socks_port = tor.socks_port;
     server.tor_auth_password = tor.control_password;
+    // Always on: the crate skips screening while the list is empty, so the list alone decides
+    // whether anything is refused.
+    server.check_blocklist = true;
     Ok(server)
 }
 

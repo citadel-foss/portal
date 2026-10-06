@@ -745,6 +745,8 @@ export interface SwapReportDetail {
   incomingContractOutpoint?: Outpoint;
   /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */
   deniabilityProof: Record<string, unknown> | null;
+  /** This swap's entry in the report file, verbatim. */
+  raw: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -753,4 +755,20 @@ export interface SwapReportDetail {
 
 export interface LogLine {
   line: string;
+}
+
+// ---------------------------------------------------------------------------
+// Address blocklist
+// ---------------------------------------------------------------------------
+
+export interface BlocklistEntry {
+  address: string;
+  label: string | null;
+}
+
+export interface BlocklistImport {
+  added: number;
+  updated: number;
+  /** Rows not imported, by their 1-based line in the uploaded file. */
+  rejected: { line: number; address: string; reason: string }[];
 }

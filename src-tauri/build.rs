@@ -21,6 +21,50 @@ fn main() {
         .filter(|revision| revision.len() == 40)
         .expect("openswap Cargo.lock source must end in a full git revision");
     println!("cargo:rustc-env=PORTAL_OPENSWAP_REV={revision}");
+
+    let root = lock_path
+        .parent()
+        .expect("Cargo.lock has a parent directory");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.trim().to_owned())
+    };
+    // A source tarball has no repository; the build still has to succeed.
+    let commit = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
+        println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        println!("cargo:rerun-if-changed={git_dir}/refs/heads");
+    }
+    println!("cargo:rustc-env=PORTAL_COMMIT={commit}");
+
+    // SOURCE_DATE_EPOCH keeps reproducible builds byte-identical.
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    let epoch = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after 1970")
+                .as_secs() as i64
+        });
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm), to avoid a date crate.
+    let z = epoch.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    println!("cargo:rustc-env=PORTAL_BUILD_DATE={year:04}-{month:02}-{day:02}");
     // Every command in `lib.rs`'s `generate_handler!`, in the same order. A command absent
     // here gets no generated permission, so `capabilities/default.json` cannot grant it and
     // every call is rejected at the IPC boundary — see the sync test in `lib.rs`.
@@ -101,6 +145,12 @@ fn main() {
         "get_router_defaults",
         "get_suggested_maker_ports",
         "check_maker_ports",
+        "list_taker_blocklist",
+        "import_taker_blocklist",
+        "remove_taker_blocklist",
+        "list_maker_blocklist",
+        "import_maker_blocklist",
+        "remove_maker_blocklist",
         "get_maker_logs",
         "quit_app",
     ];

@@ -5,8 +5,10 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  RefreshCw,
   XCircle,
 } from "lucide-react";
+import QRCode from "qrcode";
 import { openExternal } from "../../platform";
 import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
@@ -140,9 +142,10 @@ interface ModalProps {
   children: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
+  wide?: boolean;
 }
 
-export function Modal({ title, children, footer, onClose }: ModalProps) {
+export function Modal({ title, children, footer, onClose, wide = false }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -186,7 +189,7 @@ export function Modal({ title, children, footer, onClose }: ModalProps) {
         initial={{ opacity: 0, y: 8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="raised max-h-[85vh] w-full max-w-md overflow-y-auto rounded-card border border-line-strong bg-surface p-6"
+        className={`raised max-h-[85vh] w-full ${wide ? "max-w-2xl" : "max-w-md"} overflow-y-auto rounded-card border border-line-strong bg-surface p-6`}
       >
         <h3 className="font-header text-[15px] font-bold text-foreground">
           {title}
@@ -349,6 +352,53 @@ export function Identifier({
   className?: string;
 }) {
   return <span className={`break-all font-mono ${className}`}>{value}</span>;
+}
+
+export function AddressQr({
+  address,
+  alt,
+  error,
+  raised = false,
+}: {
+  address: string | null;
+  alt: string;
+  error?: string | null;
+  raised?: boolean;
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    // Cleared, not left standing: a QR for the previous address while the next one loads offers
+    // the wrong address to scan.
+    setDataUrl(null);
+    if (!address) return;
+    let cancelled = false;
+    void QRCode.toDataURL(address, { width: 184, margin: 1 }).then((url) => {
+      if (!cancelled) setDataUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [address]);
+
+  return (
+    // The white plate only appears with the QR on it: a white square waiting on a dark page
+    // reads as a broken image rather than as something loading.
+    <div
+      className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
+        dataUrl
+          ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
+          : `border border-line ${raised ? "bg-surface-raised" : "bg-surface"}`
+      }`}
+    >
+      {dataUrl ? (
+        <img src={dataUrl} alt={alt} width={184} height={184} />
+      ) : error ? (
+        <span className="px-4 text-center text-[11.5px] leading-5 text-danger">{error}</span>
+      ) : (
+        <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
+      )}
+    </div>
+  );
 }
 
 /** Opens a transaction on the explorer, or — with `address` — the address page, which is the

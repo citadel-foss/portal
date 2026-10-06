@@ -178,11 +178,12 @@ export function TxidRow({ label, txid }: { label: string; txid: string }) {
 }
 
 /** The back link, the outcome and the swap's own id — identical on both reports. */
-export function ReportHeader({ backTo, backLabel, swapId, status }: {
+export function ReportHeader({ backTo, backLabel, swapId, status, action }: {
   backTo: string;
   backLabel: string;
   swapId: string;
   status: SwapStatus;
+  action?: ReactNode;
 }) {
   const { Icon, tone, label } = swapStatusPresentation(status);
   return (
@@ -195,6 +196,7 @@ export function ReportHeader({ backTo, backLabel, swapId, status }: {
           <p className={`mt-0.5 text-[11.5px] font-medium ${tone}`}>{STATUS_LABEL[status] ?? label}</p>
         </div>
       </div>
+      {action && <div className="ml-auto flex-none">{action}</div>}
     </div>
   );
 }

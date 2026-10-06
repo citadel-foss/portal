@@ -1,15 +1,19 @@
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod about;
 mod commands;
 mod native;
 
 use commands::{
-    auth, chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet, market, setup,
-    shutdown, taker_reports, taker_swap, taker_wallet,
+    auth, blocklist, chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet,
+    market, setup, shutdown, taker_reports, taker_swap, taker_wallet,
 };
+use std::sync::Arc;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use tauri::menu::PredefinedMenuItem;
+#[cfg(target_os = "macos")]
+use tauri::menu::Submenu;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use std::sync::Arc;
 
 use portal_core::events::Envelope;
 use portal_core::state::AppState;
@@ -187,6 +191,13 @@ pub fn run() {
             maker::get_router_defaults,
             maker_settings::get_suggested_maker_ports,
             maker_settings::check_maker_ports,
+            // funding-address blocklists
+            blocklist::list_taker_blocklist,
+            blocklist::import_taker_blocklist,
+            blocklist::remove_taker_blocklist,
+            blocklist::list_maker_blocklist,
+            blocklist::import_maker_blocklist,
+            blocklist::remove_maker_blocklist,
             // maker logs
             logs::get_maker_logs,
             // app lifecycle
@@ -237,50 +248,67 @@ pub fn run() {
                 }
             });
 
-            // No menu bar off macOS: nothing in it is Portal's, and the tray is the way out there.
-            // Tauri only installs a default menu on macOS, so leaving it unset is enough.
-            //
-            // On macOS the menu bar is the platform's, so it is cut to the minimum that keeps the
-            // app working: the application submenu, for Quit, and Edit — its items are what route
+            // On macOS the menu bar is the platform's, so it carries only Portal's own items:
+            // About and Quit. Edit stays installed but hidden — its items are what route
             // Cmd+C/V/X/A and undo into WKWebView's text fields, which get none of them without it.
-            // File, View, Window and Help go.
             #[cfg(target_os = "macos")]
             {
-                let menu = Menu::default(app.handle())?;
-                for (i, item) in menu.items()?.into_iter().enumerate() {
-                    let keep = i == 0
-                        || item
-                            .as_submenu()
-                            .and_then(|submenu| submenu.text().ok())
-                            .is_some_and(|text| text == "Edit");
-                    if !keep {
-                        menu.remove(&item)?;
-                    }
-                }
+                use objc2_app_kit::NSApplication;
+                use objc2_foundation::ns_string;
+
+                // Replaces the predefined About; see `about.rs` for why the panel is opened by hand.
+                let about = MenuItem::with_id(app, "about", "About Portal", true, None::<&str>)?;
                 // Replaces the predefined Quit, whose native terminate lands in `RunEvent::Exit`
                 // already inside the OS termination watchdog — too late to stop a maker's
-                // closing wallet sync properly. Tauri builds the app submenu first, Quit last.
+                // closing wallet sync properly.
                 let app_quit =
                     MenuItem::with_id(app, "quit", "Quit Portal", true, Some("CmdOrCtrl+Q"))?;
-                // Replaces the predefined About, which Tauri builds first in the same submenu;
-                // see `about.rs` for why the panel is opened by hand.
-                let about = MenuItem::with_id(app, "about", "About Portal", true, None::<&str>)?;
-                if let Some(app_menu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
-                    if let Some(predefined_about) = app_menu.items()?.first() {
-                        app_menu.remove(predefined_about)?;
+                let portal = Submenu::with_items(
+                    app,
+                    "Portal",
+                    true,
+                    &[&about, &PredefinedMenuItem::separator(app)?, &app_quit],
+                )?;
+                let edit = Submenu::with_items(
+                    app,
+                    "Edit",
+                    true,
+                    &[
+                        &PredefinedMenuItem::undo(app, None)?,
+                        &PredefinedMenuItem::redo(app, None)?,
+                        &PredefinedMenuItem::cut(app, None)?,
+                        &PredefinedMenuItem::copy(app, None)?,
+                        &PredefinedMenuItem::paste(app, None)?,
+                        &PredefinedMenuItem::select_all(app, None)?,
+                    ],
+                )?;
+                app.set_menu(Menu::with_items(app, &[&portal, &edit])?)?;
+                if let Some(mtm) = objc2::MainThreadMarker::new() {
+                    let edit = NSApplication::sharedApplication(mtm)
+                        .mainMenu()
+                        .and_then(|menu| menu.itemWithTitle(ns_string!("Edit")));
+                    if let Some(edit) = edit {
+                        if let Some(items) = edit.submenu() {
+                            for item in items.itemArray() {
+                                item.setAllowsKeyEquivalentWhenHidden(true);
+                            }
+                        }
+                        edit.setHidden(true);
                     }
-                    app_menu.insert(&about, 0)?;
-                    if let Some(predefined_quit) = app_menu.items()?.last() {
-                        app_menu.remove(predefined_quit)?;
-                    }
-                    app_menu.append(&app_quit)?;
                 }
-                app.set_menu(menu)?;
                 app.on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => shutdown::begin_quit(app),
-                    "about" => about::show(include_str!("../../version.txt").trim()),
+                    "about" => about::show(),
                     _ => {}
                 });
+            }
+            // On Linux the menu bar sits inside the window, so it holds the one thing the tray
+            // doesn't offer.
+            #[cfg(target_os = "linux")]
+            {
+                let about =
+                    PredefinedMenuItem::about(app, Some("About"), Some(about::metadata(app)))?;
+                app.set_menu(Menu::with_items(app, &[&about])?)?;
             }
 
             let open = MenuItem::with_id(app, "open", "Open Portal", true, None::<&str>)?;
