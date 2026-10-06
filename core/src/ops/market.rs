@@ -139,6 +139,9 @@ pub async fn sync_offerbook(state: &TakerInstance) -> Result<(), AppError> {
 /// the poll itself still runs when the thread gets to it and records its result.
 const POLL_DEADLINE: Duration = Duration::from_secs(120);
 
+/// The crate polls one router at a time, so polls past this many only wait behind each other.
+const MAX_QUEUED_POLLS: usize = 4;
+
 pub async fn poll_maker(
     state: &TakerInstance,
     address: String,
@@ -148,11 +151,21 @@ pub async fn poll_maker(
     let address = openswap::taker::offers::MakerAddress::try_from(address)
         .map_err(|e| AppError::new(ErrorCode::InvalidInput, format!("Invalid router address: {e}")))?;
     let key = address.to_string();
-    if !state.polls_in_flight.lock()?.insert(key.clone()) {
-        return Err(AppError::new(
-            ErrorCode::RouterBusy,
-            "This router's last poll is still waiting for the market sync. Try again in a moment.",
-        ));
+    {
+        let mut polls = state.polls_in_flight.lock()?;
+        if polls.contains(&key) {
+            return Err(AppError::new(
+                ErrorCode::RouterBusy,
+                "This router's last poll is still waiting for the market sync. Try again in a moment.",
+            ));
+        }
+        if polls.len() >= MAX_QUEUED_POLLS {
+            return Err(AppError::new(
+                ErrorCode::RouterBusy,
+                "Several polls are already waiting for the market sync. Try again in a moment.",
+            ));
+        }
+        polls.insert(key.clone());
     }
     let client = state.offer_sync.clone();
     let in_flight = state.polls_in_flight.clone();
