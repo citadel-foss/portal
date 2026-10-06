@@ -4,6 +4,7 @@ import {
   ChevronDown,
   CircleDollarSign,
   Copy,
+  Hourglass,
   LockKeyhole,
   Play,
   Save,
@@ -60,6 +61,7 @@ import {
   BackButton,
   Card,
   ExternalLinkButton,
+  Notice,
   IconButton,
   Identifier,
   Modal,
@@ -1432,6 +1434,7 @@ export function RouterWorkspacePage() {
     return () => clearInterval(timer);
   }, [load, pushToast]);
   const phase = status?.phase.phase ?? "notConfigured";
+  const pendingBondTxid = bonds.filter((bond) => !bond.isSpent).slice(-1)[0]?.outpoint.txid;
   const running = phase === "running" || phase === "starting";
 
   // The shell's header button, beside Sign out, as on the wallet side. Syncing is what makes a
@@ -1562,6 +1565,22 @@ export function RouterWorkspacePage() {
             )}
           </div>
         </header>
+        {phase === "starting" && status.hasBond && (
+          // The bond was broadcast during setup; until it confirms the router runs but no
+          // wallet can find it, and nothing else signals that.
+          <Notice
+            tone="warning"
+            icon={<Hourglass size={18} strokeWidth={2} />}
+            className="mt-4"
+            action={pendingBondTxid && <ExternalLinkButton txid={pendingBondTxid} />}
+          >
+            <p className="text-[13.5px] font-bold">Fidelity bond confirming</p>
+            <p className="mt-1 text-muted">
+              Wallets can&apos;t discover this router until the bond confirms. It goes live on
+              its own; you can use its wallet meanwhile.
+            </p>
+          </Notice>
+        )}
         {phase === "failed" && status.phase.phase === "failed" && (
           <div
             className="mt-4 rounded-control border border-danger/35 bg-danger/[0.08]

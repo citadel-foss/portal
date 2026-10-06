@@ -817,6 +817,8 @@ pub struct SwapReportDetail {
     pub routers_count: usize,
     pub router_addresses: Vec<String>,
     pub router_fee_info: Vec<ReportRouterFee>,
+    /// Paid a third-party receiver rather than back to this wallet.
+    pub pay_swap: bool,
     /// Raw pass-through of the crate's `DeniabilityProof` (already `Serialize`) rather than
     /// hand-mirrored types — the frontend renders whatever shape comes through generically.
     pub deniability_proof: Option<serde_json::Value>,

@@ -737,6 +737,8 @@ export interface SwapReportDetail {
   routersCount: number;
   routerAddresses: string[];
   routerFeeInfo: ReportRouterFee[];
+  /** Paid a third-party receiver rather than back to this wallet. */
+  paySwap: boolean;
   /** The exact outpoint verify_deniability checks on-chain. */
   /** The contract UTXO this wallet funded — an outpoint, since a Taproot contract output is not
    *  necessarily vout 0. Absent for swaps whose report carries no deniability proof. */

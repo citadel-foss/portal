@@ -44,11 +44,13 @@ async fn network(session: &str, dir: &Path) -> Result<Network, AppError> {
     Network::from_str(&chain).map_err(AppError::internal)
 }
 
-fn on_network(address: &str, network: Network) -> Result<(), String> {
+/// The address in its canonical form: bech32 is case-insensitive, so `TB1Q…` and `tb1q…` are one
+/// entry.
+fn on_network(address: &str, network: Network) -> Result<String, String> {
     Address::from_str(address)
         .map_err(|_| "not a Bitcoin address".to_string())?
         .require_network(network)
-        .map(|_| ())
+        .map(|address| address.to_string())
         .map_err(|_| format!("not a {} address", display_network(network)))
 }
 
@@ -108,14 +110,17 @@ fn parse_csv(csv: &str, network: Network) -> (Vec<BlocklistEntry>, Vec<Blocklist
         if entries.is_empty() && rejected.is_empty() && address.eq_ignore_ascii_case("address") {
             continue;
         }
-        if let Err(reason) = on_network(&address, network) {
-            rejected.push(BlocklistRejectDto {
-                line: index + 1,
-                address,
-                reason,
-            });
-            continue;
-        }
+        let address = match on_network(&address, network) {
+            Ok(canonical) => canonical,
+            Err(reason) => {
+                rejected.push(BlocklistRejectDto {
+                    line: index + 1,
+                    address,
+                    reason,
+                });
+                continue;
+            }
+        };
         if !seen.insert(address.clone()) {
             continue;
         }
@@ -176,7 +181,7 @@ mod tests {
                    \n\
                    # a comment\n\
                    \"tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c\"\n\
-                   tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7,duplicate\n\
+                   TB1QRP33G0Q5C5TXSP9ARYSRX4K6ZDKFS4NCE4XJ0GDCCCEFVPYSXF3Q0SL5K7,same address upper-cased\n\
                    bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq\n\
                    not-an-address\n";
         let (entries, rejected) = parse_csv(csv, Network::Signet);

@@ -226,12 +226,19 @@ export function ReportFailureBanner({ errorMessage, action }: {
   );
 }
 
-/** The one figure that names the swap, with what it cost or earned underneath it. */
-export function ReportHero({ label, amountSats, secondary, network, durationSeconds, startTimestamp, endTimestamp }: {
+/** The swap's protocol, which only its deniability proof records: empty for a swap that failed
+ *  before one was made. */
+export function protocolTags(proof: Record<string, unknown> | null): string[] {
+  return typeof proof?.protocol === "string" ? [proof.protocol] : [];
+}
+
+/** The one figure that names the swap, with what it cost or earned underneath it. The network
+ *  is left out: the header already shows it, and every report is from that network. */
+export function ReportHero({ label, amountSats, secondary, tags, durationSeconds, startTimestamp, endTimestamp }: {
   label: string;
   amountSats: number;
   secondary?: ReactNode;
-  network: string;
+  tags: string[];
   durationSeconds: number;
   startTimestamp: number;
   endTimestamp: number;
@@ -251,9 +258,14 @@ export function ReportHero({ label, amountSats, secondary, network, durationSeco
           <Timer size={15} strokeWidth={1.8} />
           Duration {formatDuration(durationSeconds)}
         </span>
-        <span className="inline-flex items-center rounded-full border border-line-strong bg-surface-raised px-4.5 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-muted">
-          {network}
-        </span>
+        {tags.map((tag) => (
+          <span
+            key={tag}
+            className="inline-flex items-center rounded-full border border-line-strong bg-surface-raised px-4.5 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-muted"
+          >
+            {tag}
+          </span>
+        ))}
       </div>
       <p className="mt-5 font-mono text-[11px] text-subtle">
         {formatTimestamp(startTimestamp)} → {formatTimestamp(endTimestamp)}

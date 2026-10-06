@@ -211,7 +211,9 @@ function RouterCard({
             )}
           </div>
         </div>
-        <StatusChip tone={phaseTone(phase)}>{phaseLabel(phase)}</StatusChip>
+        <StatusChip tone={phaseTone(phase)}>
+          {phase === "starting" && status?.hasBond ? "bond confirming" : phaseLabel(phase)}
+        </StatusChip>
       </div>
 
       {!restoring && (

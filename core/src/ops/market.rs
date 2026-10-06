@@ -2,6 +2,7 @@
 //! so it never contends with a running swap.
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBook};
 
@@ -131,6 +132,11 @@ pub async fn sync_offerbook(state: &TakerInstance) -> Result<(), AppError> {
     result
 }
 
+/// The crate's sync thread takes polls one at a time and none during a sync, which can run for
+/// minutes, and the client waits on it with no deadline. Past this the caller is told to retry;
+/// the poll itself still runs when the thread gets to it and records its result.
+const POLL_DEADLINE: Duration = Duration::from_secs(120);
+
 pub async fn poll_maker(
     state: &TakerInstance,
     address: String,
@@ -140,11 +146,16 @@ pub async fn poll_maker(
     let address = openswap::taker::offers::MakerAddress::try_from(address)
         .map_err(|e| AppError::new(ErrorCode::InvalidInput, format!("Invalid router address: {e}")))?;
     let client = state.offer_sync.clone();
-    tokio::task::spawn_blocking(move || -> Result<MakerDto, AppError> {
+    let poll = tokio::task::spawn_blocking(move || -> Result<MakerDto, AppError> {
         Ok(to_maker_dto(client.poll_maker(address)?))
-    })
-    .await
-    .map_err(AppError::internal)?
+    });
+    match tokio::time::timeout(POLL_DEADLINE, poll).await {
+        Ok(joined) => joined.map_err(AppError::internal)?,
+        Err(_) => Err(AppError::new(
+            ErrorCode::RouterBusy,
+            "The market is still syncing, so this router could not be polled yet. Try again in a moment.",
+        )),
+    }
 }
 
 pub async fn remove_maker(

@@ -92,7 +92,11 @@ fn raw_report_entry(path: &Path, swap_id: &str) -> Result<Option<String>, AppErr
     struct Entry {
         swap_id: String,
     }
-    let text = std::fs::read_to_string(path)?;
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
     let file: RawFile = serde_json::from_str(&text)
         .map_err(|e| AppError::internal(format!("failed to parse {}: {e}", path.display())))?;
     let Some(entry) = file.taker.into_iter().find(|entry| {
@@ -277,6 +281,7 @@ pub async fn get_swap_report(
         })?;
 
     let received_amount_sats = received_sats(&r);
+    let pay_swap = r.payment.is_some();
     let router_fee_info = r
         .maker_fee_info
         .into_iter()
@@ -329,6 +334,7 @@ pub async fn get_swap_report(
         routers_count: r.makers_count,
         router_addresses: r.maker_addresses,
         router_fee_info,
+        pay_swap,
         outgoing_contract_outpoint,
         incoming_contract_outpoint,
         deniability_proof,
@@ -542,6 +548,8 @@ mod tests {
         assert_eq!(raw_report_entry(&path, "b").unwrap().as_deref(), Some(entry));
         assert_eq!(raw_report_entry(&path, "missing").unwrap(), None);
         std::fs::remove_file(&path).unwrap();
+        // No file yet is no entry, so the caller's own not-found answer stands.
+        assert_eq!(raw_report_entry(&path, "b").unwrap(), None);
     }
 
     /// A dotfile name is all extension and no stem; falling back to the raw name keeps the

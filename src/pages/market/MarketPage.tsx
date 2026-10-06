@@ -304,7 +304,7 @@ export function MarketPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState<RouterStatus>("good");
-  const [pollingAddress, setPollingAddress] = useState<string | null>(null);
+  const [pollingAddresses, setPollingAddresses] = useState<ReadonlySet<string>>(new Set());
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const [feeCalcRouter, setFeeCalcRouter] = useState<Router | null>(null);
@@ -378,18 +378,9 @@ export function MarketPage() {
       void load().catch(() => {});
     }, 2000);
     try {
+      // Sync only. Polling every router after it queued them all on the crate's one sync thread,
+      // which takes polls one at a time, so a Poll clicked next waited behind the whole list.
       await syncOfferbook();
-      // The sync above only re-downloads an offer once it is half an hour old, so a router that
-      // was just funded would keep advertising its old amount. Only good routers are polled: an
-      // unresponsive one costs several Tor retries each, and the crate polls one at a time.
-      const results = await Promise.allSettled(good.map((router) => pollRouter(router.address)));
-      const failed = results.filter((result) => result.status === "rejected").length;
-      if (failed) {
-        useToastStore.getState().push(
-          "warning",
-          `${failed} router offer${failed === 1 ? "" : "s"} could not be refreshed. Some offers may be out of date.`,
-        );
-      }
       await load();
       setFooterTick((t) => t + 1);
     } catch (e) {
@@ -399,7 +390,7 @@ export function MarketPage() {
       pollIntervalRef.current = null;
       setRefreshing(false);
     }
-  }, [load, pushFailure, good]);
+  }, [load, pushFailure]);
 
   useEffect(() => () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -447,8 +438,8 @@ export function MarketPage() {
   }, [displayed, sortKey, sortDir]);
 
   async function poll(address: string) {
-    if (pollingAddress) return;
-    setPollingAddress(address);
+    if (pollingAddresses.has(address)) return;
+    setPollingAddresses((current) => new Set(current).add(address));
     try {
       const fresh = await pollRouter(address);
       setGood((g) => g.filter((m) => m.address !== address));
@@ -466,7 +457,11 @@ export function MarketPage() {
     } catch (e) {
       pushFailure(e, "Poll failed.");
     } finally {
-      setPollingAddress(null);
+      setPollingAddresses((current) => {
+        const next = new Set(current);
+        next.delete(address);
+        return next;
+      });
     }
   }
 
@@ -618,7 +613,7 @@ export function MarketPage() {
               ) : (
                 rows.map((router) => {
                   const offer = router.offer;
-                  const isPolling = pollingAddress === router.address;
+                  const isPolling = pollingAddresses.has(router.address);
                   return (
                     <div
                       key={router.address}
@@ -669,9 +664,13 @@ export function MarketPage() {
                         </TooltipButton>
                         {router.state !== "good" && (
                           <TooltipButton
-                            tooltip="Ask this router for a fresh offer now and update its availability and fee data."
+                            tooltip={
+                              refreshing
+                                ? "The market is syncing. Poll once it finishes."
+                                : "Ask this router for a fresh offer now and update its availability and fee data."
+                            }
                             onClick={() => void poll(router.address)}
-                            disabled={isPolling}
+                            disabled={isPolling || refreshing}
                           >
                             {isPolling ? "Polling..." : "Poll"}
                           </TooltipButton>

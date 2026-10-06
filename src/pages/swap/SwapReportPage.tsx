@@ -20,6 +20,7 @@ import {
   TxArtifact,
   TxidRow,
   identifiedAddress,
+  protocolTags,
   satsToBtc,
 } from "../../components/ui/report";
 import { formatNumber } from "../../lib/wallet-format";
@@ -63,8 +64,9 @@ export function SwapReportPage() {
   }, [swapId, report, reportedIncoming.length, utxoState, loadIncomingUtxo]);
 
   // The report records neither router names nor bonds; both come from the routers' current
-  // offers. Best-effort: a router that stopped posting offers keeps its "Router N" label.
-  useEffect(() => {
+  // offers. Best-effort: a router that stopped posting offers keeps its "Router N" label. Read
+  // again when a router's details open, since an offerbook still loading at mount has none yet.
+  const loadOffers = useCallback(() => {
     void getOffers()
       .then((book) => {
         const map: Record<string, Offer> = {};
@@ -75,6 +77,7 @@ export function SwapReportPage() {
       })
       .catch(() => {});
   }, []);
+  useEffect(loadOffers, [loadOffers]);
 
   const routerLabel = (address: string, index: number) =>
     offerByAddress[address]?.name?.trim() || `Router ${index + 1}`;
@@ -145,7 +148,7 @@ export function SwapReportPage() {
                 </>
               ) : undefined
             }
-            network={report.network}
+            tags={[...protocolTags(report.deniabilityProof), report.paySwap ? "PaySwap" : "Self swap"]}
             durationSeconds={report.swapDurationSeconds}
             startTimestamp={report.startTimestamp}
             endTimestamp={report.endTimestamp}
@@ -257,7 +260,10 @@ export function SwapReportPage() {
                 <button
                   key={address}
                   type="button"
-                  onClick={() => setSelectedRouter({ index: i, address, fee })}
+                  onClick={() => {
+                    setSelectedRouter({ index: i, address, fee });
+                    loadOffers();
+                  }}
                   className="lift flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3.5 py-3 text-left outline-none hover:border-line-strong hover:bg-[var(--color-hover)] focus-visible:shadow-ring"
                 >
                   <span className="flex min-w-0 flex-col gap-0.5">
