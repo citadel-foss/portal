@@ -72,12 +72,12 @@ export function NowPanel({ view }: { view: CircuitView }) {
           {edge.index === 0
             ? `Your funding transaction${edge.contractCount > 1 ? "s" : ""}`
             : edge.index === view.routerCount
-              ? `Router ${edge.index}'s contract${
+              ? `${view.hops[edge.index - 1].label}'s contract${
                   edge.contractCount > 1 ? "s" : ""
                 } — the one${edge.contractCount > 1 ? "s" : ""} that pay${
                   edge.contractCount > 1 ? "" : "s"
                 } ${view.paymentAddress ? "the receiver" : "you"}`
-              : `Router ${edge.index} → Router ${edge.index + 1}`}
+              : `${view.hops[edge.index - 1].label} → ${view.hops[edge.index].label}`}
           {edge.contractCount > 1 && ` · ${edge.contractCount} Splits`}
           {" · "}
           {EDGE_STAGE_LABEL[edge.stage]}

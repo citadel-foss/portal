@@ -5,8 +5,11 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  RefreshCw,
+  X,
   XCircle,
 } from "lucide-react";
+import QRCode from "qrcode";
 import { openExternal } from "../../platform";
 import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
@@ -140,9 +143,10 @@ interface ModalProps {
   children: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
+  wide?: boolean;
 }
 
-export function Modal({ title, children, footer, onClose }: ModalProps) {
+export function Modal({ title, children, footer, onClose, wide = false }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -177,7 +181,14 @@ export function Modal({ title, children, footer, onClose }: ModalProps) {
   // `position: fixed` — which left a modal opened from a page off-centre with its backdrop
   // covering only that subtree.
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+    // Press, not click: a text selection dragged from inside the panel and released over the
+    // backdrop would otherwise read as a click outside and close it.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <motion.div
         ref={panelRef}
         role="dialog"
@@ -186,13 +197,23 @@ export function Modal({ title, children, footer, onClose }: ModalProps) {
         initial={{ opacity: 0, y: 8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-        className="raised max-h-[85vh] w-full max-w-md overflow-y-auto rounded-card border border-line-strong bg-surface p-6"
+        className={`raised relative max-h-[85vh] w-full ${wide ? "max-w-2xl" : "max-w-md"} overflow-y-auto rounded-card border border-line-strong bg-surface p-6`}
       >
-        <h3 className="font-header text-[15px] font-bold text-foreground">
+        <h3 className="pr-8 font-header text-[15px] font-bold text-foreground">
           {title}
         </h3>
         <div className="mt-4 flex flex-col gap-3">{children}</div>
         {footer && <div className="mt-6 flex justify-end gap-3">{footer}</div>}
+        {/* Last in the DOM, placed top right: the focus trap starts on the first control, which
+            should be the dialog's own, not this. */}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-4 top-4 grid h-8 w-8 place-items-center rounded-control text-muted outline-none transition-colors hover:bg-[var(--color-hover)] hover:text-foreground focus-visible:shadow-ring"
+        >
+          <X size={16} strokeWidth={2} />
+        </button>
       </motion.div>
     </div>,
     document.body,
@@ -349,6 +370,53 @@ export function Identifier({
   className?: string;
 }) {
   return <span className={`break-all font-mono ${className}`}>{value}</span>;
+}
+
+export function AddressQr({
+  address,
+  alt,
+  error,
+  raised = false,
+}: {
+  address: string | null;
+  alt: string;
+  error?: string | null;
+  raised?: boolean;
+}) {
+  const [qr, setQr] = useState<{ address: string; url: string } | null>(null);
+  useEffect(() => {
+    if (!address) return;
+    let cancelled = false;
+    void QRCode.toDataURL(address, { width: 184, margin: 1 }).then((url) => {
+      if (!cancelled) setQr({ address, url });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [address]);
+  // Shown only for the address it encodes: the previous address's QR while the next one is
+  // drawn would offer the wrong address to scan.
+  const dataUrl = qr && qr.address === address ? qr.url : null;
+
+  return (
+    // The white plate only appears with the QR on it: a white square waiting on a dark page
+    // reads as a broken image rather than as something loading.
+    <div
+      className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
+        dataUrl
+          ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
+          : `border border-line ${raised ? "bg-surface-raised" : "bg-surface"}`
+      }`}
+    >
+      {dataUrl ? (
+        <img src={dataUrl} alt={alt} width={184} height={184} />
+      ) : error ? (
+        <span className="px-4 text-center text-[11.5px] leading-5 text-danger">{error}</span>
+      ) : (
+        <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
+      )}
+    </div>
+  );
 }
 
 /** Opens a transaction on the explorer, or — with `address` — the address page, which is the

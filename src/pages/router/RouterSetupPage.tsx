@@ -1,17 +1,23 @@
-import { AlertTriangle, ArrowRight, Check, Copy, ExternalLink, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, Copy, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { subscribe } from "../../api/transport";
-import { getRouterLogs, getRouterStatus, getSavedRouterSettings, startRouter, stopRouter } from "../../api/commands";
+import {
+  getRouterLogs,
+  getRouterStatus,
+  getSavedRouterSettings,
+  startRouter,
+  stopRouter,
+  syncRouterWallet,
+} from "../../api/commands";
 import type { LogLine, RouterPhase } from "../../api/types";
-import { Card, Identifier, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
-import { openExternal } from "../../platform";
-import { explorerTxUrl } from "../../lib/wallet-format";
+import { AddressQr, Card, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
 import { FaucetButton } from "../../components/app/FaucetButton";
 import { copyText } from "../../lib/clipboard";
+import { useToastStore } from "../../store/toast";
 
 /**
  * A router cannot be bonded before it runs: the server derives the fidelity-bond address itself
@@ -33,19 +39,6 @@ function readDeposit(lines: LogLine[]): { address: string; sats: number; reason:
     if (match) {
       return { address: match[2], sats: Math.round(Number(match[1]) * 1e8), reason: match[3].trim() };
     }
-  }
-  return null;
-}
-
-/** The crate names the bond's txid when it broadcasts one, and when it adopts one it already has
- *  but has not seen confirm — a bond a restore recovered from the chain, say. */
-const BOND_TX_RE =
-  /(?:Fidelity bond broadcast, waiting for confirmation: |Found unconfirmed fidelity bond )([0-9a-f]{64})/;
-
-function readBondTxid(lines: LogLine[]): string | null {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const match = lines[i].line.match(BOND_TX_RE);
-    if (match) return match[1];
   }
   return null;
 }
@@ -88,12 +81,12 @@ export function RouterSetupPage() {
   const { routerId } = useParams<{ routerId: string }>();
   const id = routerId!;
   const navigate = useNavigate();
+  const pushToast = useToastStore((s) => s.push);
 
   const [name, setName] = useState(id);
   const [stage, setStage] = useState<Stage>("starting");
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [deposit, setDeposit] = useState<{ address: string; sats: number; reason: string } | null>(null);
-  const [bondTxid, setBondTxid] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
@@ -101,6 +94,8 @@ export function RouterSetupPage() {
   const [startingWithPassword, setStartingWithPassword] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncAttempt, setSyncAttempt] = useState(0);
   // Which step to mark failed — the stage at the time, since `stage` becomes "error".
   const failedAt = useRef(0);
 
@@ -197,22 +192,13 @@ export function RouterSetupPage() {
   // One poll drives both the log panel and stage detection: the deposit address exists only
   // in the log, and coins landing shows up there before any balance read reflects it.
   useEffect(() => {
-    if (stage === "live" || stage === "error") return;
+    if (stage === "live" || stage === "error" || stage === "bonding") return;
     const tick = async () => {
-      // `maker://phase-changed` is the only other way out of the bond wait, and a push lost to
-      // a dropped or proxied event stream is never replayed. Only from `bonding`: earlier, a
-      // `failed` left over from a previous attempt can still be the phase before this start lands.
-      if (stage === "bonding") {
-        const status = await getRouterStatus(id).catch(() => null);
-        if (status) applyPhase(status.phase);
-      }
       const lines = await getRouterLogs(id, 300).catch(() => null);
       if (!lines) return;
       setLogs(lines);
       const found = readDeposit(lines);
       if (found) setDeposit(found);
-      const bond = readBondTxid(lines);
-      if (bond) setBondTxid(bond);
       const step = setupStep(lines);
       setStage((current) => {
         if (current !== "starting" && current !== "funding") return current;
@@ -222,7 +208,31 @@ export function RouterSetupPage() {
     void tick();
     const timer = setInterval(() => void tick(), LOG_POLL_MS);
     return () => clearInterval(timer);
-  }, [id, stage, applyPhase]);
+  }, [id, stage]);
+
+  // The bond's confirmation can take hours and nothing else is waiting on it: the wallet works
+  // meanwhile, so the workspace carries the wait as a notice instead of holding the user here.
+  // Synced first, and only left once that worked: the crate keeps the coin the bond spent in
+  // its list until the bond confirms, so a send made right away picks that coin and is rejected
+  // as a double spend.
+  useEffect(() => {
+    if (stage !== "bonding") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await syncRouterWallet(id);
+      } catch (e) {
+        if (!cancelled) setSyncError((e as { message?: string })?.message ?? "The sync failed.");
+        return;
+      }
+      if (cancelled) return;
+      pushToast("success", "Fidelity bond broadcast. The router goes live once it confirms.");
+      navigate(`/router/${encodeURIComponent(id)}`, { replace: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [stage, id, navigate, pushToast, syncAttempt]);
 
   function copyAddress() {
     if (!deposit) return;
@@ -253,11 +263,6 @@ export function RouterSetupPage() {
               steps={STEP_LABELS.map((label, i) => ({
                 label,
                 state: stepStates(stage, failedAt.current)[i],
-                // The bond is broadcast well before it is usable; this is the wait nobody
-                // can see, so it is the one step that says what it is waiting for.
-                badge: stage === "bonding" && i === ORDER.indexOf("bonding")
-                  ? "Waiting for confirmation"
-                  : undefined,
               }))}
             />
           </div>
@@ -288,6 +293,11 @@ export function RouterSetupPage() {
                 <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Deposit address</span>
                 <FaucetButton />
               </div>
+              {deposit && (
+                <div className="mt-4 flex justify-center">
+                  <AddressQr address={deposit.address} alt="Fidelity bond deposit address QR code" />
+                </div>
+              )}
               {deposit ? (
                 <button
                   type="button"
@@ -338,27 +348,22 @@ export function RouterSetupPage() {
             </div>
           )}
 
-          {stage === "bonding" && bondTxid && (
+          {stage === "bonding" && syncError && (
             <div className="border-t border-line px-8 py-5 text-left">
-              <div className="flex items-center justify-between gap-4">
-                <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                  Bond transaction
-                </span>
-                {explorerTxUrl(bondTxid) && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => {
-                      const url = explorerTxUrl(bondTxid);
-                      if (url) void openExternal(url);
-                    }}
-                  >
-                    View on explorer
-                    <ExternalLink size={13} strokeWidth={2} />
-                  </Button>
-                )}
-              </div>
-              <Identifier value={bondTxid} className="mt-2 text-[11.5px] text-muted" />
+              <p className="text-[12.5px] text-danger">
+                The bond was broadcast, but the router wallet could not be refreshed: {syncError}
+              </p>
+              <Button
+                className="mt-4"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setSyncError(null);
+                  setSyncAttempt((n) => n + 1);
+                }}
+              >
+                Try again
+              </Button>
             </div>
           )}
 

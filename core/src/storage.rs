@@ -63,11 +63,15 @@ pub fn recorded_network(dir: &Path) -> Option<String> {
     fs::read_to_string(dir.join(NETWORK_FILE)).ok().map(|chain| chain.trim().to_string())
 }
 
-/// The chain of a wallet or router, readable while it is locked. One opened before Portal kept
-/// the record falls back to an address Portal issued from its wallet: the prefix tells mainnet
-/// from the test networks (`"test"`), though not one test network from another.
+/// The chain of a wallet or router, readable while it is locked. One Portal never opened (a
+/// Maker Dashboard import, a `makerd` dir) has no record, so it falls back to the chain its swap
+/// reports name, then to an address Portal issued from its wallet: the prefix tells mainnet from
+/// the test networks (`"test"`), though not one test network from another.
 pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
     if let Some(chain) = recorded_network(dir) {
+        return Some(chain);
+    }
+    if let Some(chain) = reported_network(dir, wallet_name) {
         return Some(chain);
     }
     let issued = fs::read_to_string(
@@ -86,6 +90,18 @@ pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
         return None;
     };
     Some(network.to_string())
+}
+
+fn reported_network(dir: &Path, wallet_name: &str) -> Option<String> {
+    let path = crate::ops::taker_reports::report_path(dir, wallet_name);
+    let reports: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let by_node = reports.get("maker").and_then(|m| m.as_object());
+    ["taker", "recovery"]
+        .iter()
+        .filter_map(|section| reports.get(section)?.as_array())
+        .chain(by_node.into_iter().flat_map(|m| m.values().filter_map(|v| v.as_array())))
+        .flatten()
+        .find_map(|report| Some(report.get("network")?.as_str()?.to_string()))
 }
 
 /// Wallets under `<root>/takers`, sorted: each is a directory holding its own
@@ -218,6 +234,22 @@ mod tests {
         fs::write(root.join("wallets").join("old"), b"x").unwrap();
         assert!(list_wallets(&Some(root.display().to_string())).unwrap().is_empty());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_unrecorded_router_is_placed_by_its_swap_reports() {
+        let dir = scratch("reported");
+        fs::create_dir_all(dir.join("wallets")).unwrap();
+        assert_eq!(wallet_network(&dir, "default-maker"), None);
+        fs::write(
+            dir.join("wallets").join("default-maker_swap_report.json"),
+            r#"{"taker":[],"maker":{"default-maker":[{"network":"signet"}]},"recovery":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(wallet_network(&dir, "default-maker").as_deref(), Some("signet"));
+        record_network(&dir, "bitcoin").unwrap();
+        assert_eq!(wallet_network(&dir, "default-maker").as_deref(), Some("bitcoin"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

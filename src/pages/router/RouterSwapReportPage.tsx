@@ -17,6 +17,7 @@ import {
   ReportFailureBanner,
   ReportHeader,
   ReportHero,
+  protocolTags,
   ReportLoading,
   Row,
   SectionCard,
@@ -85,7 +86,7 @@ export function RouterSwapReportPage() {
                 </>
               ) : undefined
             }
-            network={report.network}
+            tags={protocolTags(report.deniabilityProof)}
             durationSeconds={report.swapDurationSeconds}
             startTimestamp={report.startTimestamp}
             endTimestamp={report.endTimestamp}
@@ -149,7 +150,7 @@ export function RouterSwapReportPage() {
           <SectionCard title="Contract Terms">
             <Row label="Timelock">{formatNumber(report.timelock)} blocks</Row>
             <Row label="Duration">{formatDuration(report.swapDurationSeconds)}</Row>
-            <Row label="Network">{report.network}</Row>
+            <Row label="Network">{report.network === "bitcoin" ? "mainnet" : report.network}</Row>
           </SectionCard>
 
           <DeniabilityCard

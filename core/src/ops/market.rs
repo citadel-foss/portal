@@ -1,7 +1,10 @@
 //! Market / offerbook commands. Sync goes through the cached OfferSyncClient
 //! so it never contends with a running swap.
 
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBook};
 
@@ -131,20 +134,62 @@ pub async fn sync_offerbook(state: &TakerInstance) -> Result<(), AppError> {
     result
 }
 
+/// The crate's sync thread takes polls one at a time and none during a sync, which can run for
+/// minutes, and the client waits on it with no deadline. Past this the caller is told to retry;
+/// the poll itself still runs when the thread gets to it and records its result.
+const POLL_DEADLINE: Duration = Duration::from_secs(120);
+
+/// The crate polls one router at a time, so polls past this many only wait behind each other.
+const MAX_QUEUED_POLLS: usize = 4;
+
 pub async fn poll_maker(
     state: &TakerInstance,
     address: String,
 ) -> Result<MakerDto, AppError> {
     // Through the offer-sync client, as `Taker::poll_maker` itself does, but without the taker
-    // mutex: a running swap holds that for hours, and Refresh polls every router at once.
+    // mutex: a running swap holds that for hours.
     let address = openswap::taker::offers::MakerAddress::try_from(address)
         .map_err(|e| AppError::new(ErrorCode::InvalidInput, format!("Invalid router address: {e}")))?;
+    let key = address.to_string();
+    {
+        let mut polls = state.polls_in_flight.lock()?;
+        if polls.contains(&key) {
+            return Err(AppError::new(
+                ErrorCode::RouterBusy,
+                "This router's last poll is still waiting for the market sync. Try again in a moment.",
+            ));
+        }
+        if polls.len() >= MAX_QUEUED_POLLS {
+            return Err(AppError::new(
+                ErrorCode::RouterBusy,
+                "Several polls are already waiting for the market sync. Try again in a moment.",
+            ));
+        }
+        polls.insert(key.clone());
+    }
     let client = state.offer_sync.clone();
-    tokio::task::spawn_blocking(move || -> Result<MakerDto, AppError> {
+    let in_flight = state.polls_in_flight.clone();
+    let poll = tokio::task::spawn_blocking(move || -> Result<MakerDto, AppError> {
+        // Released when the crate answers, not when the caller stops waiting, and on a panic too,
+        // or the router would refuse polls for the rest of the session.
+        struct Release(Arc<Mutex<HashSet<String>>>, String);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Ok(mut polls) = self.0.lock() {
+                    polls.remove(&self.1);
+                }
+            }
+        }
+        let _release = Release(in_flight, key);
         Ok(to_maker_dto(client.poll_maker(address)?))
-    })
-    .await
-    .map_err(AppError::internal)?
+    });
+    match tokio::time::timeout(POLL_DEADLINE, poll).await {
+        Ok(joined) => joined.map_err(AppError::internal)?,
+        Err(_) => Err(AppError::new(
+            ErrorCode::RouterBusy,
+            "The market is still syncing, so this router could not be polled yet. Try again in a moment.",
+        )),
+    }
 }
 
 pub async fn remove_maker(

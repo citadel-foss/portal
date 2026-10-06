@@ -4,16 +4,15 @@ import {
   ChevronDown,
   CircleDollarSign,
   Copy,
+  Hourglass,
   LockKeyhole,
   Play,
-  RefreshCw,
   Save,
   Square,
   Trash2,
   WalletCards,
   ShieldCheck,
 } from "lucide-react";
-import QRCode from "qrcode";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
@@ -58,9 +57,11 @@ import type {
   WalletInfo,
 } from "../../api/types";
 import {
+  AddressQr,
   BackButton,
   Card,
   ExternalLinkButton,
+  Notice,
   IconButton,
   Identifier,
   Modal,
@@ -88,6 +89,7 @@ import {
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
 import { LogPanel } from "../../components/app/LogPanel";
+import { BlocklistCard } from "../../components/app/BlocklistCard";
 import { FaucetButton } from "../../components/app/FaucetButton";
 import { routerNameError } from "./router-defaults";
 import { formatTimestamp } from "../../components/ui/report";
@@ -569,7 +571,6 @@ function WalletPanel({
   const [addressType, setAddressType] = useState<AddressType>("p2tr");
   const [addressError, setAddressError] = useState<string | null>(null);
   const address = addresses[addressType] ?? null;
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const pushToast = useToastStore((state) => state.push);
   const utxoKey = JSON.stringify(utxos
@@ -591,17 +592,6 @@ function WalletPanel({
       live = false;
     };
   }, [addressesOpen, running, routerId, utxoKey, addressKey, pushToast]);
-  useEffect(() => {
-    setQrDataUrl(null);
-    if (!address) return;
-    let cancelled = false;
-    void QRCode.toDataURL(address.address, { width: 184, margin: 1 }).then((url) => {
-      if (!cancelled) setQrDataUrl(url);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [address]);
 
   // Both backends list oldest-first. Sorted on first sight, newest on top; the backend's own
   // order breaks ties, reversed, so rows seen in the same second still read newest-first.
@@ -684,25 +674,11 @@ function WalletPanel({
           />
         </div>
         <div className="mt-4 flex justify-center">
-          {/* The white ground only appears with a QR on it: a bare white square waiting looks
-              like a broken image rather than something loading. */}
-          <div
-            className={`grid h-[212px] w-[212px] place-items-center rounded-card p-3.5 ${
-              qrDataUrl
-                ? "bg-white shadow-[0_0_0_1px_rgba(255,255,255,0.16)]"
-                : "border border-line bg-surface"
-            }`}
-          >
-            {qrDataUrl ? (
-              <img src={qrDataUrl} alt="Router receive address QR code" width={184} height={184} />
-            ) : addressError ? (
-              <span className="px-4 text-center text-[11.5px] leading-5 text-danger">
-                {addressError}
-              </span>
-            ) : (
-              <RefreshCw size={24} strokeWidth={1.8} className="animate-spin text-subtle" />
-            )}
-          </div>
+          <AddressQr
+            address={address?.address ?? null}
+            alt="Router receive address QR code"
+            error={addressError}
+          />
         </div>
         {address && (
           <div className="mt-4 flex items-start justify-between gap-2 rounded-control border border-line bg-surface p-3">
@@ -1267,6 +1243,7 @@ function SettingsPanel({
           </div>
         </div>
       </Card>
+      <BlocklistCard routerId={routerId} />
       <Card className="border-danger/30 p-5">
         <div className="flex items-center justify-between gap-4">
           <div>
@@ -1457,6 +1434,7 @@ export function RouterWorkspacePage() {
     return () => clearInterval(timer);
   }, [load, pushToast]);
   const phase = status?.phase.phase ?? "notConfigured";
+  const pendingBondTxid = bonds.filter((bond) => !bond.isSpent).slice(-1)[0]?.outpoint.txid;
   const running = phase === "running" || phase === "starting";
 
   // The shell's header button, beside Sign out, as on the wallet side. Syncing is what makes a
@@ -1587,6 +1565,22 @@ export function RouterWorkspacePage() {
             )}
           </div>
         </header>
+        {phase === "starting" && status.hasBond && (
+          // The bond was broadcast during setup; until it confirms the router runs but no
+          // wallet can find it, and nothing else signals that.
+          <Notice
+            tone="warning"
+            icon={<Hourglass size={18} strokeWidth={2} />}
+            className="mt-4"
+            action={pendingBondTxid && <ExternalLinkButton txid={pendingBondTxid} />}
+          >
+            <p className="text-[13.5px] font-bold">Fidelity bond confirming</p>
+            <p className="mt-1 text-muted">
+              Wallets can&apos;t discover this router until the bond confirms. It goes live on
+              its own; you can use its wallet meanwhile.
+            </p>
+          </Notice>
+        )}
         {phase === "failed" && status.phase.phase === "failed" && (
           <div
             className="mt-4 rounded-control border border-danger/35 bg-danger/[0.08]

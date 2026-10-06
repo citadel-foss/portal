@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod blocklist;
 pub mod chain_backend;
 pub mod logs;
 pub mod maker;

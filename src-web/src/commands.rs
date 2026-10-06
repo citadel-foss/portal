@@ -641,6 +641,80 @@ pub static OPERATIONS: &[Operation] = &[
         let _ = (&ctx, &args);
         Box::pin(async move { encode(&ops::taker_wallet::sync_wallet(&*ctx.taker()?).await?) })
     }),
+    op("list_taker_blocklist", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            let dir = ctx.taker()?.data_dir.clone();
+            encode(&ops::blocklist::list(&ctx.session, &dir).await?)
+        })
+    }),
+    op("import_taker_blocklist", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                csv: String,
+            }
+            let body: Args = parse(args)?;
+            let dir = ctx.taker()?.data_dir.clone();
+            encode(&ops::blocklist::import(&ctx.session, dir, body.csv).await?)
+        })
+    }),
+    op("remove_taker_blocklist", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                addresses: Vec<String>,
+            }
+            let body: Args = parse(args)?;
+            let dir = ctx.taker()?.data_dir.clone();
+            encode(&ops::blocklist::remove(&ctx.session, dir, body.addresses).await?)
+        })
+    }),
+    op("list_maker_blocklist", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                router_id: String,
+            }
+            let body: Args = parse(args)?;
+            let dir = ops::blocklist::router_dir(&body.router_id)?;
+            encode(&ops::blocklist::list(&ctx.session, &dir).await?)
+        })
+    }),
+    op("import_maker_blocklist", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                router_id: String,
+                csv: String,
+            }
+            let body: Args = parse(args)?;
+            let dir = ops::blocklist::router_dir(&body.router_id)?;
+            encode(&ops::blocklist::import(&ctx.session, dir, body.csv).await?)
+        })
+    }),
+    op("remove_maker_blocklist", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                router_id: String,
+                addresses: Vec<String>,
+            }
+            let body: Args = parse(args)?;
+            let dir = ops::blocklist::router_dir(&body.router_id)?;
+            encode(&ops::blocklist::remove(&ctx.session, dir, body.addresses).await?)
+        })
+    }),
 ];
 
 /// Operations that change persistent state or move money. These never run inline: they are

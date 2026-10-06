@@ -46,6 +46,8 @@ import type {
   RouterDefaults,
   SessionState,
   WalletInfo,
+  BlocklistEntry,
+  BlocklistImport,
 } from "./types";
 
 /** What a new router starts with, straight from the protocol crate's defaults. */
@@ -429,4 +431,32 @@ export function verifyDeniability(swapId: string): Promise<boolean> {
 
 export function getLogs(lines?: number): Promise<LogLine[]> {
   return invoke("get_logs", { lines });
+}
+
+// ---------------------------------------------------------------------------
+// Address blocklist — one list shared by every wallet, another by every router.
+// ---------------------------------------------------------------------------
+
+export function listWalletBlocklist(): Promise<BlocklistEntry[]> {
+  return invoke("list_taker_blocklist");
+}
+
+export function importWalletBlocklist(csv: string): Promise<BlocklistImport> {
+  return invoke("import_taker_blocklist", { csv });
+}
+
+export function removeWalletBlocklist(addresses: string[]): Promise<number> {
+  return invoke("remove_taker_blocklist", { addresses });
+}
+
+export function listRouterBlocklist(routerId: string): Promise<BlocklistEntry[]> {
+  return invoke("list_maker_blocklist", { routerId });
+}
+
+export function importRouterBlocklist(routerId: string, csv: string): Promise<BlocklistImport> {
+  return invoke("import_maker_blocklist", { routerId, csv });
+}
+
+export function removeRouterBlocklist(routerId: string, addresses: string[]): Promise<number> {
+  return invoke("remove_maker_blocklist", { routerId, addresses });
 }

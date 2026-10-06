@@ -817,9 +817,13 @@ pub struct SwapReportDetail {
     pub routers_count: usize,
     pub router_addresses: Vec<String>,
     pub router_fee_info: Vec<ReportRouterFee>,
+    /// Paid a third-party receiver rather than back to this wallet.
+    pub pay_swap: bool,
     /// Raw pass-through of the crate's `DeniabilityProof` (already `Serialize`) rather than
     /// hand-mirrored types — the frontend renders whatever shape comes through generically.
     pub deniability_proof: Option<serde_json::Value>,
+    /// This swap's entry in the report file, verbatim.
+    pub raw: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,4 +1125,32 @@ impl Default for ChainBackendConfig {
             }),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Address blocklist
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlocklistEntryDto {
+    pub address: String,
+    pub label: Option<String>,
+}
+
+/// A CSV row that was not imported, by its 1-based line number.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlocklistRejectDto {
+    pub line: usize,
+    pub address: String,
+    pub reason: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlocklistImportDto {
+    pub added: usize,
+    pub updated: usize,
+    pub rejected: Vec<BlocklistRejectDto>,
 }

@@ -219,10 +219,9 @@ async fn open_taker(
         socks_port: tor.socks_port,
         password: config.wallet_password,
         connection_type,
-        // `None` leaves the crate's own config in charge, which defaults to off. Screening
-        // funding inputs against an address blocklist is a product decision for a privacy
-        // tool, not something to switch on because an upstream bump made the field required.
-        check_blocklist: None,
+        // Always on: the crate skips screening while the list is empty, so the list alone
+        // decides whether anything is refused.
+        check_blocklist: Some(true),
         nostr_relays: NOSTR_RELAYS.iter().map(|s| s.to_string()).collect(),
         ldk_server_url: None,
         ldk_api_key_path: None,
@@ -260,6 +259,7 @@ async fn open_taker(
         sync_cancel: Arc::new(AtomicBool::new(false)),
         sync_in_flight: Arc::new(AtomicBool::new(false)),
         is_offerbook_syncing: AtomicBool::new(false),
+        polls_in_flight: Arc::new(Mutex::new(HashSet::new())),
         sessions: Mutex::new(HashSet::from([session.to_string()])),
         dir_lock: Mutex::new(Some(dir_lock)),
     });

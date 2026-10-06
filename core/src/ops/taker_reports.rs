@@ -80,6 +80,42 @@ fn resolve_report_path(taker: &TakerInstance) -> PathBuf {
     report_path(&taker.data_dir, &taker.wallet_name)
 }
 
+/// One swap's entry as the file has it. Re-serializing the parsed report would sort its keys,
+/// drop the `.0` off whole floats and can move a float's last digit.
+fn raw_report_entry(path: &Path, swap_id: &str) -> Result<Option<String>, AppError> {
+    #[derive(serde::Deserialize)]
+    struct RawFile<'a> {
+        #[serde(borrow, default)]
+        taker: Vec<&'a serde_json::value::RawValue>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        swap_id: String,
+    }
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let file: RawFile = serde_json::from_str(&text)
+        .map_err(|e| AppError::internal(format!("failed to parse {}: {e}", path.display())))?;
+    let Some(entry) = file.taker.into_iter().find(|entry| {
+        serde_json::from_str::<Entry>(entry.get()).is_ok_and(|e| e.swap_id == swap_id)
+    }) else {
+        return Ok(None);
+    };
+    // Lines after the first carry the array's indent; the closing brace shows how much.
+    let raw = entry.get();
+    let indent = raw.lines().last().map_or(0, |l| l.len() - l.trim_start().len());
+    Ok(Some(
+        raw.lines()
+            .enumerate()
+            .map(|(i, line)| if i == 0 { line } else { line.get(indent..).unwrap_or(line.trim_start()) })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ))
+}
+
 fn load_report_file(path: &Path) -> Result<SwapReportFile, AppError> {
     serde_json::from_value(read_report_json(path)?)
         .map_err(|e| AppError::internal(format!("failed to read {}: {e}", path.display())))
@@ -226,9 +262,12 @@ pub async fn get_swap_report(
     swap_id: String,
 ) -> Result<SwapReportDetail, AppError> {
     let path = resolve_report_path(taker);
-    let file = tokio::task::spawn_blocking(move || load_report_file(&path))
-        .await
-        .map_err(AppError::internal)??;
+    let lookup = swap_id.clone();
+    let (file, raw) = tokio::task::spawn_blocking(move || {
+        Ok::<_, AppError>((load_report_file(&path)?, raw_report_entry(&path, &lookup)?))
+    })
+    .await
+    .map_err(AppError::internal)??;
 
     let r = file
         .taker
@@ -242,6 +281,7 @@ pub async fn get_swap_report(
         })?;
 
     let received_amount_sats = received_sats(&r);
+    let pay_swap = r.payment.is_some();
     let router_fee_info = r
         .maker_fee_info
         .into_iter()
@@ -294,9 +334,11 @@ pub async fn get_swap_report(
         routers_count: r.makers_count,
         router_addresses: r.maker_addresses,
         router_fee_info,
+        pay_swap,
         outgoing_contract_outpoint,
         incoming_contract_outpoint,
         deniability_proof,
+        raw: raw.unwrap_or_default(),
     })
 }
 
@@ -492,6 +534,22 @@ mod tests {
         assert_eq!(file.taker[0].outgoing_amount, 155190);
         // Absent on disk, so the only honest reading is that none were recorded.
         assert!(file.taker[0].outgoing_utxos.is_empty());
+    }
+
+    #[test]
+    fn a_report_entry_is_returned_as_the_file_has_it() {
+        let entry = "{\n  \"swap_id\": \"b\",\n  \"fee_percentage\": 20.401337792642142,\n  \"base_fee\": 500.0\n}";
+        let indented = entry.replace('\n', "\n    ");
+        let file = format!(
+            "{{\n  \"taker\": [\n    {{\n      \"swap_id\": \"a\"\n    }},\n    {indented}\n  ],\n  \"maker\": {{}}\n}}"
+        );
+        let path = std::env::temp_dir().join(format!("portal-raw-report-{}.json", std::process::id()));
+        std::fs::write(&path, file).unwrap();
+        assert_eq!(raw_report_entry(&path, "b").unwrap().as_deref(), Some(entry));
+        assert_eq!(raw_report_entry(&path, "missing").unwrap(), None);
+        std::fs::remove_file(&path).unwrap();
+        // No file yet is no entry, so the caller's own not-found answer stands.
+        assert_eq!(raw_report_entry(&path, "b").unwrap(), None);
     }
 
     /// A dotfile name is all extension and no stem; falling back to the raw name keeps the

@@ -1,6 +1,7 @@
 //! Domain operations. Each module holds the behavior a command performs; hosts supply only
 //! the transport, the authenticated caller and their own native concerns.
 
+pub mod blocklist;
 pub mod chain_backend;
 pub mod maker;
 pub mod maker_wallet;

@@ -36,7 +36,8 @@ export const useRouterWalletCacheStore = create<RouterWalletCacheState>((set) =>
   setAddress: (routerId, type, address) =>
     set((state) => {
       const current = state.byRouter[routerId] ?? EMPTY;
-      // Same address back is the common case; keeping the object stops the QR regenerating.
+      // Same address back is the common case; returning the old state spares every subscriber a
+      // re-render.
       if (current.addresses[type]?.address === address.address) return state;
       return {
         byRouter: {

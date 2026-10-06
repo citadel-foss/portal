@@ -703,6 +703,60 @@
       "webAdaptation": "replaced",
       "retryClass": "none",
       "note": "The supervisor owns service termination; web UI offers logout, not daemon quit."
+    },
+    {
+      "name": "list_taker_blocklist",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Entries of the funding-address blocklist shared by every wallet, for the session's chain."
+    },
+    {
+      "name": "import_taker_blocklist",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Adds a CSV of addresses to the blocklist shared by every wallet. Idempotent: re-importing the same rows leaves the same list."
+    },
+    {
+      "name": "remove_taker_blocklist",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Removes addresses from the blocklist shared by every wallet. Idempotent."
+    },
+    {
+      "name": "list_maker_blocklist",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Entries of the funding-address blocklist shared by every router, for the session's chain."
+    },
+    {
+      "name": "import_maker_blocklist",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Adds a CSV of addresses to the blocklist shared by every router. Idempotent: re-importing the same rows leaves the same list."
+    },
+    {
+      "name": "remove_maker_blocklist",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Removes addresses from the blocklist shared by every router. Idempotent."
     }
   ]
 }

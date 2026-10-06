@@ -12,7 +12,7 @@ license = "MIT"
 [workspace.dependencies]
 openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 log = "0.4"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "signal", "time", "fs"] }
 uuid = { version = "1", features = ["v4", "serde"] }

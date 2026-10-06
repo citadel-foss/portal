@@ -1,9 +1,9 @@
-import { RefreshCw, ShieldCheck } from "lucide-react";
+import { Braces, RefreshCw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getIncomingSwapUtxo, getOffers, getSwapReport, verifyDeniability } from "../../api/commands";
 import type { ReportRouterFee, Offer, SwapReportDetail, SwapUtxo } from "../../api/types";
-import { Modal, SatsAmount } from "../../components/ui/display";
+import { CopyButton, Modal, SatsAmount } from "../../components/ui/display";
 import { routerName } from "../../lib/market-format";
 import { Button, LinkButton } from "../../components/ui/inputs";
 import {
@@ -20,6 +20,7 @@ import {
   TxArtifact,
   TxidRow,
   identifiedAddress,
+  protocolTags,
   satsToBtc,
 } from "../../components/ui/report";
 import { formatNumber } from "../../lib/wallet-format";
@@ -30,6 +31,7 @@ export function SwapReportPage() {
   const [report, setReport] = useState<SwapReportDetail | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [selectedRouter, setSelectedRouter] = useState<{ index: number; address: string; fee?: ReportRouterFee } | null>(null);
+  const [jsonOpen, setJsonOpen] = useState(false);
   const [offerByAddress, setOfferByAddress] = useState<Record<string, Offer>>({});
   const [incomingUtxo, setIncomingUtxo] = useState<SwapUtxo | null>(null);
   const [utxoState, setUtxoState] = useState<"idle" | "loading" | "done" | "failed">("idle");
@@ -61,16 +63,16 @@ export function SwapReportPage() {
     }
   }, [swapId, report, reportedIncoming.length, utxoState, loadIncomingUtxo]);
 
-  // Fidelity bond data isn't part of the swap report — it lives on the router's current offer.
-  // Fetched lazily on first modal open (not mount) since nothing else on this page needs it, and
-  // best-effort: the router may no longer be posting offers, in which case the modal says so.
-  const offersFetched = useRef(false);
-  function openRouterModal(router: { index: number; address: string; fee?: ReportRouterFee }) {
-    setSelectedRouter(router);
-    if (offersFetched.current) return;
-    offersFetched.current = true;
+  // The report records neither router names nor bonds; both come from the routers' current
+  // offers. Best-effort: a router that stopped posting offers keeps its "Router N" label. Read
+  // again when a router's details open, since an offerbook still loading at mount has none yet.
+  const offersRequest = useRef(0);
+  const loadOffers = useCallback(() => {
+    const request = ++offersRequest.current;
     void getOffers()
       .then((book) => {
+        // An earlier lookup answering last must not replace a newer offerbook.
+        if (request !== offersRequest.current) return;
         const map: Record<string, Offer> = {};
         for (const m of [...book.good, ...book.bad, ...book.unresponsive]) {
           if (m.offer) map[m.address] = m.offer;
@@ -78,7 +80,11 @@ export function SwapReportPage() {
         setOfferByAddress(map);
       })
       .catch(() => {});
-  }
+  }, []);
+  useEffect(loadOffers, [loadOffers]);
+
+  const routerLabel = (address: string, index: number) =>
+    offerByAddress[address]?.name?.trim() || `Router ${index + 1}`;
 
   if (notFound) {
     return (
@@ -102,6 +108,12 @@ export function SwapReportPage() {
         backLabel="Back to Swap Reports"
         swapId={report.swapId}
         status={report.status}
+        action={
+          <Button size="sm" variant="secondary" onClick={() => setJsonOpen(true)}>
+            <Braces size={14} strokeWidth={1.8} />
+            Report JSON
+          </Button>
+        }
       />
 
       {/* Everything that is not a completed swap, matching how the reports list counts them.
@@ -140,7 +152,7 @@ export function SwapReportPage() {
                 </>
               ) : undefined
             }
-            network={report.network}
+            tags={[...protocolTags(report.deniabilityProof), report.paySwap ? "PaySwap" : "Self swap"]}
             durationSeconds={report.swapDurationSeconds}
             startTimestamp={report.startTimestamp}
             endTimestamp={report.endTimestamp}
@@ -252,11 +264,14 @@ export function SwapReportPage() {
                 <button
                   key={address}
                   type="button"
-                  onClick={() => openRouterModal({ index: i, address, fee })}
+                  onClick={() => {
+                    setSelectedRouter({ index: i, address, fee });
+                    loadOffers();
+                  }}
                   className="lift flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3.5 py-3 text-left outline-none hover:border-line-strong hover:bg-[var(--color-hover)] focus-visible:shadow-ring"
                 >
                   <span className="flex min-w-0 flex-col gap-0.5">
-                    <span className="font-mono text-[11px] text-foreground">Router {i + 1}</span>
+                    <span className="truncate font-mono text-[11px] text-foreground">{routerLabel(address, i)}</span>
                     <span className="font-mono text-[10.5px] leading-[1.45] text-subtle">{routerName(address)}</span>
                   </span>
                   {fee && <SatsAmount sats={fee.totalFeeSats} className="flex-none text-[12px] font-semibold text-warning" />}
@@ -273,8 +288,21 @@ export function SwapReportPage() {
         </div>
       </div>
 
+      {jsonOpen && (
+        <Modal title="Swap report JSON" wide onClose={() => setJsonOpen(false)}>
+          <div className="relative">
+            <pre className="max-h-[60vh] overflow-auto rounded-control border border-line bg-surface-raised p-3.5 pr-14 font-mono text-[11px] leading-[1.6] text-muted">
+              {report.raw}
+            </pre>
+            <div className="absolute right-2.5 top-2.5">
+              <CopyButton text={report.raw} title="Copy JSON" />
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {selectedRouter && (
-        <Modal title={`Router ${selectedRouter.index + 1}`} onClose={() => setSelectedRouter(null)}>
+        <Modal title={routerLabel(selectedRouter.address, selectedRouter.index)} onClose={() => setSelectedRouter(null)}>
           <Row label="Address">{routerName(selectedRouter.address)}</Row>
           <Row label="Route position">{selectedRouter.index + 1}</Row>
           {selectedRouter.fee ? (

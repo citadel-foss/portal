@@ -737,6 +737,8 @@ export interface SwapReportDetail {
   routersCount: number;
   routerAddresses: string[];
   routerFeeInfo: ReportRouterFee[];
+  /** Paid a third-party receiver rather than back to this wallet. */
+  paySwap: boolean;
   /** The exact outpoint verify_deniability checks on-chain. */
   /** The contract UTXO this wallet funded — an outpoint, since a Taproot contract output is not
    *  necessarily vout 0. Absent for swaps whose report carries no deniability proof. */
@@ -745,6 +747,8 @@ export interface SwapReportDetail {
   incomingContractOutpoint?: Outpoint;
   /** Raw pass-through of the crate's DeniabilityProof (Taproot or Legacy variant) — rendered generically. */
   deniabilityProof: Record<string, unknown> | null;
+  /** This swap's entry in the report file, verbatim. */
+  raw: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -753,4 +757,20 @@ export interface SwapReportDetail {
 
 export interface LogLine {
   line: string;
+}
+
+// ---------------------------------------------------------------------------
+// Address blocklist
+// ---------------------------------------------------------------------------
+
+export interface BlocklistEntry {
+  address: string;
+  label: string | null;
+}
+
+export interface BlocklistImport {
+  added: number;
+  updated: number;
+  /** Rows not imported, by their 1-based line in the uploaded file. */
+  rejected: { line: number; address: string; reason: string }[];
 }

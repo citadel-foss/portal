@@ -998,7 +998,7 @@ export function SwapPage() {
           <div className="flex flex-col gap-2">
             {review.routers.map((hop, i) => {
               // The negotiated summary carries no name; the offerbook entry the quote came from does.
-              const name = routers.find((r) => r.address === hop.address)?.offer?.name;
+              const name = routers.find((r) => r.address === hop.address)?.offer?.name?.trim();
               return (
               <div
                 key={hop.address}
@@ -1009,17 +1009,14 @@ export function SwapPage() {
                 }`}
               >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-                    Router {i + 1}
+                  <span className="truncate text-[13px] font-semibold text-foreground">
+                    {name || `Router ${i + 1}`}
                   </span>
                   <SatsAmount
                     sats={hop.estimatedFeeSats}
                     className={`text-[12px] font-semibold ${raised.includes(hop) ? "text-warning" : "text-foreground"}`}
                   />
                 </div>
-                {name && (
-                  <span className="truncate text-[13px] font-semibold text-foreground">{name}</span>
-                )}
                 <Identifier value={hop.address} className="text-[11px] text-muted" />
                 <span className="font-mono text-[10.5px] text-subtle">
                   base {formatNumber(hop.baseFee)} sats · {hop.amountRelativeFeePct}% ·
