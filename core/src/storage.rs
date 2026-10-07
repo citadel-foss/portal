@@ -59,19 +59,27 @@ pub fn record_network(dir: &Path, chain: &str) -> Result<(), AppError> {
     crate::security::fs::write_private(&dir.join(NETWORK_FILE), chain.as_bytes())
 }
 
+/// The files Portal keeps beside a wallet or router.
+const SIDECARS: [&str; 2] = ["last_address.json", "tx_first_seen.json"];
+
 /// A file Portal keeps beside a wallet or router, in its data dir. Never in `wallets/`: the crate
 /// finds the report file for a recovery by expecting `wallets/` to hold the wallet file alone,
-/// and anything else there sends recovery reports to a fallback file. One an older Portal left
-/// in `wallets/` is moved here on first use.
-pub fn sidecar_path(dir: &Path, wallet_name: &str, name: &str) -> PathBuf {
-    let path = dir.join(name);
-    let old = dir.join("wallets").join(format!("{wallet_name}_{name}"));
-    if !path.exists() && old.exists() {
-        if let Err(e) = fs::rename(&old, &path) {
-            log::warn!("could not move {} out of wallets/: {e}", old.display());
+/// and anything else there sends recovery reports to a fallback file. So every copy an older
+/// Portal left there moves out on the first call, and one that was already moved wins.
+pub fn sidecar_path(dir: &Path, wallet_name: &str, name: &str) -> Result<PathBuf, AppError> {
+    for file in SIDECARS {
+        let old = dir.join("wallets").join(format!("{wallet_name}_{file}"));
+        if !old.exists() {
+            continue;
+        }
+        let new = dir.join(file);
+        if new.exists() {
+            fs::remove_file(&old)?;
+        } else {
+            fs::rename(&old, &new)?;
         }
     }
-    path
+    Ok(dir.join(name))
 }
 
 pub fn recorded_network(dir: &Path) -> Option<String> {
@@ -89,7 +97,7 @@ pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
     if let Some(chain) = reported_network(dir, wallet_name) {
         return Some(chain);
     }
-    let issued = fs::read_to_string(sidecar_path(dir, wallet_name, "last_address.json")).ok()?;
+    let issued = fs::read_to_string(sidecar_path(dir, wallet_name, "last_address.json").ok()?).ok()?;
     let issued: serde_json::Value = serde_json::from_str(&issued).ok()?;
     let address = ["p2tr", "p2wpkh"].iter().find_map(|key| issued.get(key)?.as_str())?;
     let network = if address.starts_with("bcrt1") {
@@ -269,11 +277,15 @@ mod tests {
     fn a_sidecar_left_in_wallets_is_moved_out() {
         let dir = scratch("sidecar");
         fs::create_dir_all(dir.join("wallets")).unwrap();
-        fs::write(dir.join("wallets").join("bob_last_address.json"), b"{}").unwrap();
-        let path = sidecar_path(&dir, "bob", "last_address.json");
+        fs::write(dir.join("wallets").join("bob_last_address.json"), b"old").unwrap();
+        fs::write(dir.join("wallets").join("bob_tx_first_seen.json"), b"{}").unwrap();
+        fs::write(dir.join("last_address.json"), b"moved").unwrap();
+        // Asking for one file clears both out of wallets/; the copy already moved is kept.
+        let path = sidecar_path(&dir, "bob", "last_address.json").unwrap();
         assert_eq!(path, dir.join("last_address.json"));
-        assert!(path.exists());
-        assert!(!dir.join("wallets").join("bob_last_address.json").exists());
+        assert_eq!(fs::read(&path).unwrap(), b"moved");
+        assert!(dir.join("tx_first_seen.json").exists());
+        assert_eq!(fs::read_dir(dir.join("wallets")).unwrap().count(), 0);
         fs::remove_dir_all(&dir).unwrap();
     }
 

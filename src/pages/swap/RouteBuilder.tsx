@@ -5,9 +5,7 @@ import {
   MouseSensor,
   TouchSensor,
   pointerWithin,
-  rectIntersection,
   useDraggable,
-  useDroppable,
   useSensor,
   useSensors,
   type CollisionDetection,
@@ -33,7 +31,6 @@ import type { Router } from "../../api/types";
 import { routerName } from "../../lib/market-format";
 import { truncateMiddle } from "../../lib/wallet-format";
 
-const LIST_ZONE = "list-zone";
 /** How far past the route box a drop still counts, so a near miss isn't lost. */
 const DROP_MARGIN = 32;
 const SPRING = { type: "spring", stiffness: 520, damping: 34, mass: 0.6 } as const;
@@ -43,13 +40,12 @@ const routeId = (address: string) => `route:${address}`;
 const listId = (address: string) => `list:${address}`;
 const addressOf = (id: string) => id.slice(id.indexOf(":") + 1);
 
-// The pointer decides, and a box under it beats the zone around it, so a drop lands between
-// the two boxes the user aimed at rather than at the end.
+// Only what is under the pointer counts, and a box beats the zone around it. Nothing under it
+// means no target: a rectangle fallback could reach the list from a near miss and remove a box.
 const collision: CollisionDetection = (args) => {
   const within = pointerWithin(args);
   const boxes = within.filter((hit) => String(hit.id).startsWith("route:"));
-  if (boxes.length) return boxes;
-  return within.length ? within : rectIntersection(args);
+  return boxes.length ? boxes : within;
 };
 
 function displayName(address: string, byAddress: Map<string, Router>) {
@@ -225,6 +221,8 @@ export function RouteBuilder({
   // Where a router dragged in from the list would land, and where to draw the bar showing it.
   const [drop, setDrop] = useState<{ slot: number; x: number; y: number; h: number } | null>(null);
   const zoneEl = useRef<HTMLDivElement | null>(null);
+  const listEl = useRef<HTMLDivElement | null>(null);
+  const pointer = useRef<{ x: number; y: number } | null>(null);
   const startEl = useRef<HTMLSpanElement | null>(null);
   const boxes = useRef(new Map<string, HTMLElement>()).current;
   const sensors = useSensors(
@@ -244,7 +242,7 @@ export function RouteBuilder({
   const draggingFromList = activeId?.startsWith("list:") ?? false;
   const showRoute = selected.length > 0 || draggingFromList;
 
-  const { setNodeRef: listZone, isOver: overList } = useDroppable({ id: LIST_ZONE });
+  const [overList, setOverList] = useState(false);
 
   const toggle = (address: string) =>
     onChange(selected.includes(address) ? selected.filter((a) => a !== address) : [...selected, address]);
@@ -259,8 +257,6 @@ export function RouteBuilder({
   // whose centre can be far from where the user is pointing.
   function onDragMove({ active, activatorEvent, delta }: DragMoveEvent) {
     const id = String(active.id);
-    const zone = zoneEl.current;
-    if (!id.startsWith("list:") || !zone) return;
     const start =
       "touches" in activatorEvent
         ? (activatorEvent as TouchEvent).touches[0]
@@ -270,6 +266,12 @@ export function RouteBuilder({
     const rect = active.rect.current.translated;
     const px = start ? start.clientX + delta.x : rect ? rect.left + rect.width / 2 : 0;
     const py = start ? start.clientY + delta.y : rect ? rect.top + rect.height / 2 : 0;
+    pointer.current = { x: px, y: py };
+    const list = listEl.current?.getBoundingClientRect();
+    const inList = !!list && px >= list.left && px <= list.right && py >= list.top && py <= list.bottom;
+    setOverList((current) => (current === inList ? current : inList));
+    const zone = zoneEl.current;
+    if (!id.startsWith("list:") || !zone) return;
     const z = zone.getBoundingClientRect();
     if (
       px < z.left - DROP_MARGIN ||
@@ -310,8 +312,11 @@ export function RouteBuilder({
     const id = String(active.id);
     const address = addressOf(id);
     const slot = drop?.slot;
+    const at = pointer.current;
     setActiveId(null);
     setDrop(null);
+    setOverList(false);
+    pointer.current = null;
 
     if (id.startsWith("list:")) {
       if (slot === undefined) return;
@@ -320,14 +325,18 @@ export function RouteBuilder({
       onChange(order);
       return;
     }
+    // Out onto the list removes it, judged from the pointer like a drop from the list is.
+    const list = listEl.current?.getBoundingClientRect();
+    if (at && list && at.x >= list.left && at.x <= list.right && at.y >= list.top && at.y <= list.bottom) {
+      remove(address);
+      return;
+    }
     if (!over) return;
     const overId = String(over.id);
     const target = overId.startsWith("route:") ? selected.indexOf(addressOf(overId)) : -1;
     if (target >= 0) {
       const from = selected.indexOf(address);
       if (from !== target) onChange(arrayMove(selected, from, target));
-    } else if (overId === LIST_ZONE || overId.startsWith("list:")) {
-      remove(address);
     }
   }
 
@@ -343,6 +352,7 @@ export function RouteBuilder({
       onDragCancel={() => {
         setActiveId(null);
         setDrop(null);
+        setOverList(false);
       }}
     >
       <AnimatePresence initial={false}>
@@ -412,7 +422,7 @@ export function RouteBuilder({
       </AnimatePresence>
 
       <div
-        ref={listZone}
+        ref={listEl}
         className={`flex max-h-45 flex-col gap-1.5 overflow-y-auto rounded-control transition-[box-shadow] duration-150 ${
           overList && activeId?.startsWith("route:") ? "shadow-[inset_0_0_0_1px_var(--color-danger)]" : ""
         }`}

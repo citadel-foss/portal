@@ -42,20 +42,29 @@ export function RecoveriesPage() {
   const [pool, setPool] = useState<RecoveryStatus | null>(null);
 
   const [failed, setFailed] = useState(false);
+  const [poolFailed, setPoolFailed] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const [list, status] = await Promise.all([listRecoveries(), getRecoveryStatus()]);
-      setRows(list);
-      setPool(status);
-      setFailed(false);
-    } catch (e) {
-      // Deliberately keeps whatever was last read. Emptying the list here would render
-      // "Nothing to recover" over a recovery that is still running, off nothing more than a
-      // failed disk read — the one claim this page must never make wrongly.
-      setFailed(true);
-      pushFailure(e, "Failed to load recoveries.");
-    }
+  // Two reads that land on their own: the list is a file read, the status asks the chain about
+  // every waiting contract, so the list never waits on the chain.
+  const load = useCallback(() => {
+    void listRecoveries()
+      .then((list) => {
+        setRows(list);
+        setFailed(false);
+      })
+      .catch((e) => {
+        // Deliberately keeps whatever was last read. Emptying the list here would render
+        // "Nothing to recover" over a recovery that is still running, off nothing more than a
+        // failed disk read — the one claim this page must never make wrongly.
+        setFailed(true);
+        pushFailure(e, "Failed to load recoveries.");
+      });
+    void getRecoveryStatus()
+      .then((status) => {
+        setPool(status);
+        setPoolFailed(false);
+      })
+      .catch(() => setPoolFailed(true));
   }, [pushFailure]);
 
   useEffect(() => {
@@ -106,10 +115,14 @@ export function RecoveriesPage() {
               { label: "Swaps recovering", value: String(rows.filter((r) => r.active).length) },
               {
                 label: "Still in contracts",
-                value: <SatsAmount sats={pool?.lockedSats ?? 0} />,
+                // Until the chain answers, "0" would claim nothing is locked.
+                value: pool ? <SatsAmount sats={pool.lockedSats} /> : poolFailed ? "—" : "…",
                 tone: (pool?.lockedSats ?? 0) > 0 ? "warning" : "foreground",
               },
-              { label: "Contracts waiting", value: String(pool?.pending.length ?? 0) },
+              {
+                label: "Contracts waiting",
+                value: pool ? String(pool.pending.length) : poolFailed ? "—" : "…",
+              },
             ]}
           />
 
@@ -147,7 +160,9 @@ export function RecoveriesPage() {
                   <span>
                     <StatusChip tone={row.active ? "warning" : "success"}>
                       {row.active
-                        ? recoveryLabel(row.phase, pool?.recoveryRunning)
+                        ? pool || poolFailed
+                          ? recoveryLabel(row.phase, pool?.recoveryRunning)
+                          : "Checking…"
                         : `Finished · ${
                             row.recoveryTypes.length
                               ? row.recoveryTypes.join(" + ")

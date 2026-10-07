@@ -129,11 +129,16 @@ export function RecoveryCard() {
   const [failed, setFailed] = useState(false);
   const storeActive = useRecoveryStore((s) => s.active);
 
+  // Read again whenever the app's recovery state flips, so a recovery that finishes while the
+  // page is open stops showing as running.
   useEffect(() => {
     void listRecoveries()
-      .then(setRows)
+      .then((next) => {
+        setRows(next);
+        setFailed(false);
+      })
       .catch(() => setFailed(true));
-  }, []);
+  }, [storeActive]);
 
   const running = (rows ?? []).filter((r) => r.active);
   // Funds are in contracts while this is on; it has to read as loudly as the old header button.

@@ -844,7 +844,7 @@ struct LastAddresses {
     issued: HashMap<String, String>,
 }
 
-fn last_address_path(taker: &TakerInstance) -> PathBuf {
+fn last_address_path(taker: &TakerInstance) -> Result<PathBuf, AppError> {
     storage::sidecar_path(&taker.data_dir, &taker.wallet_name, "last_address.json")
 }
 
@@ -868,7 +868,7 @@ pub async fn get_new_address(
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
     let wallet = taker.wallet.clone();
-    let path = last_address_path(taker);
+    let path = last_address_path(taker)?;
     tokio::task::spawn_blocking(move || issue_unused_address(&wallet, &path, address_type))
         .await
         .map_err(AppError::internal)?
@@ -1027,8 +1027,8 @@ pub async fn get_transactions(
     skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
     let wallet = taker.wallet.clone();
-    let issued_path = last_address_path(taker);
-    let seen_path = storage::sidecar_path(&taker.data_dir, &taker.wallet_name, "tx_first_seen.json");
+    let issued_path = last_address_path(taker)?;
+    let seen_path = storage::sidecar_path(&taker.data_dir, &taker.wallet_name, "tx_first_seen.json")?;
     tokio::task::spawn_blocking(move || -> Result<Vec<TxSummary>, AppError> {
         let wallet = wallet.read()?;
         let txs = wallet.get_transactions(count, skip)?;
@@ -1154,7 +1154,7 @@ impl AddressPaths {
 }
 
 pub async fn list_addresses(taker: &TakerInstance) -> Result<Vec<WalletAddressDto>, AppError> {
-    let (wallet, issued_path) = (taker.wallet.clone(), last_address_path(taker));
+    let (wallet, issued_path) = (taker.wallet.clone(), last_address_path(taker)?);
     let (backend, socks_port) = (taker.chain_backend.clone(), Some(taker.socks_port));
     tokio::task::spawn_blocking(move || -> Result<Vec<WalletAddressDto>, AppError> {
         address_rows(&*wallet.read()?, &issued_path, &backend, socks_port)

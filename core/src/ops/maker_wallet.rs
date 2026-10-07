@@ -164,11 +164,11 @@ fn maker_wallet_file(state: &Arc<AppState>, router_id: &str, name: &str) -> Resu
         .get(router_id)
         .ok_or_else(|| AppError::maker_not_found(router_id))?
         .settings;
-    Ok(crate::storage::sidecar_path(
+    crate::storage::sidecar_path(
         &crate::ops::maker_settings::maker_data_dir(settings)?,
         &settings.wallet_name,
         name,
-    ))
+    )
 }
 
 
