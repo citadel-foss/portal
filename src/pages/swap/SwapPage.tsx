@@ -64,11 +64,8 @@ import { SwapCircuit } from "./circuit/SwapCircuit";
 import { NowPanel, Vitals } from "./circuit/panels";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
 import { RecoveryCard, SwapReportsCard } from "./SwapSideCards";
-import {
-  estimateRouterFee,
-  estimateRouteRouterFees,
-  routerName,
-} from "../../lib/market-format";
+import { RouteBuilder } from "./RouteBuilder";
+import { estimateRouterFee, estimateRouteRouterFees } from "../../lib/market-format";
 import { classifySpendType, formatDuration, formatNumber, formatUnitAmount, SATS_PER_BTC, type Unit, useUnitAmount } from "../../lib/wallet-format";
 import { RECOVERY_UI_ENABLED } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
@@ -506,14 +503,6 @@ export function SwapPage() {
   function pickRouterCount(count: number) {
     setRouterCount(count);
     setSelectedRouters([]);
-  }
-
-  function toggleRouter(address: string) {
-    setSelectedRouters((prev) =>
-      prev.includes(address)
-        ? prev.filter((a) => a !== address)
-        : [...prev, address],
-    );
   }
 
   // Nothing ticked in the advanced panel means automatic — no separate mode flag to keep in sync.
@@ -1491,50 +1480,33 @@ export function SwapPage() {
                     </div>
                   </div>
                   <p className="text-[11.5px] text-subtle">
-                    Tick routers to route through them specifically, or leave
-                    them all unticked to auto-select.
+                    Click or drag routers into the route, drag to reorder. Leave it empty to
+                    auto-select.
                   </p>
-                  <div className="flex max-h-45 flex-col gap-1.5 overflow-y-auto">
-                    {compatibleRouters.length === 0 && (
+                  <RouteBuilder
+                    routers={orderedRouters}
+                    selected={selectedRouters}
+                    onChange={setSelectedRouters}
+                    receiver={destination === "address" ? paymentAddress.trim() || undefined : undefined}
+                    emptyMessage={
                       <p className="text-[11.5px] text-subtle">
                         No compatible {protocol} routers in the offerbook.
                       </p>
+                    }
+                    rowMeta={(m) => (
+                      <span className="flex flex-none flex-col items-end gap-0.5 font-mono">
+                        <span className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                          <SatsAmount sats={m.offer!.maxSize} />
+                          <span className="font-normal text-subtle">max</span>
+                        </span>
+                        <span className="text-[10px] text-subtle">
+                          {amountSats > 0
+                            ? `≈ ${formatNumber(firstHopFee(m))} sats fee as first router`
+                            : "Enter amount to see fee"}
+                        </span>
+                      </span>
                     )}
-                    {orderedRouters.map((m) => (
-                      <label
-                        key={m.address}
-                        className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
-                      >
-                        <span className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted">
-                          <input
-                            type="checkbox"
-                            checked={selectedRouters.includes(m.address)}
-                            onChange={() => toggleRouter(m.address)}
-                            className="accent-primary"
-                          />
-                          {m.offer?.name ? (
-                            <span className="flex min-w-0 flex-col leading-[1.35]">
-                              <span className="truncate text-[12px] font-semibold text-foreground">{m.offer.name}</span>
-                              <span className="truncate font-mono text-[10.5px] text-subtle">{routerName(m.address)}</span>
-                            </span>
-                          ) : (
-                            <span className="font-mono text-[11px] leading-[1.45] text-muted">{routerName(m.address)}</span>
-                          )}
-                        </span>
-                        <span className="flex flex-none flex-col items-end gap-0.5 font-mono">
-                          <span className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
-                            <SatsAmount sats={m.offer!.maxSize} />
-                            <span className="font-normal text-subtle">max</span>
-                          </span>
-                          <span className="text-[10px] text-subtle">
-                            {amountSats > 0
-                              ? `≈ ${formatNumber(firstHopFee(m))} sats fee as first router`
-                              : "Enter amount to see fee"}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+                  />
                 </div>
 
                 <div className="flex flex-col gap-2.5 border-t border-line pt-4">
