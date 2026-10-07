@@ -71,7 +71,7 @@ export function RecoveriesPage() {
         <div>
           <h1 className="font-header text-[26px] font-bold text-foreground">Recovery</h1>
           <p className="mt-1 text-[13.5px] text-muted">
-            Swaps that stopped with funds still in a contract.
+            Swaps that stopped part-way, and how their funds came back.
           </p>
         </div>
       </div>
@@ -113,7 +113,7 @@ export function RecoveriesPage() {
             ]}
           />
 
-          {rows.length > 1 && (
+          {rows.filter((r) => r.active).length > 1 && (
             <Notice tone="primary" className="mt-4">
               These are reclaimed together, not one at a time — the protocol runs a single recovery
               over every stopped swap at once. Opening one shows what it was doing when it stopped.
@@ -148,7 +148,11 @@ export function RecoveriesPage() {
                     <StatusChip tone={row.active ? "warning" : "success"}>
                       {row.active
                         ? recoveryLabel(row.phase, pool?.recoveryRunning)
-                        : `Finished · ${row.resolvedCount} reclaimed`}
+                        : `Finished · ${
+                            row.recoveryTypes.length
+                              ? row.recoveryTypes.join(" + ")
+                              : `${row.resolvedCount} reclaimed`
+                          }`}
                     </StatusChip>
                   </span>
                   <span className="font-numeric">{row.routerCount}</span>

@@ -5,6 +5,7 @@
 //! `Serialize`/`Deserialize`), the same `<data_dir>/swap_tracker.cbor` file the old Electron app
 //! polled straight off disk.
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ use openswap::utill::{
 };
 use openswap::wallet::{Blockchain, UTXOSpendInfo};
 use crate::events::AppEvent;
+use crate::ops::taker_reports::{recovery_reports, tracker_records};
 
 use crate::error::{AppError, ErrorCode};
 use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
@@ -780,23 +782,43 @@ pub async fn list_recoveries(
     taker: &TakerInstance,
 ) -> Result<Vec<RecoverySummary>, AppError> {
     let data_dir = taker.data_dir.clone();
+    let wallet_name = taker.wallet_name.clone();
 
     tokio::task::spawn_blocking(move || -> Result<Vec<RecoverySummary>, AppError> {
-        let tracker = SwapTracker::load_or_create(&data_dir)?;
-        let mut rows: Vec<RecoverySummary> = tracker
-            .incomplete_swaps()
+        // Every record, so a finished recovery stays listed: `incomplete_swaps` drops it. The
+        // crate's own list is added back so a tracker this read can't decode still shows the
+        // recoveries that are running.
+        let mut records: HashMap<String, SwapRecord> = tracker_records(&data_dir)
             .into_iter()
+            .map(|r| (r.swap_id.clone(), r))
+            .collect();
+        let tracker = SwapTracker::load_or_create(&data_dir)?;
+        for r in tracker.incomplete_swaps() {
+            records.entry(r.swap_id.clone()).or_insert_with(|| r.clone());
+        }
+        let reports = recovery_reports(&data_dir, &wallet_name);
+        let mut rows: Vec<RecoverySummary> = records
+            .into_values()
             .filter(|r| r.phase == SwapPhase::Failed || r.recovery.phase != RecoveryPhase::NotStarted)
-            .map(|r| RecoverySummary {
-                swap_id: r.swap_id.clone(),
-                phase: recovery_phase_label(r.recovery.phase).to_string(),
-                failure_reason: r.failure_reason.clone(),
-                failed_at_phase: r.failed_at_phase.map(|p| tracker_phase_label(p).to_string()),
-                router_count: r.maker_count,
-                send_amount_sats: r.send_amount_sat,
-                resolved_count: r.recovery.incoming.len() + r.recovery.outgoing.len(),
-                active: r.recovery.phase < RecoveryPhase::CleanedUp,
-                updated_at: r.updated_at,
+            .map(|r| {
+                let mine = reports.iter().filter(|report| report.swap_id == r.swap_id);
+                let mut recovery_types: Vec<String> =
+                    mine.clone().map(|report| report.recovery_type.clone()).collect();
+                recovery_types.sort_unstable();
+                recovery_types.dedup();
+                RecoverySummary {
+                    phase: recovery_phase_label(r.recovery.phase).to_string(),
+                    failed_at_phase: r.failed_at_phase.map(|p| tracker_phase_label(p).to_string()),
+                    router_count: r.maker_count,
+                    send_amount_sats: r.send_amount_sat,
+                    resolved_count: r.recovery.incoming.len() + r.recovery.outgoing.len(),
+                    active: r.recovery.phase < RecoveryPhase::CleanedUp,
+                    updated_at: r.updated_at,
+                    recovery_types,
+                    recovery_txids: mine.flat_map(|report| report.recovery_txids.clone()).collect(),
+                    failure_reason: r.failure_reason,
+                    swap_id: r.swap_id,
+                }
             })
             .collect();
         rows.sort_unstable_by_key(|r| std::cmp::Reverse(r.updated_at));

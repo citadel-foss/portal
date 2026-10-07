@@ -639,6 +639,9 @@ export interface RecoverySummary {
   resolvedCount: number;
   active: boolean;
   updatedAt: number;
+  /** How the funds came back, once recovery reported it: "hashlock", "timelock". */
+  recoveryTypes: string[];
+  recoveryTxids: string[];
 }
 
 export interface RecoveryStatus {

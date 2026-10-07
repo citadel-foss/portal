@@ -9,7 +9,7 @@ import { AlertTriangle, CheckCircle2, RefreshCw, Timer, XCircle } from "lucide-r
 import { useState } from "react";
 import type { ReactNode } from "react";
 
-import type { ReportUtxo, SwapStatus } from "../../api/types";
+import type { ReportUtxo, SwapReportSummary, SwapStatus } from "../../api/types";
 import { isAppError } from "../../api/types";
 import { formatDuration, SATS_PER_BTC, scriptTypeFromAddress, swapStatusPresentation } from "../../lib/wallet-format";
 import {
@@ -33,6 +33,15 @@ export const STATUS_LABEL: Record<SwapStatus, string> = {
   unfinished: "Never finished",
   failed: "Failed",
 };
+
+/** Where a swap's row leads. A tracker-only row has no report of its own, but it is a recovery,
+ *  so it opens that, finished ones included. A swap that never reached recovery has nothing. */
+export function swapReportLink(r: SwapReportSummary): string | null {
+  if (r.reported) return `/swap/reports/${encodeURIComponent(r.swapId)}`;
+  if (r.status === "interrupted" || r.status === "recovered")
+    return `/swap/recovery/${encodeURIComponent(r.swapId)}`;
+  return null;
+}
 
 /** One accent per hop so a funding tx is visually tied to the router it funded. */
 export const HOP_ACCENTS = [

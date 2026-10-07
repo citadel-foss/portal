@@ -845,10 +845,7 @@ struct LastAddresses {
 }
 
 fn last_address_path(taker: &TakerInstance) -> PathBuf {
-    taker
-        .data_dir
-        .join("wallets")
-        .join(format!("{}_last_address.json", taker.wallet_name))
+    storage::sidecar_path(&taker.data_dir, &taker.wallet_name, "last_address.json")
 }
 
 fn load_last_addresses(path: &Path) -> LastAddresses {
@@ -1031,10 +1028,7 @@ pub async fn get_transactions(
 ) -> Result<Vec<TxSummary>, AppError> {
     let wallet = taker.wallet.clone();
     let issued_path = last_address_path(taker);
-    let seen_path = taker
-        .data_dir
-        .join("wallets")
-        .join(format!("{}_tx_first_seen.json", taker.wallet_name));
+    let seen_path = storage::sidecar_path(&taker.data_dir, &taker.wallet_name, "tx_first_seen.json");
     tokio::task::spawn_blocking(move || -> Result<Vec<TxSummary>, AppError> {
         let wallet = wallet.read()?;
         let txs = wallet.get_transactions(count, skip)?;
