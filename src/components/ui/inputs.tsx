@@ -133,7 +133,8 @@ export function SummaryRow({
 
   return (
     <div className="flex min-h-9 items-center justify-between gap-4 text-[12.5px]">
-      <span className="text-muted">{label}</span>
+      {/* Basis 0: the label takes only what the value leaves, so it wraps before the value does. */}
+      <span className="flex-1 text-muted">{label}</span>
       {editing && !readOnly ? (
         <input
           autoFocus
@@ -169,9 +170,9 @@ export function SummaryRow({
         <button
           type="button"
           onClick={open}
-          className="group flex items-baseline gap-2 rounded-sm text-right outline-none transition-colors hover:text-primary focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
+          className="group flex min-w-0 items-baseline gap-2 rounded-sm text-right outline-none transition-colors hover:text-primary focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]"
         >
-          <span className="font-mono text-foreground group-hover:text-primary">
+          <span className="min-w-0 wrap-anywhere font-mono text-foreground group-hover:text-primary">
             {value ? (secret ? "•".repeat(8) : (display ?? value)) : placeholder}
             {suffix && (
               <span className="ml-1 text-subtle group-hover:text-primary">
@@ -179,7 +180,7 @@ export function SummaryRow({
               </span>
             )}
           </span>
-          <span className="text-[10px] uppercase tracking-widest text-subtle group-hover:text-primary">
+          <span className="shrink-0 text-[10px] uppercase tracking-widest text-subtle group-hover:text-primary">
             Edit
           </span>
         </button>
