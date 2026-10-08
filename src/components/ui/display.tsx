@@ -17,7 +17,16 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { HTMLAttributes, ReactNode } from "react";
 import type { LogLine } from "../../api/types";
-import { explorerAddressUrl, explorerTxUrl, formatNumber, LOG_LEVEL_TONE, logLevel } from "../../lib/wallet-format";
+import {
+  explorerAddressUrl,
+  explorerTxUrl,
+  formatBalanceSats,
+  formatBalanceUsd,
+  formatNumber,
+  LOG_LEVEL_TONE,
+  logLevel,
+  useBtcPriceUsd,
+} from "../../lib/wallet-format";
 import { copyText } from "../../lib/clipboard";
 import { walletIdentity } from "../../lib/wallet-identity";
 
@@ -235,6 +244,46 @@ export function SatsAmount({
     >
       <span>{formatNumber(Math.round(sats))}</span>
       <SatsGlyph className="text-subtle" scale={glyphScale} />
+    </span>
+  );
+}
+
+/**
+ * A top-level balance: ₿ immediately followed by comma-grouped sats, with the dollar
+ * equivalent in a smaller muted line underneath.
+ *
+ * The ₿ means satoshis. The old bar-and-ticks glyph read as decoration, and a trailing
+ * "sats" label crowded the figure. The dollar line uses the same BTC/USD quote as the
+ * amount inputs, always two fractional digits. It stays an em dash when that quote is
+ * missing so the stack does not jump and we do not invent a price.
+ */
+export function BalanceAmount({
+  sats,
+  className = "",
+  size = "default",
+}: {
+  sats: number;
+  className?: string;
+  /** `hero` is the page's single large figure, where the dollar line needs to stay in proportion. */
+  size?: "default" | "hero";
+}) {
+  const btcPriceUsd = useBtcPriceUsd();
+  const usd = formatBalanceUsd(sats, btcPriceUsd);
+  const spoken = usd
+    ? `${formatNumber(Math.round(sats))} satoshis, worth ${usd}`
+    : `${formatNumber(Math.round(sats))} satoshis. Dollar value unavailable.`;
+  return (
+    <span className={`inline-flex max-w-full flex-col items-start leading-none ${className}`}>
+      <span className="sr-only">{spoken}</span>
+      <span aria-hidden="true" className="font-numeric whitespace-nowrap tabular-nums">
+        {formatBalanceSats(sats)}
+      </span>
+      <span
+        aria-hidden="true"
+        className={`mt-1 font-numeric font-normal leading-none whitespace-nowrap tabular-nums text-muted ${size === "hero" ? "text-[16px]" : "text-[12px]"}`}
+      >
+        {usd ?? "—"}
+      </span>
     </span>
   );
 }
@@ -606,7 +655,8 @@ export function StatStrip({
           <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-subtle">
             {label}
           </span>
-          <div className={`mt-1 truncate text-[18px] font-bold ${tones[tone]}`}>
+          {/* Not `truncate`: a balance figure is two lines, and nowrap would clip the dollar. */}
+          <div className={`mt-1 min-w-0 overflow-hidden text-[18px] font-bold leading-none ${tones[tone]}`}>
             {value}
           </div>
           {detail && (

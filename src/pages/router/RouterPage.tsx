@@ -28,6 +28,7 @@ import {
   type RouterStatus,
 } from "../../api/types";
 import {
+  BalanceAmount,
   EmptyState,
   EntityMonogram,
   Modal,
@@ -107,8 +108,8 @@ function BalanceValue({ label, sats, tone }: { label: string; sats: number; tone
   return (
     <div className="min-w-0 px-4 py-3.5">
       <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{label}</span>
-      <strong className={`mt-1.5 block truncate font-mono text-[12px] font-semibold ${tone ?? "text-foreground"}`}>
-        <SatsAmount sats={sats} />
+      <strong className={`mt-1.5 block min-w-0 text-[16px] font-semibold leading-none ${tone ?? "text-foreground"}`}>
+        <BalanceAmount sats={sats} />
       </strong>
     </div>
   );
@@ -547,7 +548,7 @@ export function RouterPage() {
               detail: `${stats.stopped} stopped${stats.restoring ? ` · ${stats.restoring} restoring` : ""}`,
               tone: "success",
             },
-            { label: "Spendable", value: <SatsAmount sats={stats.spendable} />, detail: "across router wallets" },
+            { label: "Spendable", value: <BalanceAmount sats={stats.spendable} />, detail: "across router wallets" },
             { label: "Net earnings", value: <SatsAmount sats={stats.earnings} />, detail: "from saved reports", tone: "success" },
           ]}
         />
