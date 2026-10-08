@@ -148,6 +148,8 @@ async fn construct_server(
     // Read once: the network recorded must be the one this server was built on, even if the
     // session's backend changes while `MakerServer::init` runs.
     let chain = chain_backend::load(session);
+    // Before the crate opens the wallet: its startup recovery writes reports straight away.
+    crate::storage::move_sidecars_out(&data_dir, &config.wallet_name)?;
     let server_config = build_config(&chain, config, data_dir.clone())?;
     let server = tokio::task::spawn_blocking(move || MakerServer::init(server_config))
         .await

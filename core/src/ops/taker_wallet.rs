@@ -235,6 +235,8 @@ async fn open_taker(
     let wallet_key = key.to_path_buf();
     // Registered before `Taker::init`, not after: the threads it starts log straight away, and
     // only a registered wallet can claim their unattributed lines.
+    // Before the crate opens the wallet: its startup recovery writes reports straight away.
+    storage::move_sidecars_out(key, &config.wallet_name)?;
     crate::logging::register_wallet(config.wallet_name.clone(), key.to_path_buf());
     let taker = tokio::task::spawn_blocking(move || {
         let _log = crate::logging::wallet_scope(wallet_key.clone());

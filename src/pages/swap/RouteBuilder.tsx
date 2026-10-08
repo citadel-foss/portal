@@ -4,6 +4,7 @@ import {
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
+  closestCenter,
   pointerWithin,
   useDraggable,
   useSensor,
@@ -43,6 +44,13 @@ const addressOf = (id: string) => id.slice(id.indexOf(":") + 1);
 // Only what is under the pointer counts, and a box beats the zone around it. Nothing under it
 // means no target: a rectangle fallback could reach the list from a near miss and remove a box.
 const collision: CollisionDetection = (args) => {
+  // A keyboard drag has no pointer: it targets the nearest route box, so arrows still reorder.
+  if (!args.pointerCoordinates) {
+    return closestCenter({
+      ...args,
+      droppableContainers: args.droppableContainers.filter((c) => String(c.id).startsWith("route:")),
+    });
+  }
   const within = pointerWithin(args);
   const boxes = within.filter((hit) => String(hit.id).startsWith("route:"));
   return boxes.length ? boxes : within;
@@ -248,25 +256,41 @@ export function RouteBuilder({
     onChange(selected.includes(address) ? selected.filter((a) => a !== address) : [...selected, address]);
   const remove = (address: string) => onChange(selected.filter((a) => a !== address));
 
-  function onDragStart({ active }: DragStartEvent) {
+  // The live pointer, read from the window: the drag's own delta also counts page scroll, so a
+  // pointer rebuilt from it drifts as soon as the page scrolls mid-drag.
+  const track = useRef<((e: PointerEvent) => void) | null>(null);
+  function stopTracking() {
+    if (track.current) window.removeEventListener("pointermove", track.current);
+    track.current = null;
+    pointer.current = null;
+  }
+
+  function onDragStart({ active, activatorEvent }: DragStartEvent) {
     setActiveId(String(active.id));
     setDrop(null);
+    stopTracking();
+    if ("clientX" in activatorEvent) {
+      const start = activatorEvent as MouseEvent;
+      pointer.current = { x: start.clientX, y: start.clientY };
+    } else if ("touches" in activatorEvent) {
+      const start = (activatorEvent as TouchEvent).touches[0];
+      pointer.current = { x: start.clientX, y: start.clientY };
+    }
+    if (pointer.current) {
+      track.current = (e) => {
+        pointer.current = { x: e.clientX, y: e.clientY };
+      };
+      window.addEventListener("pointermove", track.current);
+    }
   }
 
   // The slot comes from the pointer itself: the dragged element's own rect is the wide list row,
   // whose centre can be far from where the user is pointing.
-  function onDragMove({ active, activatorEvent, delta }: DragMoveEvent) {
+  function onDragMove({ active }: DragMoveEvent) {
     const id = String(active.id);
-    const start =
-      "touches" in activatorEvent
-        ? (activatorEvent as TouchEvent).touches[0]
-        : "clientX" in activatorEvent
-          ? (activatorEvent as MouseEvent)
-          : null;
     const rect = active.rect.current.translated;
-    const px = start ? start.clientX + delta.x : rect ? rect.left + rect.width / 2 : 0;
-    const py = start ? start.clientY + delta.y : rect ? rect.top + rect.height / 2 : 0;
-    pointer.current = { x: px, y: py };
+    const px = pointer.current?.x ?? (rect ? rect.left + rect.width / 2 : 0);
+    const py = pointer.current?.y ?? (rect ? rect.top + rect.height / 2 : 0);
     const list = listEl.current?.getBoundingClientRect();
     const inList = !!list && px >= list.left && px <= list.right && py >= list.top && py <= list.bottom;
     setOverList((current) => (current === inList ? current : inList));
@@ -316,7 +340,7 @@ export function RouteBuilder({
     setActiveId(null);
     setDrop(null);
     setOverList(false);
-    pointer.current = null;
+    stopTracking();
 
     if (id.startsWith("list:")) {
       if (slot === undefined) return;
@@ -353,6 +377,7 @@ export function RouteBuilder({
         setActiveId(null);
         setDrop(null);
         setOverList(false);
+        stopTracking();
       }}
     >
       <AnimatePresence initial={false}>

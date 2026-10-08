@@ -62,23 +62,31 @@ pub fn record_network(dir: &Path, chain: &str) -> Result<(), AppError> {
 /// The files Portal keeps beside a wallet or router.
 const SIDECARS: [&str; 2] = ["last_address.json", "tx_first_seen.json"];
 
-/// A file Portal keeps beside a wallet or router, in its data dir. Never in `wallets/`: the crate
-/// finds the report file for a recovery by expecting `wallets/` to hold the wallet file alone,
-/// and anything else there sends recovery reports to a fallback file. So every copy an older
-/// Portal left there moves out on the first call, and one that was already moved wins.
-pub fn sidecar_path(dir: &Path, wallet_name: &str, name: &str) -> Result<PathBuf, AppError> {
+/// Moves every file an older Portal kept in `wallets/` out to the data dir. The crate finds the
+/// report file for a recovery by expecting `wallets/` to hold the wallet file alone, and
+/// anything else there sends recovery reports to a fallback file. So this runs before the crate
+/// opens the wallet, and a copy that was already moved wins.
+pub fn move_sidecars_out(dir: &Path, wallet_name: &str) -> Result<(), AppError> {
     for file in SIDECARS {
         let old = dir.join("wallets").join(format!("{wallet_name}_{file}"));
         if !old.exists() {
             continue;
         }
         let new = dir.join(file);
-        if new.exists() {
-            fs::remove_file(&old)?;
-        } else {
-            fs::rename(&old, &new)?;
+        let moved = if new.exists() { fs::remove_file(&old) } else { fs::rename(&old, &new) };
+        // Another caller moving the same file at the same moment is not a failure.
+        if let Err(e) = moved {
+            if old.exists() || !new.exists() {
+                return Err(e.into());
+            }
         }
     }
+    Ok(())
+}
+
+/// A file Portal keeps beside a wallet or router, in its data dir, never in `wallets/`.
+pub fn sidecar_path(dir: &Path, wallet_name: &str, name: &str) -> Result<PathBuf, AppError> {
+    move_sidecars_out(dir, wallet_name)?;
     Ok(dir.join(name))
 }
 

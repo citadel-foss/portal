@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronRight, LifeBuoy, RefreshCw, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getRecoveryStatus, listRecoveries } from "../../api/commands";
 import type { RecoveryStatus, RecoverySummary } from "../../api/types";
@@ -46,13 +46,20 @@ export function RecoveriesPage() {
 
   // Two reads that land on their own: the list is a file read, the status asks the chain about
   // every waiting contract, so the list never waits on the chain.
+  // Numbered, so a slow older read can't overwrite a newer one.
+  const listRequest = useRef(0);
+  const poolRequest = useRef(0);
   const load = useCallback(() => {
+    const list = ++listRequest.current;
+    const status = ++poolRequest.current;
     void listRecoveries()
-      .then((list) => {
-        setRows(list);
+      .then((next) => {
+        if (list !== listRequest.current) return;
+        setRows(next);
         setFailed(false);
       })
       .catch((e) => {
+        if (list !== listRequest.current) return;
         // Deliberately keeps whatever was last read. Emptying the list here would render
         // "Nothing to recover" over a recovery that is still running, off nothing more than a
         // failed disk read — the one claim this page must never make wrongly.
@@ -60,11 +67,17 @@ export function RecoveriesPage() {
         pushFailure(e, "Failed to load recoveries.");
       });
     void getRecoveryStatus()
-      .then((status) => {
-        setPool(status);
+      .then((next) => {
+        if (status !== poolRequest.current) return;
+        setPool(next);
         setPoolFailed(false);
       })
-      .catch(() => setPoolFailed(true));
+      .catch(() => {
+        if (status !== poolRequest.current) return;
+        // Old figures would read as current; the failure marker replaces them.
+        setPool(null);
+        setPoolFailed(true);
+      });
   }, [pushFailure]);
 
   useEffect(() => {

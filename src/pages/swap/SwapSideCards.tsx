@@ -132,12 +132,17 @@ export function RecoveryCard() {
   // Read again whenever the app's recovery state flips, so a recovery that finishes while the
   // page is open stops showing as running.
   useEffect(() => {
+    let current = true;
     void listRecoveries()
       .then((next) => {
+        if (!current) return;
         setRows(next);
         setFailed(false);
       })
-      .catch(() => setFailed(true));
+      .catch(() => current && setFailed(true));
+    return () => {
+      current = false;
+    };
   }, [storeActive]);
 
   const running = (rows ?? []).filter((r) => r.active);
