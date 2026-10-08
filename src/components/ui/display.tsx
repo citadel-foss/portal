@@ -115,10 +115,10 @@ export function TestResultRows({ rows }: { rows: TestRow[] }) {
       {rows.map((r) => (
         <div
           key={r.label}
-          className="flex items-center justify-between gap-3 rounded-card border border-line bg-surface-raised px-3 py-2 text-[12px]"
+          className={`flex justify-between gap-3 rounded-card border border-line bg-surface-raised px-3 py-2 text-[12px] ${r.state === "failed" ? "items-start" : "items-center"}`}
         >
           <span
-            className={`flex items-center gap-1.5 font-medium ${TEST_ROW_TONE[r.state]}`}
+            className={`flex shrink-0 items-center gap-1.5 font-medium ${TEST_ROW_TONE[r.state]}`}
           >
             {r.state === "pending" ? (
               // Same ring `Button` spins, rather than an icon, so a control and a row that are
@@ -131,7 +131,12 @@ export function TestResultRows({ rows }: { rows: TestRow[] }) {
             )}
             {r.label}
           </span>
-          <span className="truncate text-subtle">{r.message}</span>
+          {/* A failure is the one message the user has to read in full to act on. */}
+          <span
+            className={`min-w-0 text-subtle ${r.state === "failed" ? "whitespace-pre-line wrap-anywhere" : "truncate"}`}
+          >
+            {r.message}
+          </span>
         </div>
       ))}
     </div>
