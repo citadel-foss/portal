@@ -11,6 +11,8 @@ license = "MIT"
 # cannot leave two crates linking different copies of the same types.
 [workspace.dependencies]
 openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
+# openswap's own version and features, so both resolve to one crate.
+electrum-client = { version = "0.24", default-features = false, features = ["proxy", "use-rustls-ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 log = "0.4"

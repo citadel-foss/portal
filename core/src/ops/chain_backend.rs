@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use electrum_client::{ClientType, ConfigBuilder, ElectrumApi, Socks5Config};
 use openswap::bitcoin::{Address, Network};
 use openswap::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::ListUnspentResultEntry;
 use openswap::bitcoind::bitcoincore_rpc::jsonrpc::{self, simple_http};
@@ -779,8 +780,55 @@ fn probe_electrum(config: &ChainBackendConfig, socks_port: Option<u16>) -> Backe
             verification_progress: Some(1.0),
             signet_challenge: None,
         },
-        Err(e) => unreachable(format!("{e:?}")),
+        // With retries off, as openswap sets them, electrum-client drops a failed call's error
+        // and returns an empty `AllAttemptsErrored`, so the message ends on its empty list.
+        Err(e) if e.message.ends_with("all errored:\n") => {
+            match electrum_cause(config, socks_port) {
+                Some(cause) => {
+                    log::warn!("electrum probe of {} failed: {cause}", config.electrum.url);
+                    unreachable(format!("{}\t- {cause}", e.message))
+                }
+                None => unreachable(e.message),
+            }
+        }
+        Err(e) => unreachable(e.message),
     }
+}
+
+/// The error openswap's connect handshake hits, from clients with no retry wrapper to lose it.
+/// `None` when the handshake passes this time.
+fn electrum_cause(config: &ChainBackendConfig, socks_port: Option<u16>) -> Option<String> {
+    let Ok(BackendConfig::Electrum(cfg)) = resolve_bounded(config, "", socks_port) else {
+        return None;
+    };
+    let client_config = ConfigBuilder::new()
+        .socks5(cfg.socks5.as_deref().map(Socks5Config::new))
+        .timeout(cfg.timeout)
+        // A hidden-service name has no certificate to validate against.
+        .validate_domain(!cfg.url.contains(".onion:"))
+        .build();
+    let handshake = match ClientType::from_config(&cfg.url, &client_config) {
+        Ok(ClientType::TCP(client)) => electrum_handshake(&client),
+        Ok(ClientType::SSL(client)) => electrum_handshake(&client),
+        Ok(ClientType::Socks5(client)) => electrum_handshake(&client),
+        Err(e) => Err(e),
+    };
+    handshake.err().map(|e| e.to_string())
+}
+
+fn electrum_handshake(client: &impl ElectrumApi) -> Result<(), electrum_client::Error> {
+    match client.server_features() {
+        // -32601 is "method not found": openswap reads the genesis header instead.
+        Err(electrum_client::Error::Protocol(ref value))
+            if value.get("code").and_then(serde_json::Value::as_i64) == Some(-32601) =>
+        {
+            client.block_header(0)?;
+        }
+        other => {
+            other?;
+        }
+    }
+    client.block_headers_subscribe().map(drop)
 }
 
 fn bounded_core_client(node: &NodeBackendDto) -> Result<Client, AppError> {
@@ -805,7 +853,7 @@ fn probe_core_rpc(node: &NodeBackendDto) -> BackendStatus {
     let info = match client.get_blockchain_info() {
         Ok(i) => i,
         Err(e) => {
-            let msg = format!("{e:?}");
+            let msg = e.to_string();
             // Already distinguished here; it was being flattened into "unreachable" on the
             // way out, leaving the gate unable to tell a wrong password from a dead node.
             if msg.contains("401") || msg.to_lowercase().contains("auth") {
