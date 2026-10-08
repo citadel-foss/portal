@@ -538,7 +538,7 @@ export function ConnectPage() {
                   message: torError
                     ? torError
                     : torReady
-                      ? "Bootstrap complete — Tor is ready"
+                      ? "Bootstrap complete"
                       : torProgress === null
                         ? "Starting…"
                         : // Tor's own phase text plus the clock, so a long wait says which
