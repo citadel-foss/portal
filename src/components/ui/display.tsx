@@ -16,17 +16,9 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { HTMLAttributes, ReactNode } from "react";
+import { getBtcPrice } from "../../api/commands";
 import type { LogLine } from "../../api/types";
-import {
-  explorerAddressUrl,
-  explorerTxUrl,
-  formatBalanceSats,
-  formatBalanceUsd,
-  formatNumber,
-  LOG_LEVEL_TONE,
-  logLevel,
-  useBtcPriceUsd,
-} from "../../lib/wallet-format";
+import { explorerAddressUrl, explorerTxUrl, formatNumber, LOG_LEVEL_TONE, logLevel, SATS_PER_BTC } from "../../lib/wallet-format";
 import { copyText } from "../../lib/clipboard";
 import { walletIdentity } from "../../lib/wallet-identity";
 
@@ -248,15 +240,10 @@ export function SatsAmount({
   );
 }
 
-/**
- * A top-level balance: ₿ immediately followed by comma-grouped sats, with the dollar
- * equivalent in a smaller muted line underneath.
- *
- * The ₿ means satoshis. The old bar-and-ticks glyph read as decoration, and a trailing
- * "sats" label crowded the figure. The dollar line uses the same BTC/USD quote as the
- * amount inputs, always two fractional digits. It stays an em dash when that quote is
- * missing so the stack does not jump and we do not invent a price.
- */
+// Shared so the balance figures mounted together make one price request.
+let btcPriceInflight: Promise<number | null> | null = null;
+
+/** ₿ prefixes a sats count here, not BTC. Wraps rather than clips when its cell is too narrow. */
 export function BalanceAmount({
   sats,
   className = "",
@@ -267,20 +254,34 @@ export function BalanceAmount({
   /** `hero` is the page's single large figure, where the dollar line needs to stay in proportion. */
   size?: "default" | "hero";
 }) {
-  const btcPriceUsd = useBtcPriceUsd();
-  const usd = formatBalanceUsd(sats, btcPriceUsd);
-  const spoken = usd
-    ? `${formatNumber(Math.round(sats))} satoshis, worth ${usd}`
-    : `${formatNumber(Math.round(sats))} satoshis. Dollar value unavailable.`;
+  const [btcPriceUsd, setBtcPriceUsd] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    btcPriceInflight ??= getBtcPrice()
+      .then((quote) => quote.usd, () => null)
+      .finally(() => {
+        btcPriceInflight = null;
+      });
+    void btcPriceInflight.then((price) => {
+      if (live) setBtcPriceUsd(price);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const usd =
+    btcPriceUsd === null
+      ? null
+      : ((sats / SATS_PER_BTC) * btcPriceUsd).toLocaleString("en-US", { style: "currency", currency: "USD" });
   return (
-    <span className={`inline-flex max-w-full flex-col items-start leading-none ${className}`}>
-      <span className="sr-only">{spoken}</span>
-      <span aria-hidden="true" className="font-numeric whitespace-nowrap tabular-nums">
-        {formatBalanceSats(sats)}
+    <span className={`inline-flex max-w-full flex-col items-start leading-none whitespace-normal wrap-anywhere ${className}`}>
+      <span className="sr-only">{`${formatNumber(sats)} satoshis${usd ? `, ${usd}` : ""}`}</span>
+      <span aria-hidden="true" className="font-numeric tabular-nums">
+        ₿{formatNumber(sats)}
       </span>
       <span
         aria-hidden="true"
-        className={`mt-1 font-numeric font-normal leading-none whitespace-nowrap tabular-nums text-muted ${size === "hero" ? "text-[16px]" : "text-[12px]"}`}
+        className={`mt-1 font-numeric font-normal tabular-nums text-muted ${size === "hero" ? "text-[16px]" : "text-[12px]"}`}
       >
         {usd ?? "—"}
       </span>
@@ -655,8 +656,8 @@ export function StatStrip({
           <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-subtle">
             {label}
           </span>
-          {/* Not `truncate`: a balance figure is two lines, and nowrap would clip the dollar. */}
-          <div className={`mt-1 min-w-0 overflow-hidden text-[18px] font-bold leading-none ${tones[tone]}`}>
+          {/* 14px keeps a ₿1,000,000,000 balance on one line in a phone's 2-column strip. */}
+          <div className={`mt-1 truncate text-[18px] font-bold max-[620px]:text-[14px] ${tones[tone]}`}>
             {value}
           </div>
           {detail && (

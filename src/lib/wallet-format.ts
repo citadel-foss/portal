@@ -2,13 +2,9 @@
 // classifies UTXOs/transactions exactly like the shipped app did.
 
 import { AlertCircle, CheckCircle2, CircleHelp, XCircle, type LucideIcon } from "lucide-react";
-import { useEffect, useState } from "react";
-import { getBtcPrice } from "../api/commands";
+import { useState } from "react";
 import type { SwapStatus } from "../api/types";
-import { SATS_PER_BTC, formatEnUsNumber } from "./balance-format";
 import { chainName, useConnectionStore } from "../store/connection";
-
-export { SATS_PER_BTC, formatBalanceSats, formatBalanceUsd } from "./balance-format";
 
 export function truncateMiddle(value: string, start = 12, end = 8): string {
   if (!value || value.length <= start + end + 1) return value;
@@ -109,6 +105,8 @@ export function explorerAddressUrl(address: string): string | null {
 
 export type Unit = "sats" | "btc" | "usd";
 
+export const SATS_PER_BTC = 100_000_000;
+
 function trimTrailingZeros(s: string): string {
   return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
 }
@@ -158,44 +156,16 @@ export function formatUnitAmount(sats: number, unit: Unit, btcPriceUsd: number |
   return btcPriceUsd ? `≈ $${(btc * btcPriceUsd).toFixed(2)}` : null;
 }
 
-/** See `formatEnUsNumber` — every printed number goes through that grouping. */
+/**
+ * Digit grouping for every number the app prints, pinned rather than taken from the host.
+ *
+ * A bare `toLocaleString()` follows the machine's locale, and on an en-IN one that is lakh
+ * grouping: 212,238 sats renders as "2,12,238". Bitcoin amounts are read in thousands the
+ * world over, and a swap figure that regroups itself depending on whose laptop it is on is
+ * unreadable rather than localized. Dates are not covered by this — those stay local.
+ */
 export function formatNumber(value: number, maximumFractionDigits = 0): string {
-  return formatEnUsNumber(value, maximumFractionDigits);
-}
-
-let btcPriceInflight: Promise<number | null> | null = null;
-
-/** One BTC/USD quote shared by every balance figure mounted together.
- *  A failed fetch resolves to null and is not remembered, so the next mount can try again. */
-export function loadBtcPriceUsd(): Promise<number | null> {
-  if (!btcPriceInflight) {
-    // `getBtcPrice()` rejects through the host, and the desktop host throws synchronously when
-    // this bundle is opened outside the app window. Starting from a resolved promise turns
-    // that throw into a rejection the catch below can turn into "no quote".
-    btcPriceInflight = Promise.resolve()
-      .then(() => getBtcPrice())
-      .then((quote) => (Number.isFinite(quote.usd) && quote.usd > 0 ? quote.usd : null))
-      .catch(() => null)
-      .finally(() => {
-        btcPriceInflight = null;
-      });
-  }
-  return btcPriceInflight;
-}
-
-/** The quote behind a balance's dollar line. Starts null and fills in when the request settles. */
-export function useBtcPriceUsd(): number | null {
-  const [usd, setUsd] = useState<number | null>(null);
-  useEffect(() => {
-    let live = true;
-    void loadBtcPriceUsd().then((value) => {
-      if (live) setUsd(value);
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
-  return usd;
+  return value.toLocaleString("en-US", { maximumFractionDigits });
 }
 
 // Fee rates come back as raw floats from a live market API (e.g. 1.0070000000000001) — round for display.

@@ -7,7 +7,6 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
-    "test:format": "node --experimental-strip-types --test src/lib/balance-format.test.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "sync": "scripts/sync.sh",

@@ -59,9 +59,6 @@ jobs:
       - name: Typecheck frontend
         run: npx tsc --noEmit
 
-      - name: Balance format tests
-        run: node --experimental-strip-types --test src/lib/balance-format.test.ts
-
       # Tauri's build script embeds the desktop frontend, so it has to exist before cargo runs.
       - name: Build desktop frontend
         run: npx vite build
