@@ -12,6 +12,7 @@ import {
   swapStatusPresentation,
 } from "../../lib/wallet-format";
 import { useToastStore } from "../../store/toast";
+import { swapReportLink } from "../../components/ui/report";
 
 type StatusFilter = "all" | "success" | "failed";
 type SortField = "time" | "amount";
@@ -200,14 +201,7 @@ export function SwapReportsPage() {
                   "grid grid-cols-[auto_1.3fr_0.9fr_0.7fr_0.9fr_0.6fr_0.9fr] items-center gap-3 px-4.5 py-3 text-left outline-none transition-colors duration-200";
                 const interactive =
                   "cursor-pointer hover:bg-[var(--color-hover)] focus-visible:shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--color-primary)_45%,transparent)]";
-                // A tracker-only row has no report of its own, but it is a recovery — so it opens
-                // the recovery for that swap instead, finished ones included. Only a swap that
-                // never got as far as a recovery has nothing behind it at all.
-                const target = r.reported
-                  ? `/swap/reports/${encodeURIComponent(r.swapId)}`
-                  : r.status === "interrupted" || r.status === "recovered"
-                    ? `/swap/recovery/${encodeURIComponent(r.swapId)}`
-                    : null;
+                const target = swapReportLink(r);
                 return target ? (
                   <Link key={r.swapId} to={target} className={`${grid} ${interactive}`}>
                     {cells}

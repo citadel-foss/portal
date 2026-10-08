@@ -1,5 +1,5 @@
 import { AlertTriangle, ChevronRight, LifeBuoy, RefreshCw, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getRecoveryStatus, listRecoveries } from "../../api/commands";
 import type { RecoveryStatus, RecoverySummary } from "../../api/types";
@@ -42,20 +42,42 @@ export function RecoveriesPage() {
   const [pool, setPool] = useState<RecoveryStatus | null>(null);
 
   const [failed, setFailed] = useState(false);
+  const [poolFailed, setPoolFailed] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const [list, status] = await Promise.all([listRecoveries(), getRecoveryStatus()]);
-      setRows(list);
-      setPool(status);
-      setFailed(false);
-    } catch (e) {
-      // Deliberately keeps whatever was last read. Emptying the list here would render
-      // "Nothing to recover" over a recovery that is still running, off nothing more than a
-      // failed disk read — the one claim this page must never make wrongly.
-      setFailed(true);
-      pushFailure(e, "Failed to load recoveries.");
-    }
+  // Two reads that land on their own: the list is a file read, the status asks the chain about
+  // every waiting contract, so the list never waits on the chain.
+  // Numbered, so a slow older read can't overwrite a newer one.
+  const listRequest = useRef(0);
+  const poolRequest = useRef(0);
+  const load = useCallback(() => {
+    const list = ++listRequest.current;
+    const status = ++poolRequest.current;
+    void listRecoveries()
+      .then((next) => {
+        if (list !== listRequest.current) return;
+        setRows(next);
+        setFailed(false);
+      })
+      .catch((e) => {
+        if (list !== listRequest.current) return;
+        // Deliberately keeps whatever was last read. Emptying the list here would render
+        // "Nothing to recover" over a recovery that is still running, off nothing more than a
+        // failed disk read — the one claim this page must never make wrongly.
+        setFailed(true);
+        pushFailure(e, "Failed to load recoveries.");
+      });
+    void getRecoveryStatus()
+      .then((next) => {
+        if (status !== poolRequest.current) return;
+        setPool(next);
+        setPoolFailed(false);
+      })
+      .catch(() => {
+        if (status !== poolRequest.current) return;
+        // Old figures would read as current; the failure marker replaces them.
+        setPool(null);
+        setPoolFailed(true);
+      });
   }, [pushFailure]);
 
   useEffect(() => {
@@ -71,7 +93,7 @@ export function RecoveriesPage() {
         <div>
           <h1 className="font-header text-[26px] font-bold text-foreground">Recovery</h1>
           <p className="mt-1 text-[13.5px] text-muted">
-            Swaps that stopped with funds still in a contract.
+            Swaps that stopped part-way, and how their funds came back.
           </p>
         </div>
       </div>
@@ -106,14 +128,18 @@ export function RecoveriesPage() {
               { label: "Swaps recovering", value: String(rows.filter((r) => r.active).length) },
               {
                 label: "Still in contracts",
-                value: <SatsAmount sats={pool?.lockedSats ?? 0} />,
+                // Until the chain answers, "0" would claim nothing is locked.
+                value: pool ? <SatsAmount sats={pool.lockedSats} /> : poolFailed ? "—" : "…",
                 tone: (pool?.lockedSats ?? 0) > 0 ? "warning" : "foreground",
               },
-              { label: "Contracts waiting", value: String(pool?.pending.length ?? 0) },
+              {
+                label: "Contracts waiting",
+                value: pool ? String(pool.pending.length) : poolFailed ? "—" : "…",
+              },
             ]}
           />
 
-          {rows.length > 1 && (
+          {rows.filter((r) => r.active).length > 1 && (
             <Notice tone="primary" className="mt-4">
               These are reclaimed together, not one at a time — the protocol runs a single recovery
               over every stopped swap at once. Opening one shows what it was doing when it stopped.
@@ -147,8 +173,14 @@ export function RecoveriesPage() {
                   <span>
                     <StatusChip tone={row.active ? "warning" : "success"}>
                       {row.active
-                        ? recoveryLabel(row.phase, pool?.recoveryRunning)
-                        : `Finished · ${row.resolvedCount} reclaimed`}
+                        ? pool || poolFailed
+                          ? recoveryLabel(row.phase, pool?.recoveryRunning)
+                          : "Checking…"
+                        : `Finished · ${
+                            row.recoveryTypes.length
+                              ? row.recoveryTypes.join(" + ")
+                              : `${row.resolvedCount} reclaimed`
+                          }`}
                     </StatusChip>
                   </span>
                   <span className="font-numeric">{row.routerCount}</span>

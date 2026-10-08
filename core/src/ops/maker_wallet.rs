@@ -158,21 +158,23 @@ pub async fn get_maker_transactions(
 }
 
 /// A file beside the router's wallet, named after it: `<data dir>/wallets/<wallet>_<suffix>`.
-fn maker_wallet_file(state: &Arc<AppState>, router_id: &str, suffix: &str) -> Result<PathBuf, AppError> {
+fn maker_wallet_file(state: &Arc<AppState>, router_id: &str, name: &str) -> Result<PathBuf, AppError> {
     let makers = state.makers.lock()?;
     let settings = &makers
         .get(router_id)
         .ok_or_else(|| AppError::maker_not_found(router_id))?
         .settings;
-    Ok(crate::ops::maker_settings::maker_data_dir(settings)?
-        .join("wallets")
-        .join(format!("{}_{suffix}", settings.wallet_name)))
+    crate::storage::sidecar_path(
+        &crate::ops::maker_settings::maker_data_dir(settings)?,
+        &settings.wallet_name,
+        name,
+    )
 }
 
 
 /// Re-offers the last address issued for this type until it is paid, as the taker wallet does,
 /// so the receive panel can fetch one on every visit without burning a gap-limit index each time.
-/// The cache sits beside the router's wallet file, where the taker's sits beside its own.
+/// The cache sits in the router's data dir, as the taker's sits in its own.
 pub async fn get_maker_new_address(
     state: &Arc<AppState>,
     router_id: String,

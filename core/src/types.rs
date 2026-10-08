@@ -688,6 +688,9 @@ pub struct RecoverySummary {
     pub resolved_count: usize,
     pub active: bool,
     pub updated_at: u64,
+    /// How the funds came back, from the crate's recovery reports: `hashlock`, `timelock`.
+    pub recovery_types: Vec<String>,
+    pub recovery_txids: Vec<String>,
 }
 
 /// Read entirely from `swap_tracker.cbor` plus the cached wallet handle — never through the taker

@@ -8,8 +8,6 @@ import {
   ArrowUp,
   ArrowUpDown,
   CheckCircle2,
-  FileText,
-  LifeBuoy,
   RefreshCw,
   ShieldAlert,
   XCircle,
@@ -65,13 +63,11 @@ import { Checklist } from "../../components/ui/Checklist";
 import { SwapCircuit } from "./circuit/SwapCircuit";
 import { NowPanel, Vitals } from "./circuit/panels";
 import { useSwapCircuit } from "./circuit/useSwapCircuit";
-import {
-  estimateRouterFee,
-  estimateRouteRouterFees,
-  routerName,
-} from "../../lib/market-format";
+import { RecoveryCard, SwapReportsCard } from "./SwapSideCards";
+import { RouteBuilder } from "./RouteBuilder";
+import { estimateRouterFee, estimateRouteRouterFees } from "../../lib/market-format";
 import { classifySpendType, formatDuration, formatNumber, formatUnitAmount, SATS_PER_BTC, type Unit, useUnitAmount } from "../../lib/wallet-format";
-import { RECOVERY_UI_ENABLED, useRecoveryStore } from "../../store/recovery";
+import { RECOVERY_UI_ENABLED } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
 
@@ -208,11 +204,9 @@ export function SwapPage() {
   const [preparation, setPreparation] = useState<SwapPreparation | null>(null);
   const [reviewExpired, setReviewExpired] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [swapLogs, setSwapLogs] = useState<LogLine[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
 
-  const recoveryActive = useRecoveryStore((s) => s.active);
 
   const routerNames = useMemo(
     () =>
@@ -511,14 +505,6 @@ export function SwapPage() {
     setSelectedRouters([]);
   }
 
-  function toggleRouter(address: string) {
-    setSelectedRouters((prev) =>
-      prev.includes(address)
-        ? prev.filter((a) => a !== address)
-        : [...prev, address],
-    );
-  }
-
   // Nothing ticked in the advanced panel means automatic — no separate mode flag to keep in sync.
   const manualCoins = selectedOutpoints.length > 0;
   const manualRouters = selectedRouters.length > 0;
@@ -781,11 +767,6 @@ export function SwapPage() {
           : fundingEstimate
             ? null
             : "";
-
-  // Pinned routers already show up in the Routers section; a UTXO pick has no other home.
-  const advancedSummary = manualCoins
-    ? `${selectedOutpoints.length} UTXO${selectedOutpoints.length === 1 ? "" : "s"} selected`
-    : null;
 
   // Same rule as Send: an unconfirmed earlier payment could be paid twice by starting more
   // on-chain work.
@@ -1262,27 +1243,6 @@ export function SwapPage() {
             Route a private Bitcoin swap through multiple routers over Tor.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {RECOVERY_UI_ENABLED && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => navigate("/swap/recovery")}
-              className={recoveryActive ? "border-warning/50 text-warning" : ""}
-            >
-              <LifeBuoy size={14} strokeWidth={2} />
-              Recovery
-            </Button>
-          )}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => navigate("/swap/reports")}
-          >
-            <FileText size={14} strokeWidth={2} />
-            Swap Reports
-          </Button>
-        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
@@ -1451,7 +1411,10 @@ export function SwapPage() {
           </div>
 
           <div className="flex flex-col gap-2 border-t border-line pt-5">
-            <Disclosure label="Advanced options" onOpenChange={setAdvancedOpen}>
+            {/* Always shown: these choices move the fee a lot, so they can't hide behind a toggle. */}
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+              Advanced options
+            </span>
               <div className="flex flex-col gap-5 pt-1">
                 <div className="flex flex-col gap-2.5">
                   <div className="flex items-center justify-between">
@@ -1517,50 +1480,33 @@ export function SwapPage() {
                     </div>
                   </div>
                   <p className="text-[11.5px] text-subtle">
-                    Tick routers to route through them specifically, or leave
-                    them all unticked to auto-select.
+                    Click or drag routers into the route, drag to reorder. Leave it empty to
+                    auto-select.
                   </p>
-                  <div className="flex max-h-45 flex-col gap-1.5 overflow-y-auto">
-                    {compatibleRouters.length === 0 && (
+                  <RouteBuilder
+                    routers={orderedRouters}
+                    selected={selectedRouters}
+                    onChange={setSelectedRouters}
+                    receiver={destination === "address" ? paymentAddress.trim() || undefined : undefined}
+                    emptyMessage={
                       <p className="text-[11.5px] text-subtle">
                         No compatible {protocol} routers in the offerbook.
                       </p>
+                    }
+                    rowMeta={(m) => (
+                      <span className="flex flex-none flex-col items-end gap-0.5 font-mono">
+                        <span className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
+                          <SatsAmount sats={m.offer!.maxSize} />
+                          <span className="font-normal text-subtle">max</span>
+                        </span>
+                        <span className="text-[10px] text-subtle">
+                          {amountSats > 0
+                            ? `≈ ${formatNumber(firstHopFee(m))} sats fee as first router`
+                            : "Enter amount to see fee"}
+                        </span>
+                      </span>
                     )}
-                    {orderedRouters.map((m) => (
-                      <label
-                        key={m.address}
-                        className="flex cursor-pointer items-center justify-between gap-3 rounded-control border border-line bg-surface-raised px-3 py-2"
-                      >
-                        <span className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-muted">
-                          <input
-                            type="checkbox"
-                            checked={selectedRouters.includes(m.address)}
-                            onChange={() => toggleRouter(m.address)}
-                            className="accent-primary"
-                          />
-                          {m.offer?.name ? (
-                            <span className="flex min-w-0 flex-col leading-[1.35]">
-                              <span className="truncate text-[12px] font-semibold text-foreground">{m.offer.name}</span>
-                              <span className="truncate font-mono text-[10.5px] text-subtle">{routerName(m.address)}</span>
-                            </span>
-                          ) : (
-                            <span className="font-mono text-[11px] leading-[1.45] text-muted">{routerName(m.address)}</span>
-                          )}
-                        </span>
-                        <span className="flex flex-none flex-col items-end gap-0.5 font-mono">
-                          <span className="flex items-center gap-1 text-[11px] font-semibold text-foreground">
-                            <SatsAmount sats={m.offer!.maxSize} />
-                            <span className="font-normal text-subtle">max</span>
-                          </span>
-                          <span className="text-[10px] text-subtle">
-                            {amountSats > 0
-                              ? `≈ ${formatNumber(firstHopFee(m))} sats fee as first router`
-                              : "Enter amount to see fee"}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+                  />
                 </div>
 
                 <div className="flex flex-col gap-2.5 border-t border-line pt-4">
@@ -1656,13 +1602,6 @@ export function SwapPage() {
                   )}
                 </div>
               </div>
-            </Disclosure>
-            {/* Advanced picks survive collapsing the panel, so they'd otherwise be invisible. */}
-            {!advancedOpen && advancedSummary && (
-              <p className="px-1 text-[11.5px] text-subtle">
-                {advancedSummary}
-              </p>
-            )}
           </div>
 
           {warnings.length > 0 && (
@@ -1837,6 +1776,9 @@ export function SwapPage() {
               </AmountTile>
             )}
           </Card>
+
+          <SwapReportsCard />
+          {RECOVERY_UI_ENABLED && <RecoveryCard />}
         </div>
       </div>
     </div>

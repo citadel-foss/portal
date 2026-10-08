@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 
 use openswap::bitcoin::{Address, Txid};
 use openswap::taker::swap_tracker::{RecoveryPhase, SwapPhase, SwapRecord};
-use openswap::wallet::{AnyBlockchain, Blockchain, SwapStatus, TakerReport, UTXOSpendInfo};
+use openswap::wallet::{
+    AnyBlockchain, Blockchain, RecoveryReport, SwapStatus, TakerReport, UTXOSpendInfo,
+};
 
 use crate::ops::chain_backend;
 use crate::error::{AppError, ErrorCode};
@@ -173,7 +175,7 @@ fn backfill_report_utxos(value: &mut serde_json::Value) {
 /// report file entry either, so those swaps would be invisible in both places. The container is
 /// one field, and `SwapRecord` is public and `Deserialize`, so this reads the same bytes the
 /// crate wrote. A shape change upstream degrades to "report file only" rather than an error.
-fn tracker_records(data_dir: &Path) -> Vec<SwapRecord> {
+pub(crate) fn tracker_records(data_dir: &Path) -> Vec<SwapRecord> {
     #[derive(serde::Deserialize)]
     struct TrackerFile {
         swaps: std::collections::HashMap<String, SwapRecord>,
@@ -189,6 +191,32 @@ fn tracker_records(data_dir: &Path) -> Vec<SwapRecord> {
             Vec::new()
         }
     }
+}
+
+/// Every recovery the crate reported for this wallet. Before #43 it wrote some to its fallback
+/// file, `taker-wallet_swap_report.json`, whenever Portal's own files sat in `wallets/`, so
+/// that file is read too.
+pub(crate) fn recovery_reports(data_dir: &Path, wallet_name: &str) -> Vec<RecoveryReport> {
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        recovery: Vec<RecoveryReport>,
+    }
+    let mut paths = vec![report_path(data_dir, wallet_name)];
+    let stray = report_path(data_dir, "taker-wallet");
+    if !paths.contains(&stray) {
+        paths.push(stray);
+    }
+    paths
+        .iter()
+        .filter_map(|path| {
+            let bytes = std::fs::read(path).ok()?;
+            serde_json::from_slice::<File>(&bytes)
+                .map_err(|e| log::warn!("could not read {}: {e}", path.display()))
+                .ok()
+        })
+        .flat_map(|file| file.recovery)
+        .collect()
 }
 
 pub async fn list_swap_reports(
@@ -534,6 +562,27 @@ mod tests {
         assert_eq!(file.taker[0].outgoing_amount, 155190);
         // Absent on disk, so the only honest reading is that none were recorded.
         assert!(file.taker[0].outgoing_utxos.is_empty());
+    }
+
+    /// Recoveries written before #43 sit in the crate's fallback file; they still count.
+    #[test]
+    fn recoveries_are_read_from_the_wallet_file_and_the_fallback_one() {
+        let dir = std::env::temp_dir().join(format!("portal-recoveries-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("wallets")).unwrap();
+        let entry = |id: &str, kind: &str| {
+            serde_json::json!({"recovery": [{
+                "swap_id": id, "role": "Taker", "node": null, "recovery_type": kind,
+                "recovery_txids": ["aa"], "network": "signet", "timestamp": 1
+            }]})
+            .to_string()
+        };
+        std::fs::write(report_path(&dir, "sinchan"), entry("own", "hashlock")).unwrap();
+        std::fs::write(report_path(&dir, "taker-wallet"), entry("stray", "timelock")).unwrap();
+        let mut ids: Vec<_> = recovery_reports(&dir, "sinchan").into_iter().map(|r| r.swap_id).collect();
+        ids.sort();
+        assert_eq!(ids, ["own", "stray"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
