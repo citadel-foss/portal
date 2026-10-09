@@ -221,21 +221,32 @@ export function Modal({ title, children, footer, onClose, wide = false }: ModalP
   );
 }
 
+// JetBrains Mono's ₿ strokes overshoot the digits' cap height, so at 1em it reads larger than them.
+const SATS_SIGN = <span className="text-[0.85em]">₿</span>;
+
+/** ₿ prefixes a sats count here, not BTC. */
 export function SatsAmount({
   sats,
   className = "",
-  glyphScale = 0.72,
+  decimals = 0,
 }: {
   sats: number;
   className?: string;
-  glyphScale?: number;
+  decimals?: number;
 }) {
+  const magnitude = Math.abs(sats);
+  const amount = formatNumber(decimals ? magnitude : Math.round(magnitude), decimals);
+  const minus = sats < 0 ? "−" : "";
   return (
     <span
-      className={`inline-flex items-baseline gap-1.5 font-numeric tabular-nums ${className}`}
+      className={`inline-flex items-baseline whitespace-nowrap font-numeric tabular-nums ${className}`}
     >
-      <span>{formatNumber(Math.round(sats))}</span>
-      <SatsGlyph className="text-subtle" scale={glyphScale} />
+      <span className="sr-only">{`${sats < 0 ? "minus " : ""}${amount} satoshis`}</span>
+      <span aria-hidden="true">
+        {minus}
+        {SATS_SIGN}
+        {amount}
+      </span>
     </span>
   );
 }
@@ -277,7 +288,8 @@ export function BalanceAmount({
     <span className={`inline-flex max-w-full flex-col items-start leading-none whitespace-normal wrap-anywhere ${className}`}>
       <span className="sr-only">{`${formatNumber(sats)} satoshis${usd ? `, ${usd}` : ""}`}</span>
       <span aria-hidden="true" className="font-numeric tabular-nums">
-        ₿{formatNumber(sats)}
+        {SATS_SIGN}
+        {formatNumber(sats)}
       </span>
       <span
         aria-hidden="true"
@@ -285,30 +297,6 @@ export function BalanceAmount({
       >
         {usd ?? "—"}
       </span>
-    </span>
-  );
-}
-
-/** Stylized sats glyph (a bar with 3 ticks), mirroring the old app's .cs-sats-symbol. */
-export function SatsGlyph({
-  className = "",
-  scale = 0.72,
-}: {
-  className?: string;
-  scale?: number;
-}) {
-  return (
-    <span
-      role="img"
-      aria-label="satoshis"
-      className={`relative inline-block h-[1em] w-[0.72em] align-middle ${className}`}
-      style={{ fontSize: `${scale}em` }}
-    >
-      <span className="absolute left-1/2 top-0 h-[0.14em] w-[0.14em] -translate-x-1/2 rounded-[1px] bg-current" />
-      <span className="absolute left-1/2 bottom-0 h-[0.14em] w-[0.14em] -translate-x-1/2 rounded-[1px] bg-current" />
-      <span className="absolute left-[0.04em] right-[0.04em] top-[0.245em] h-[0.1em] rounded-[1px] bg-current" />
-      <span className="absolute left-[0.04em] right-[0.04em] top-[0.45em] h-[0.1em] rounded-[1px] bg-current" />
-      <span className="absolute left-[0.04em] right-[0.04em] top-[0.655em] h-[0.1em] rounded-[1px] bg-current" />
     </span>
   );
 }

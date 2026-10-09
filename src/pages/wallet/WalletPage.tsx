@@ -394,7 +394,7 @@ export function WalletPage() {
                         {formatTimestamp(send.createdAt)}
                       </span>
                     </span>
-                    <span className="font-numeric text-[12.5px] text-danger">
+                    <span className="whitespace-nowrap font-numeric text-[12.5px] text-danger">
                       −<SatsAmount sats={send.amountSats} />
                     </span>
                   </span>

@@ -364,7 +364,7 @@ function ReportList({
               <span className="rounded-pill border border-line px-2 py-1 font-mono text-[9px] uppercase text-muted">
                 {report.status}
               </span>
-              <strong className="font-mono text-[12px] text-success">
+              <strong className="whitespace-nowrap font-mono text-[12px] text-success">
                 +<SatsAmount sats={report.feeEarnedSats} />
               </strong>
             </Link>
