@@ -2,6 +2,7 @@ import { ArrowDownLeft, ArrowDownToLine, ArrowUpRight, Clock } from "lucide-reac
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { openExternal } from "../../platform";
 import {
+  BalanceAmount,
   Card,
   ExternalLinkButton,
   Identifier,
@@ -264,13 +265,12 @@ export function WalletPage() {
         items={[
           {
             label: "Total balance",
-            value: <SatsAmount sats={totalBalance} />,
-            detail: `≈ ${(totalBalance / 1e8).toFixed(8)} BTC`,
+            value: <BalanceAmount sats={totalBalance} />,
             tone: "primary",
           },
-          { label: "Swaps", value: <SatsAmount sats={balances?.swap ?? 0} />, detail: "received by swap txs" },
-          { label: "Regular", value: <SatsAmount sats={balances?.regular ?? 0} />, detail: "received by regular txs" },
-          { label: "Contracts", value: <SatsAmount sats={balances?.contract ?? 0} />, detail: "held in a swap contract" },
+          { label: "Swaps", value: <BalanceAmount sats={balances?.swap ?? 0} />, detail: "received by swap txs" },
+          { label: "Regular", value: <BalanceAmount sats={balances?.regular ?? 0} />, detail: "received by regular txs" },
+          { label: "Contracts", value: <BalanceAmount sats={balances?.contract ?? 0} />, detail: "held in a swap contract" },
         ]}
       />
 
@@ -394,7 +394,7 @@ export function WalletPage() {
                         {formatTimestamp(send.createdAt)}
                       </span>
                     </span>
-                    <span className="font-numeric text-[12.5px] text-danger">
+                    <span className="whitespace-nowrap font-numeric text-[12.5px] text-danger">
                       −<SatsAmount sats={send.amountSats} />
                     </span>
                   </span>

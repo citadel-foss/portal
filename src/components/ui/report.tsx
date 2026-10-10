@@ -257,7 +257,6 @@ export function ReportHero({ label, amountSats, secondary, tags, durationSeconds
       <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">{label}</span>
       <SatsAmount
         sats={amountSats}
-        glyphScale={0.5}
         className="my-4 text-[clamp(38px,6vw,58px)] leading-none text-foreground"
       />
       <p className="mb-6 font-mono text-[14px] text-muted">≈ {satsToBtc(amountSats)} BTC</p>

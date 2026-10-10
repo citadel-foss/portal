@@ -59,6 +59,7 @@ import type {
 import {
   AddressQr,
   BackButton,
+  BalanceAmount,
   Card,
   ExternalLinkButton,
   Notice,
@@ -133,7 +134,7 @@ function DataMetric({
         <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-subtle">{label}</span>
         <span className={`grid h-7 w-7 place-items-center rounded-control border border-line bg-surface/65 ${tone}`}>{icon}</span>
       </div>
-      <strong className={`mt-3 block font-mono text-[24px] tracking-tight ${tone}`}>
+      <strong className={`mt-3 block font-mono text-[24px] leading-none tracking-tight ${tone}`}>
         {value}
       </strong>
       <span className="mt-2 block text-[11px] text-muted">{detail}</span>
@@ -174,8 +175,8 @@ function OverviewPanel({
               <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">Total router balance</span>
               <span className="grid h-8 w-8 place-items-center rounded-control border border-primary/25 bg-primary/10 text-primary"><WalletCards size={15} /></span>
             </div>
-            <strong className="mt-4 block font-mono text-[38px] text-primary">
-              <SatsAmount sats={total} />
+            <strong className="mt-4 block text-[38px] font-bold leading-none text-primary">
+              <BalanceAmount sats={total} size="hero" />
             </strong>
             <p className="mt-2 text-[12px] text-muted">
               Regular + swap + contract + fidelity
@@ -185,34 +186,34 @@ function OverviewPanel({
                 [&>*]:bg-surface/75 [&>*]:p-3 [&>*:nth-child(odd)]:mr-px [&>*:nth-child(-n+2)]:mb-px"
             >
               <span className="text-[11px] text-muted">
-                Regular{" "}
-                <strong className="mt-1 block font-mono text-foreground">
-                  <SatsAmount sats={balances.regular} />
+                Regular
+                <strong className="mt-1 block text-[16px] font-semibold leading-none text-foreground">
+                  <BalanceAmount sats={balances.regular} />
                 </strong>
               </span>
               <span className="text-[11px] text-muted">
-                Swap{" "}
-                <strong className="mt-1 block font-mono text-success">
-                  <SatsAmount sats={balances.swap} />
+                Swap
+                <strong className="mt-1 block text-[16px] font-semibold leading-none text-success">
+                  <BalanceAmount sats={balances.swap} />
                 </strong>
               </span>
               <span className="text-[11px] text-muted">
-                Contract{" "}
-                <strong className="mt-1 block font-mono text-warning">
-                  <SatsAmount sats={balances.contract} />
+                Contract
+                <strong className="mt-1 block text-[16px] font-semibold leading-none text-warning">
+                  <BalanceAmount sats={balances.contract} />
                 </strong>
               </span>
               <span className="text-[11px] text-muted">
-                Fidelity{" "}
-                <strong className="mt-1 block font-mono text-warning">
-                  <SatsAmount sats={balances.fidelity} />
+                Fidelity
+                <strong className="mt-1 block text-[16px] font-semibold leading-none text-warning">
+                  <BalanceAmount sats={balances.fidelity} />
                 </strong>
               </span>
             </div>
           </Card>
           <DataMetric
             label="Spendable"
-            value={<SatsAmount sats={balances.spendable} />}
+            value={<BalanceAmount sats={balances.spendable} />}
             detail="Regular and swap funds available"
             icon={<WalletCards size={14} />}
             tone="text-primary"
@@ -233,7 +234,7 @@ function OverviewPanel({
           />
           <DataMetric
             label="Contract balance"
-            value={<SatsAmount sats={balances.contract} />}
+            value={<BalanceAmount sats={balances.contract} />}
             detail="Funds currently locked in contracts"
             icon={<LockKeyhole size={14} />}
             tone="text-warning"
@@ -363,7 +364,7 @@ function ReportList({
               <span className="rounded-pill border border-line px-2 py-1 font-mono text-[9px] uppercase text-muted">
                 {report.status}
               </span>
-              <strong className="font-mono text-[12px] text-success">
+              <strong className="whitespace-nowrap font-mono text-[12px] text-success">
                 +<SatsAmount sats={report.feeEarnedSats} />
               </strong>
             </Link>

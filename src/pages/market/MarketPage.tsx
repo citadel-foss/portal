@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getOffers, pollRouter, removeRouter, syncOfferbook } from "../../api/commands";
 import { isAppError } from "../../api/types";
 import type { Router } from "../../api/types";
-import { Card, IndeterminateBar, Modal, SatsAmount, SatsGlyph, StatStrip, Tooltip } from "../../components/ui/display";
+import { Card, IndeterminateBar, Modal, SatsAmount, StatStrip, Tooltip } from "../../components/ui/display";
 import { Button } from "../../components/ui/inputs";
 import { estimateRouterFee, routerName } from "../../lib/market-format";
 import { explorerTxUrl, formatNumber } from "../../lib/wallet-format";
@@ -173,12 +173,6 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
   // The crate rounds each router's whole fee up to a sat, never its parts.
   const chargedFee = estimate ? Math.ceil(estimate.totalFee) : 0;
   const totalPercent = estimate && amount > 0 ? (chargedFee / amount) * 100 : 0;
-  const fraction = (sats: number) => (
-    <span className="inline-flex items-baseline gap-1.5 font-numeric tabular-nums">
-      {formatNumber(sats, 2)}
-      <SatsGlyph className="text-subtle" />
-    </span>
-  );
 
   return (
     <Modal
@@ -250,13 +244,13 @@ function FeeCalculatorModal({ router, onClose }: { router: Router; onClose: () =
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 border-b border-dashed border-white/10 py-2">
           <span className="font-mono text-[10px] text-subtle">Liquidity Fee</span>
           <strong className="font-mono text-[14px] font-extrabold text-foreground">
-            {fraction(estimate?.liquidityFee ?? 0)}
+            <SatsAmount sats={estimate?.liquidityFee ?? 0} decimals={2} />
           </strong>
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 border-b border-dashed border-white/10 py-2">
           <span className="font-mono text-[10px] text-subtle">Time Fee</span>
           <strong className="font-mono text-[14px] font-extrabold text-foreground">
-            {fraction(estimate?.timeFee ?? 0)}
+            <SatsAmount sats={estimate?.timeFee ?? 0} decimals={2} />
           </strong>
         </div>
         <div className="grid grid-cols-[1fr_auto] gap-x-3.5 gap-y-1 pt-3">

@@ -16,8 +16,9 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { HTMLAttributes, ReactNode } from "react";
+import { getBtcPrice } from "../../api/commands";
 import type { LogLine } from "../../api/types";
-import { explorerAddressUrl, explorerTxUrl, formatNumber, LOG_LEVEL_TONE, logLevel } from "../../lib/wallet-format";
+import { explorerAddressUrl, explorerTxUrl, formatNumber, LOG_LEVEL_TONE, logLevel, SATS_PER_BTC } from "../../lib/wallet-format";
 import { copyText } from "../../lib/clipboard";
 import { walletIdentity } from "../../lib/wallet-identity";
 
@@ -220,45 +221,82 @@ export function Modal({ title, children, footer, onClose, wide = false }: ModalP
   );
 }
 
+// JetBrains Mono's ₿ strokes overshoot the digits' cap height, so at 1em it reads larger than them.
+const SATS_SIGN = <span className="text-[0.85em]">₿</span>;
+
+/** ₿ prefixes a sats count here, not BTC. */
 export function SatsAmount({
   sats,
   className = "",
-  glyphScale = 0.72,
+  decimals = 0,
 }: {
   sats: number;
   className?: string;
-  glyphScale?: number;
+  decimals?: number;
 }) {
+  const magnitude = Math.abs(sats);
+  const amount = formatNumber(decimals ? magnitude : Math.round(magnitude), decimals);
+  const minus = sats < 0 ? "−" : "";
   return (
     <span
-      className={`inline-flex items-baseline gap-1.5 font-numeric tabular-nums ${className}`}
+      className={`inline-flex items-baseline whitespace-nowrap font-numeric tabular-nums ${className}`}
     >
-      <span>{formatNumber(Math.round(sats))}</span>
-      <SatsGlyph className="text-subtle" scale={glyphScale} />
+      <span className="sr-only">{`${sats < 0 ? "minus " : ""}${amount} satoshis`}</span>
+      <span aria-hidden="true">
+        {minus}
+        {SATS_SIGN}
+        {amount}
+      </span>
     </span>
   );
 }
 
-/** Stylized sats glyph (a bar with 3 ticks), mirroring the old app's .cs-sats-symbol. */
-export function SatsGlyph({
+// Shared so the balance figures mounted together make one price request.
+let btcPriceInflight: Promise<number | null> | null = null;
+
+/** ₿ prefixes a sats count here, not BTC. Wraps rather than clips when its cell is too narrow. */
+export function BalanceAmount({
+  sats,
   className = "",
-  scale = 0.72,
+  size = "default",
 }: {
+  sats: number;
   className?: string;
-  scale?: number;
+  /** `hero` is the page's single large figure, where the dollar line needs to stay in proportion. */
+  size?: "default" | "hero";
 }) {
+  const [btcPriceUsd, setBtcPriceUsd] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    btcPriceInflight ??= getBtcPrice()
+      .then((quote) => quote.usd, () => null)
+      .finally(() => {
+        btcPriceInflight = null;
+      });
+    void btcPriceInflight.then((price) => {
+      if (live) setBtcPriceUsd(price);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const usd =
+    btcPriceUsd === null
+      ? null
+      : ((sats / SATS_PER_BTC) * btcPriceUsd).toLocaleString("en-US", { style: "currency", currency: "USD" });
   return (
-    <span
-      role="img"
-      aria-label="satoshis"
-      className={`relative inline-block h-[1em] w-[0.72em] align-middle ${className}`}
-      style={{ fontSize: `${scale}em` }}
-    >
-      <span className="absolute left-1/2 top-0 h-[0.14em] w-[0.14em] -translate-x-1/2 rounded-[1px] bg-current" />
-      <span className="absolute left-1/2 bottom-0 h-[0.14em] w-[0.14em] -translate-x-1/2 rounded-[1px] bg-current" />
-      <span className="absolute left-[0.04em] right-[0.04em] top-[0.245em] h-[0.1em] rounded-[1px] bg-current" />
-      <span className="absolute left-[0.04em] right-[0.04em] top-[0.45em] h-[0.1em] rounded-[1px] bg-current" />
-      <span className="absolute left-[0.04em] right-[0.04em] top-[0.655em] h-[0.1em] rounded-[1px] bg-current" />
+    <span className={`inline-flex max-w-full flex-col items-start leading-none whitespace-normal wrap-anywhere ${className}`}>
+      <span className="sr-only">{`${formatNumber(sats)} satoshis${usd ? `, ${usd}` : ""}`}</span>
+      <span aria-hidden="true" className="font-numeric tabular-nums">
+        {SATS_SIGN}
+        {formatNumber(sats)}
+      </span>
+      <span
+        aria-hidden="true"
+        className={`mt-1 font-numeric font-normal tabular-nums text-muted ${size === "hero" ? "text-[16px]" : "text-[12px]"}`}
+      >
+        {usd ?? "—"}
+      </span>
     </span>
   );
 }
@@ -606,7 +644,8 @@ export function StatStrip({
           <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-subtle">
             {label}
           </span>
-          <div className={`mt-1 truncate text-[18px] font-bold ${tones[tone]}`}>
+          {/* 14px keeps a ₿1,000,000,000 balance on one line in a phone's 2-column strip. */}
+          <div className={`mt-1 truncate text-[18px] font-bold max-[620px]:text-[14px] ${tones[tone]}`}>
             {value}
           </div>
           {detail && (

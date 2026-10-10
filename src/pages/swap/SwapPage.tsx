@@ -50,6 +50,7 @@ import {
   Identifier,
   LogViewer,
   Notice,
+  BalanceAmount,
   SatsAmount,
 } from "../../components/ui/display";
 import {
@@ -66,7 +67,7 @@ import { useSwapCircuit } from "./circuit/useSwapCircuit";
 import { RecoveryCard, SwapReportsCard } from "./SwapSideCards";
 import { RouteBuilder } from "./RouteBuilder";
 import { estimateRouterFee, estimateRouteRouterFees } from "../../lib/market-format";
-import { classifySpendType, formatDuration, formatNumber, formatUnitAmount, SATS_PER_BTC, type Unit, useUnitAmount } from "../../lib/wallet-format";
+import { classifySpendType, formatDuration, formatNumber, formatUnitAmount, type Unit, useUnitAmount } from "../../lib/wallet-format";
 import { RECOVERY_UI_ENABLED } from "../../store/recovery";
 import { useToastStore } from "../../store/toast";
 import { useWalletCacheStore } from "../../store/wallet-cache";
@@ -1639,16 +1640,15 @@ export function SwapPage() {
               Swappable Balance
             </span>
             <div className="mt-1.5">
-              <SatsAmount
-                sats={liquidity?.maxSwappable ?? 0}
-                className="text-[26px] font-bold text-primary"
-              />
+              {liquidity ? (
+                <BalanceAmount
+                  sats={liquidity.maxSwappable}
+                  className="text-[26px] font-bold text-primary"
+                />
+              ) : (
+                <span className="text-[26px] font-bold text-primary">…</span>
+              )}
             </div>
-            <p className="mt-1 text-[12px] text-muted">
-              {liquidity
-                ? `${(liquidity.maxSwappable / SATS_PER_BTC).toFixed(8)} BTC`
-                : "…"}
-            </p>
           </Card>
 
           <Card className="flex flex-col gap-3 border-line-strong p-5">
