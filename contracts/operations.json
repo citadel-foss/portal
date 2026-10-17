@@ -750,6 +750,24 @@
       "note": "The supervisor owns service termination; web UI offers logout, not daemon quit."
     },
     {
+      "name": "check_for_update",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Compares this build's counter with the rolling release's build.json. The server is updated by its host, not from the UI."
+    },
+    {
+      "name": "install_update",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Replaces the macOS app or AppImage with the newer build and restarts into it; refused while a swap, recovery or router runs."
+    },
+    {
       "name": "list_taker_blocklist",
       "executionClass": "read",
       "desktop": true,

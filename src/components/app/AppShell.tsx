@@ -16,6 +16,7 @@ import { getSwapProgress } from "../../api/commands";
 import { formatDuration } from "../../lib/wallet-format";
 import { IconButton, SatsAmount, Tooltip } from "../ui/display";
 import { SignOut } from "./SignOut";
+import { UpdateButton } from "./UpdateButton";
 
 /** Signet and testnet coins are worthless; mainnet coins are not. Which chain you are on is the
  *  most consequential fact about the session, so it leads and it is coloured. */
@@ -289,6 +290,7 @@ function TopNav({
           sync button is on both sides: on every wallet page it syncs the open wallet, and on a
           router page it is shown only while a running workspace has registered its router. */}
       <div className="flex items-center justify-self-end gap-2">
+        <UpdateButton />
         <ConnectionChip />
         {(!routerMode || onRefresh) && (
           <IconButton

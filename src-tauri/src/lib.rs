@@ -5,7 +5,7 @@ mod native;
 
 use commands::{
     auth, blocklist, chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet,
-    market, setup, shutdown, taker_reports, taker_swap, taker_wallet,
+    market, setup, shutdown, taker_reports, taker_swap, taker_wallet, update,
 };
 use std::sync::Arc;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -20,6 +20,11 @@ use portal_core::state::AppState;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
+
+/// This build's place in the release's build counter, e.g. `0.1.0-beta.35+20261016`.
+pub(crate) fn build_version() -> &'static str {
+    include_str!("../../version.txt").trim()
+}
 
 /// Label of the window declared in `tauri.conf.json`.
 const MAIN_WINDOW: &str = "main";
@@ -207,6 +212,8 @@ pub fn run() {
             logs::get_maker_logs,
             // app lifecycle
             shutdown::quit_app,
+            update::check_for_update,
+            update::install_update,
         ]))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
