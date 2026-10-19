@@ -29,6 +29,8 @@ minreq.workspace = true
 serde_cbor.workspace = true
 openswap.workspace = true
 tauri-plugin-single-instance = "2"
+# Orders build counters for in-app updates; already in the tree through Tauri.
+semver = "1"
 
 # The About panel (src/about.rs). Already in the tree through Tauri's menu backend; named here
 # only for the extra AppKit classes.

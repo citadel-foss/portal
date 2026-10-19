@@ -1,5 +1,6 @@
 import { invoke } from "./transport";
 import type {
+  AvailableUpdate,
   SwapPreparation,
   SendFeeEstimate,
   WalletListing,
@@ -92,6 +93,16 @@ export function restartTorBootstrap(): Promise<void> {
 /** Confirms a quit the user was warned about; the process exits once teardown finishes. */
 export function quitApp(): Promise<void> {
   return invoke("quit_app");
+}
+
+/** A newer build than this one, or null when up to date. */
+export function checkForUpdate(): Promise<AvailableUpdate | null> {
+  return invoke("check_for_update");
+}
+
+/** Downloads the newer build over this one, then quits and restarts into it. */
+export function installUpdate(): Promise<void> {
+  return invoke("install_update");
 }
 
 export function listWallets(dataDir?: string): Promise<WalletListing[]> {

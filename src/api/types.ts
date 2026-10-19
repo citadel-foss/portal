@@ -83,6 +83,22 @@ export interface QuitBlockers {
   runningRouters: string[];
 }
 
+/** A newer build on the rolling release. */
+export interface AvailableUpdate {
+  /** Build counter, e.g. `0.1.0-beta.36+20261017`. */
+  version: string;
+  builtAt: string;
+  /** False when this install cannot replace itself (.deb/.rpm, or run from the .dmg). */
+  installable: boolean;
+  releasePage: string;
+}
+
+/** Payload of `update://progress`, in bytes. */
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
 export type ConnectionType = "tor" | "clearnet";
 
 export interface InitConfig {

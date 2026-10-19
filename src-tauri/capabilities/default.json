@@ -31,6 +31,9 @@
         },
         {
           "url": "https://faucet.citadelfoss.xyz/*"
+        },
+        {
+          "url": "https://github.com/citadel-foss/portal/releases/tag/0.1.0-beta"
         }
       ]
     },
@@ -122,6 +125,8 @@
     "allow-update-maker-settings",
     "allow-validate-address",
     "allow-verify-deniability",
-    "allow-verify-maker-deniability"
+    "allow-verify-maker-deniability",
+    "allow-check-for-update",
+    "allow-install-update"
   ]
 }

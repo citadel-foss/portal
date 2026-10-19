@@ -158,6 +158,8 @@ fn main() {
         "remove_maker_blocklist",
         "get_maker_logs",
         "quit_app",
+        "check_for_update",
+        "install_update",
     ];
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS));

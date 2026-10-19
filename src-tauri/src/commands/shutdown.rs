@@ -17,7 +17,7 @@ use portal_core::types::{MakerPhase, QuitBlockers};
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
 /// Work that a quit would interrupt rather than finish, so the user is asked first.
-fn quit_blockers(state: &AppState) -> QuitBlockers {
+pub(crate) fn quit_blockers(state: &AppState) -> QuitBlockers {
     let takers = state.open_takers();
     let swap_running = takers.iter().any(|taker| taker.swap_running());
     // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
@@ -76,7 +76,7 @@ pub fn quit_app(app: AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
-fn run_quit(app: AppHandle) {
+pub(crate) fn run_quit(app: AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
