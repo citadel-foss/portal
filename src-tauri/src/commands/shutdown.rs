@@ -113,10 +113,9 @@ fn shutdown_runtime(app: &AppHandle) {
     log::info!("shutdown phase done: routers");
 
     // Then the wallets, waiting for each one's final save. Dropping a Taker is the graceful
-    // path: the crate's `Drop` flushes the swap tracker and stops the recovery loop and breach
-    // detector. A running swap holds its taker mutex for the whole swap, so that wallet is left
-    // to the swap thread — the swap's own per-phase writes are what the next launch recovers
-    // from.
+    // path: the crate's `Drop` saves the wallet and stops the recovery loop and breach detector.
+    // A running swap holds its taker mutex for the whole swap, so that wallet is left to the swap
+    // thread — the coins the swap commits to the wallet are what the next launch recovers from.
     let _ = app.emit("app://quit-progress", "Stopping wallet");
     log::info!("shutdown phase start: wallet");
     portal_core::ops::taker_wallet::shutdown_all(&state);

@@ -16,7 +16,7 @@ function hash32(value: string): number {
 // look like a bug against this background. Every entry here still reads as part of the palette.
 const HUES = [222, 262, 190, 152, 42, 12, 288, 96];
 
-export interface WalletIdentity {
+interface WalletIdentity {
   /** Foreground ink for the monogram. */
   ink: string;
   /** Translucent fill behind it. */

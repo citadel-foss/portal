@@ -26,8 +26,8 @@ pub async fn prepare_swap(state: tauri::State<'_, Arc<AppState>>, request: SwapR
 }
 
 #[tauri::command]
-pub async fn get_swap_preparation(state: tauri::State<'_, Arc<AppState>>, since: u64) -> Result<Option<SwapPreparationDto>, AppError> {
-    taker_swap::get_swap_preparation(&*desktop_taker(&state)?, since).await
+pub fn get_swap_preparation(state: tauri::State<'_, Arc<AppState>>) -> Result<Option<SwapPreparationDto>, AppError> {
+    taker_swap::get_swap_preparation(&*desktop_taker(&state)?)
 }
 
 #[tauri::command]

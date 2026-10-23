@@ -31,6 +31,7 @@ const GUIDANCE: Partial<Record<string, string>> = {
   INSECURE_DATA_DIRECTORY: "Only your user account may read the wallet folder.",
   BACKEND_ROUTE_CHANGED: "Reconnect before continuing.",
   WALLET_OPEN_ELSEWHERE: "Close it in the other Portal, or open it there.",
+  WALLET_NEEDS_UPGRADE: "Download the latest Portal release.",
   CONTRACTS_BROADCASTED: "Your funds are in contracts. Portal is reclaiming them on the Recovery page.",
   INTERNAL: "If it keeps happening, the Logs page has the detail.",
   STATE_POISONED: "Restarting Portal should clear it.",

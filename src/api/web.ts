@@ -23,7 +23,7 @@ function storedCsrfToken(): string | null {
 
 let csrfToken: string | null = storedCsrfToken();
 
-export function setCsrfToken(token: string | null) {
+function setCsrfToken(token: string | null) {
   csrfToken = token;
   try {
     if (token) localStorage.setItem(CSRF_KEY, token);

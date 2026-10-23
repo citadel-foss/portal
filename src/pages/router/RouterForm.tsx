@@ -328,7 +328,7 @@ export function BondFeeRateField({ form }: { form: RouterForm }) {
 
 /** `null` while a new router gets a fresh wallet; otherwise its wallet comes from a backup file,
  *  with `selection` null until one is chosen, or from a recovery phrase. */
-export type RouterRestore =
+type RouterRestore =
   | { from: "backup"; selection: RestoreSelection | null }
   | { from: "phrase"; phrase: string }
   | null;
@@ -378,7 +378,7 @@ export function useRouterWallet() {
   };
 }
 
-export type RouterWallet = ReturnType<typeof useRouterWallet>;
+type RouterWallet = ReturnType<typeof useRouterWallet>;
 
 /** Above everything else when restoring: the source decides what is being added, and the name
  *  and password follow from it. */

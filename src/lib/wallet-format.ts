@@ -30,7 +30,7 @@ export function formatRelativeTime(timestampSeconds: number): string {
   return new Date(timestampSeconds * 1000).toLocaleDateString();
 }
 
-export type UtxoBucket = "Regular" | "Swap" | "Contract" | "Fidelity";
+type UtxoBucket = "Regular" | "Swap" | "Contract" | "Fidelity";
 
 export function classifySpendType(spendType: string): UtxoBucket {
   const normalized = spendType.toLowerCase();
@@ -59,7 +59,7 @@ export function classifyTransactionType(category: string, label: string | undefi
   return classifySpendType(`${category} ${label ?? ""}`);
 }
 
-export type TxKind = "received" | "sent" | "swap";
+type TxKind = "received" | "sent" | "swap";
 
 export function getTransactionKind(category: string, label: string | undefined, amountSats: number): TxKind {
   const haystack = `${category} ${label ?? ""}`.toLowerCase();
@@ -112,7 +112,7 @@ function trimTrailingZeros(s: string): string {
 }
 
 /** amountSats -> a display string in `unit`, so switching units shows the equivalent amount, not a reinterpreted raw number. */
-export function satsToUnitString(sats: number, unit: Unit, btcPriceUsd: number | null): string {
+function satsToUnitString(sats: number, unit: Unit, btcPriceUsd: number | null): string {
   if (sats <= 0) return "";
   if (unit === "sats") return String(Math.round(sats));
   const btc = sats / SATS_PER_BTC;
@@ -120,7 +120,7 @@ export function satsToUnitString(sats: number, unit: Unit, btcPriceUsd: number |
   return btcPriceUsd ? (btc * btcPriceUsd).toFixed(2) : "";
 }
 
-export function unitStringToSats(input: string, unit: Unit, btcPriceUsd: number | null): number {
+function unitStringToSats(input: string, unit: Unit, btcPriceUsd: number | null): number {
   const n = Number(input);
   if (!Number.isFinite(n) || n <= 0) return 0;
   if (unit === "sats") return Math.round(n);
@@ -207,7 +207,6 @@ const SWAP_STATUS_ICON: Record<SwapStatus, LucideIcon> = {
   recovery_timelock: AlertCircle,
   recovered: AlertCircle,
   interrupted: AlertCircle,
-  unfinished: AlertCircle,
   failed: XCircle,
 };
 
@@ -217,7 +216,6 @@ const SWAP_STATUS_TEXT_TONE: Record<SwapStatus, string> = {
   recovery_timelock: "text-warning",
   recovered: "text-warning",
   interrupted: "text-warning",
-  unfinished: "text-warning",
   failed: "text-danger",
 };
 

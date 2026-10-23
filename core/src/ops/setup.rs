@@ -16,7 +16,6 @@ pub async fn check_tor() -> Result<TorStatus, AppError> {
         Ok(runtime) => run_tor_handshake(&runtime),
         Err(error) => TorStatus {
             reachable: false,
-            socks_reachable: false,
             authenticated: false,
             bootstrap_progress: None,
             bootstrap_summary: None,
@@ -40,9 +39,8 @@ pub async fn restart_tor_bootstrap() -> Result<(), AppError> {
 
 fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
     let (socks_port, control_port) = (tor.socks_port, tor.control_port);
-    let unreachable = |socks_reachable: bool, err: String| TorStatus {
+    let unreachable = |err: String| TorStatus {
         reachable: false,
-        socks_reachable,
         authenticated: false,
         bootstrap_progress: None,
         bootstrap_summary: None,
@@ -52,41 +50,38 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
     };
 
     if !crate::tor::socks5_responds(socks_port) {
-        return unreachable(
-            false,
-            "configured SOCKS port did not complete a SOCKS5 greeting".into(),
-        );
+        return unreachable("configured SOCKS port did not complete a SOCKS5 greeting".into());
     }
 
     let addr = match format!("127.0.0.1:{control_port}").to_socket_addrs() {
         Ok(mut addrs) => match addrs.next() {
             Some(a) => a,
-            None => return unreachable(true, "could not resolve control port address".into()),
+            None => return unreachable("could not resolve control port address".into()),
         },
-        Err(e) => return unreachable(true, e.to_string()),
+        Err(e) => return unreachable(e.to_string()),
     };
 
     let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
         Ok(s) => s,
-        Err(e) => return unreachable(true, e.to_string()),
+        Err(e) => return unreachable(e.to_string()),
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
     let mut reader = match stream.try_clone() {
         Ok(s) => BufReader::new(s),
-        Err(e) => return unreachable(true, e.to_string()),
+        Err(e) => return unreachable(e.to_string()),
     };
 
     if stream.write_all(b"PROTOCOLINFO 1\r\n").is_err() {
-        return unreachable(true, "failed to send PROTOCOLINFO".into());
+        return unreachable("failed to send PROTOCOLINFO".into());
     }
     let mut protocol_lines = Vec::new();
     for _ in 0..32 {
         let mut line = String::new();
         let read = (&mut reader).take(8193).read_line(&mut line);
         if !matches!(read, Ok(1..=8192)) || !line.ends_with('\n') {
-            return unreachable(true, "invalid Tor PROTOCOLINFO response".into());
+            return unreachable("invalid Tor PROTOCOLINFO response".into());
         }
         let done = line.starts_with("250 OK");
         protocol_lines.push(line);
@@ -100,20 +95,19 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
             .last()
             .is_some_and(|line| line.starts_with("250 OK"))
     {
-        return unreachable(true, "control port did not identify itself as Tor".into());
+        return unreachable("control port did not identify itself as Tor".into());
     }
 
     // Same quoted form the crate uses, so a failure here means the maker's ADD_ONION
     // would fail the same way rather than passing this check and breaking later.
     let command = format!("AUTHENTICATE \"{}\"\r\n", tor.control_password);
     if stream.write_all(command.as_bytes()).is_err() {
-        return unreachable(true, "failed to send AUTHENTICATE".into());
+        return unreachable("failed to send AUTHENTICATE".into());
     }
     let mut resp = String::new();
     if reader.read_line(&mut resp).is_err() || !resp.starts_with("250") {
         return TorStatus {
             reachable: true,
-            socks_reachable: true,
             authenticated: false,
             bootstrap_progress: None,
             bootstrap_summary: None,
@@ -129,7 +123,6 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
     {
         return TorStatus {
             reachable: true,
-            socks_reachable: true,
             authenticated: true,
             bootstrap_progress: None,
             bootstrap_summary: None,
@@ -151,7 +144,6 @@ fn run_tor_handshake(tor: &crate::tor::TorRuntime) -> TorStatus {
 
     TorStatus {
         reachable: true,
-        socks_reachable: true,
         authenticated: true,
         bootstrap_progress,
         bootstrap_summary: quoted_field(&resp, "SUMMARY"),

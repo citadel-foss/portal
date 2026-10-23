@@ -10,7 +10,7 @@ import type { TxSummary } from "../api/types";
  */
 const DISMISS_AFTER_MS = 12_000;
 
-export interface TxNotice {
+interface TxNotice {
   id: number;
   txid: string;
   amountSats: number;

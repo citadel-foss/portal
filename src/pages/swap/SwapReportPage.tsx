@@ -187,7 +187,7 @@ export function SwapReportPage() {
                 arrow="↙"
               />
             ) : (
-              // Not in the report file: the sweep that lands this coin happens after the report
+              // Not in the report: the sweep that lands this coin happens after the report
               // is written, so it has to be read off the chain.
               <div className="flex flex-col gap-2 rounded-control border border-dashed border-line bg-surface-raised p-5">
                 <h4 className="text-[15px] font-extrabold text-foreground">Incoming UTXO</h4>

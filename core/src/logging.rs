@@ -420,74 +420,79 @@ impl log::Log for InitPhaseWatcher {
     fn flush(&self) {}
 }
 
-struct FundingWaitWatch {
-    /// The swap's own thread: the crate's funding waits run on it, and several wallets can be
-    /// swapping at once.
-    thread: std::thread::ThreadId,
-    waits: std::sync::Arc<Mutex<crate::state::FundingWaits>>,
+type LineObserver = Box<dyn FnMut(&str, &str)>;
+
+thread_local! {
+    /// What this thread's records are handed to. Per thread, so a record logged anywhere else
+    /// never waits on an observer here, one of which saves to disk.
+    static THREAD_WATCHES: std::cell::RefCell<Vec<(u64, LineObserver)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+static NEXT_THREAD_WATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Removes its watch from the thread that created it, so it must never leave that thread.
+pub struct ThreadLogGuard {
+    id: u64,
+    _not_send: std::marker::PhantomData<*const ()>,
 }
 
-static FUNDING_WAITS: Mutex<Vec<FundingWaitWatch>> = Mutex::new(Vec::new());
-
-pub struct FundingWaitGuard {
-    thread: std::thread::ThreadId,
-}
-
-impl Drop for FundingWaitGuard {
+impl Drop for ThreadLogGuard {
     fn drop(&mut self) {
-        if let Ok(mut watches) = FUNDING_WAITS.lock() {
-            watches.retain(|watch| watch.thread != self.thread);
-        }
+        let _ = THREAD_WATCHES.try_with(|watches| {
+            if let Ok(mut watches) = watches.try_borrow_mut() {
+                watches.retain(|(id, _)| *id != self.id);
+            }
+        });
     }
 }
 
-/// Record the txids each funding wait on this thread polls, for as long as the guard lives.
+/// Hands every record this thread logs to `observe` as `(target, message)`, for as long as the
+/// guard lives. A record `observe` logs itself is not handed back to it.
 #[must_use]
-pub fn watch_funding_waits(
-    waits: std::sync::Arc<Mutex<crate::state::FundingWaits>>,
-) -> FundingWaitGuard {
-    let thread = std::thread::current().id();
-    if let Ok(mut watches) = FUNDING_WAITS.lock() {
-        watches.push(FundingWaitWatch { thread, waits });
+pub fn watch_thread_logs(observe: impl FnMut(&str, &str) + 'static) -> ThreadLogGuard {
+    let id = NEXT_THREAD_WATCH.fetch_add(1, Ordering::Relaxed);
+    THREAD_WATCHES.with(|watches| watches.borrow_mut().push((id, Box::new(observe))));
+    ThreadLogGuard {
+        id,
+        _not_send: std::marker::PhantomData,
     }
-    FundingWaitGuard { thread }
+}
+
+/// The txid a funding wait is polling, from its "Tx <txid> has N confirmations (need M)" round.
+/// Its "seen in mempool" line is not one: it would make one round read as two and split a leg.
+pub fn funding_wait_txid<'a>(target: &str, message: &'a str) -> Option<&'a str> {
+    if target != "openswap::wallet::api" {
+        return None;
+    }
+    message
+        .strip_prefix("Tx ")
+        .filter(|rest| rest.contains(" confirmations (need "))
+        .and_then(|rest| rest.split(' ').next())
+        .filter(|txid| txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 #[derive(Debug)]
-struct FundingWaitWatcher;
+struct ThreadLogWatcher;
 
-impl log::Log for FundingWaitWatcher {
+impl log::Log for ThreadLogWatcher {
     fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
         true
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        // The wait logs every unconfirmed txid once per round as "Tx <txid> has N confirmations
-        // (need M)"; its "seen in mempool" line is skipped, since it would make one round read
-        // as two and split a leg's txids.
-        if record.target() != "openswap::wallet::api" {
-            return;
-        }
-        let message = record.args().to_string();
-        let Some(txid) = message
-            .strip_prefix("Tx ")
-            .filter(|rest| rest.contains(" confirmations (need "))
-            .and_then(|rest| rest.split(' ').next())
-            .filter(|txid| txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit()))
-        else {
-            return;
-        };
-        // Blocking: a skipped repeat never seals its leg, and the next leg's txids join it.
-        // Nothing logs while holding this lock, so it cannot re-enter.
-        let Ok(watches) = FUNDING_WAITS.lock() else {
-            return;
-        };
-        let thread = std::thread::current().id();
-        if let Some(watch) = watches.iter().find(|watch| watch.thread == thread) {
-            if let Ok(mut waits) = watch.waits.lock() {
-                waits.observe(txid);
+        // `try_borrow_mut`: a record an observer logs arrives while the list is borrowed.
+        let _ = THREAD_WATCHES.try_with(|watches| {
+            let Ok(mut watches) = watches.try_borrow_mut() else {
+                return;
+            };
+            if watches.is_empty() {
+                return;
             }
-        }
+            let message = record.args().to_string();
+            for (_, observe) in watches.iter_mut() {
+                observe(record.target(), &message);
+            }
+        });
     }
 
     fn flush(&self) {}
@@ -498,7 +503,7 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
         .appender(Appender::builder().build("stdout", Box::new(ConsoleAppender::builder().build())))
         .appender(Appender::builder().build("maker_router", Box::new(MakerLogRouter)))
         .appender(Appender::builder().build("init_phase", Box::new(InitPhaseWatcher)))
-        .appender(Appender::builder().build("funding_wait", Box::new(FundingWaitWatcher)));
+        .appender(Appender::builder().build("thread_watch", Box::new(ThreadLogWatcher)));
 
     let root_appender = match taker_dir.and_then(|dir| file_appender(dir)) {
         Some(appender) => {
@@ -537,7 +542,7 @@ fn build_config(taker_dir: Option<&PathBuf>) -> Config {
                 .appender(root_appender)
                 .appender("wallet_router")
                 .appender("init_phase")
-                .appender("funding_wait")
+                .appender("thread_watch")
                 .build(log::LevelFilter::Info),
         )
         .expect("logger config references only appenders registered above")

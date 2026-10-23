@@ -385,7 +385,7 @@ pub fn list_makers(state: &Arc<AppState>) -> Result<Vec<MakerSettingsDto>, AppEr
                 Some(dir) => std::path::PathBuf::from(dir),
                 None => crate::storage::maker_data_dir(&settings.router_id)?,
             };
-            settings.network = crate::storage::wallet_network(&dir, &settings.wallet_name);
+            settings.network = crate::storage::wallet_network(&dir);
             Ok(settings)
         })
         .collect::<Result<Vec<_>, AppError>>()?;

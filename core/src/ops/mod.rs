@@ -5,6 +5,7 @@ pub mod blocklist;
 pub mod chain_backend;
 pub mod maker;
 pub mod maker_wallet;
+pub mod taker_journal;
 pub mod taker_swap;
 pub mod taker_wallet;
 pub mod logs;

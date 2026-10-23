@@ -27,8 +27,7 @@ pub fn resolve_data_dir(data_dir: &Option<String>) -> Result<PathBuf, AppError> 
 }
 
 /// The crate `data_dir` for one wallet. One per wallet, never shared: the crate keeps a single
-/// swap tracker and offerbook per data dir, and every `Taker::init` fails the unfinished swaps
-/// it finds in that tracker, whichever wallet they belong to.
+/// offerbook and config per data dir, and Portal keeps the wallet's swap journal there.
 pub fn wallet_data_dir(root: &Path, wallet_name: &str) -> PathBuf {
     root.join(WALLET_DATA_DIR).join(wallet_name)
 }
@@ -50,62 +49,39 @@ pub fn wallet_path(data_dir: &Path, wallet_name: &str) -> PathBuf {
 /// Where the per-wallet data dirs live under a root.
 pub const WALLET_DATA_DIR: &str = "takers";
 
-/// A wallet's or router's chain, kept beside it because the wallet file that knows it is
-/// encrypted. Written on the first successful open: the crate refuses a wallet on any other
-/// chain, so that chain is the wallet's.
+/// A wallet's chain, kept beside it because the wallet file that knows it is encrypted. Written
+/// on the first successful open: the crate refuses a wallet on any other chain, so that chain is
+/// the wallet's. Routers don't need it: openswap records theirs in `config.toml`.
 const NETWORK_FILE: &str = "network";
 
 pub fn record_network(dir: &Path, chain: &str) -> Result<(), AppError> {
     crate::security::fs::write_private(&dir.join(NETWORK_FILE), chain.as_bytes())
 }
 
-/// The files Portal keeps beside a wallet or router.
-const SIDECARS: [&str; 2] = ["last_address.json", "tx_first_seen.json"];
-
-/// Moves every file an older Portal kept in `wallets/` out to the data dir. The crate finds the
-/// report file for a recovery by expecting `wallets/` to hold the wallet file alone, and
-/// anything else there sends recovery reports to a fallback file. So this runs before the crate
-/// opens the wallet, and a copy that was already moved wins.
-pub fn move_sidecars_out(dir: &Path, wallet_name: &str) -> Result<(), AppError> {
-    for file in SIDECARS {
-        let old = dir.join("wallets").join(format!("{wallet_name}_{file}"));
-        if !old.exists() {
-            continue;
-        }
-        let new = dir.join(file);
-        let moved = if new.exists() { fs::remove_file(&old) } else { fs::rename(&old, &new) };
-        // Another caller moving the same file at the same moment is not a failure.
-        if let Err(e) = moved {
-            if old.exists() || !new.exists() {
-                return Err(e.into());
-            }
-        }
-    }
-    Ok(())
-}
-
-/// A file Portal keeps beside a wallet or router, in its data dir, never in `wallets/`.
-pub fn sidecar_path(dir: &Path, wallet_name: &str, name: &str) -> Result<PathBuf, AppError> {
-    move_sidecars_out(dir, wallet_name)?;
-    Ok(dir.join(name))
-}
-
 pub fn recorded_network(dir: &Path) -> Option<String> {
     fs::read_to_string(dir.join(NETWORK_FILE)).ok().map(|chain| chain.trim().to_string())
 }
 
-/// The chain of a wallet or router, readable while it is locked. One Portal never opened (a
-/// Maker Dashboard import, a `makerd` dir) has no record, so it falls back to the chain its swap
-/// reports name, then to an address Portal issued from its wallet: the prefix tells mainnet from
-/// the test networks (`"test"`), though not one test network from another.
-pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
-    if let Some(chain) = recorded_network(dir) {
+/// Deletes a swap tracker openswap stopped reading at #1137. Logged when it fails, because the
+/// file holds swap secrets in the clear.
+pub fn remove_legacy_tracker(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => log::info!("removed {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("could not remove {}: {e}", path.display()),
+    }
+}
+
+/// The chain of a wallet or router, readable while it is locked: the one openswap records in a
+/// started router's `config.toml`, else the one Portal recorded on a wallet's first open. One
+/// never opened (a Maker Dashboard import, a `makerd` dir) falls back to an address Portal issued
+/// from it: the prefix tells mainnet from the test networks (`"test"`), though not one test
+/// network from another.
+pub fn wallet_network(dir: &Path) -> Option<String> {
+    if let Some(chain) = configured_network(dir).or_else(|| recorded_network(dir)) {
         return Some(chain);
     }
-    if let Some(chain) = reported_network(dir, wallet_name) {
-        return Some(chain);
-    }
-    let issued = fs::read_to_string(sidecar_path(dir, wallet_name, "last_address.json").ok()?).ok()?;
+    let issued = fs::read_to_string(dir.join("last_address.json")).ok()?;
     let issued: serde_json::Value = serde_json::from_str(&issued).ok()?;
     let address = ["p2tr", "p2wpkh"].iter().find_map(|key| issued.get(key)?.as_str())?;
     let network = if address.starts_with("bcrt1") {
@@ -120,16 +96,17 @@ pub fn wallet_network(dir: &Path, wallet_name: &str) -> Option<String> {
     Some(network.to_string())
 }
 
-fn reported_network(dir: &Path, wallet_name: &str) -> Option<String> {
-    let path = crate::ops::taker_reports::report_path(dir, wallet_name);
-    let reports: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    let by_node = reports.get("maker").and_then(|m| m.as_object());
-    ["taker", "recovery"]
-        .iter()
-        .filter_map(|section| reports.get(section)?.as_array())
-        .chain(by_node.into_iter().flat_map(|m| m.values().filter_map(|v| v.as_array())))
-        .flatten()
-        .find_map(|report| Some(report.get("network")?.as_str()?.to_string()))
+/// `network = "signet"`, which `MakerServer::init` writes from the wallet itself.
+fn configured_network(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join("config.toml"))
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            let value = value.split('#').next().unwrap_or_default();
+            (key.trim() == "network").then(|| value.trim().trim_matches('"').to_string())
+        })
+        .filter(|chain| !chain.is_empty())
 }
 
 /// Wallets under `<root>/takers`, sorted: each is a directory holding its own
@@ -299,36 +276,20 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// openswap's own record wins over a stale one Portal kept for a router.
     #[test]
-    fn an_unrecorded_router_is_placed_by_its_swap_reports() {
-        let dir = scratch("reported");
+    fn a_router_is_placed_by_its_config() {
+        let dir = scratch("configured");
         fs::create_dir_all(dir.join("wallets")).unwrap();
-        assert_eq!(wallet_network(&dir, "default-maker"), None);
+        assert_eq!(wallet_network(&dir), None);
+        record_network(&dir, "bitcoin").unwrap();
+        assert_eq!(wallet_network(&dir).as_deref(), Some("bitcoin"));
         fs::write(
-            dir.join("wallets").join("default-maker_swap_report.json"),
-            r#"{"taker":[],"maker":{"default-maker":[{"network":"signet"}]},"recovery":[]}"#,
+            dir.join("config.toml"),
+            "network_port = 6102\nnetwork = \"signet\" # set by hand\nrpc_port = 6103\n",
         )
         .unwrap();
-        assert_eq!(wallet_network(&dir, "default-maker").as_deref(), Some("signet"));
-        record_network(&dir, "bitcoin").unwrap();
-        assert_eq!(wallet_network(&dir, "default-maker").as_deref(), Some("bitcoin"));
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// The crate guesses a recovery's report file from `wallets/`, so Portal's files leave it.
-    #[test]
-    fn a_sidecar_left_in_wallets_is_moved_out() {
-        let dir = scratch("sidecar");
-        fs::create_dir_all(dir.join("wallets")).unwrap();
-        fs::write(dir.join("wallets").join("bob_last_address.json"), b"old").unwrap();
-        fs::write(dir.join("wallets").join("bob_tx_first_seen.json"), b"{}").unwrap();
-        fs::write(dir.join("last_address.json"), b"moved").unwrap();
-        // Asking for one file clears both out of wallets/; the copy already moved is kept.
-        let path = sidecar_path(&dir, "bob", "last_address.json").unwrap();
-        assert_eq!(path, dir.join("last_address.json"));
-        assert_eq!(fs::read(&path).unwrap(), b"moved");
-        assert!(dir.join("tx_first_seen.json").exists());
-        assert_eq!(fs::read_dir(dir.join("wallets")).unwrap().count(), 0);
+        assert_eq!(wallet_network(&dir).as_deref(), Some("signet"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

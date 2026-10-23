@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { getRouterSwapReport, verifyRouterDeniability } from "../../api/commands";
-import type { RouterSwapReportDetail } from "../../api/types";
+import { isAppError, type RouterSwapReportDetail } from "../../api/types";
 import { EmptyState, SatsAmount } from "../../components/ui/display";
 import {
   CoinRow,
@@ -32,23 +32,31 @@ export function RouterSwapReportPage() {
   const reportId = decodeURIComponent(swapId);
   const pushToast = useToastStore((s) => s.push);
   const [report, setReport] = useState<RouterSwapReportDetail | null>(null);
-  const [notFound, setNotFound] = useState(false);
+  const [failure, setFailure] = useState<"stopped" | "error" | null>(null);
 
   useEffect(() => {
     void getRouterSwapReport(id, reportId)
       .then(setReport)
       .catch((e) => {
-        setNotFound(true);
+        if (isAppError(e) && e.code === "ROUTER_NOT_RUNNING") {
+          setFailure("stopped");
+          return;
+        }
+        setFailure("error");
         pushToast("error", e.message);
       });
   }, [id, reportId, pushToast]);
 
-  if (notFound)
+  if (failure)
     return (
       <EmptyState
         size="lg"
         title="Report unavailable"
-        description="The router report could not be loaded."
+        description={
+          failure === "stopped"
+            ? "Reports are kept inside the router's wallet. Start the router to see this one."
+            : "The router report could not be loaded."
+        }
       />
     );
   if (!report) return <ReportLoading what="router report" />;

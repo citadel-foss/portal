@@ -157,18 +157,14 @@ pub async fn get_maker_transactions(
     .map_err(AppError::internal)?
 }
 
-/// A file beside the router's wallet, named after it: `<data dir>/wallets/<wallet>_<suffix>`.
+/// A file Portal keeps in the router's data dir.
 fn maker_wallet_file(state: &Arc<AppState>, router_id: &str, name: &str) -> Result<PathBuf, AppError> {
     let makers = state.makers.lock()?;
     let settings = &makers
         .get(router_id)
         .ok_or_else(|| AppError::maker_not_found(router_id))?
         .settings;
-    crate::storage::sidecar_path(
-        &crate::ops::maker_settings::maker_data_dir(settings)?,
-        &settings.wallet_name,
-        name,
-    )
+    Ok(crate::ops::maker_settings::maker_data_dir(settings)?.join(name))
 }
 
 
@@ -236,7 +232,6 @@ pub async fn list_maker_fidelity_bonds(
                         vout: outpoint.vout,
                     },
                     amount_sats: bond.amount.to_sat(),
-                    lock_time_height,
                     is_spent,
                     is_locked: !is_spent && (tip_height as u32) < lock_time_height,
                 }

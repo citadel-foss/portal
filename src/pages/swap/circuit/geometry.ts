@@ -10,14 +10,14 @@
  * unitless strokeDashoffset avoids both.
  */
 
-export type Tier = "A" | "B" | "C";
+type Tier = "A" | "B" | "C";
 
-export interface Point {
+interface Point {
   x: number;
   y: number;
 }
 
-export interface CircuitEdgeGeometry {
+interface CircuitEdgeGeometry {
   index: number;
   d: string;
   /** Analytic arc length. Never call getTotalLength() on this path. */
@@ -31,7 +31,7 @@ export interface CircuitEdgeGeometry {
   toAngle: number;
 }
 
-export interface CircuitSlotGeometry {
+interface CircuitSlotGeometry {
   index: number;
   angle: number;
   center: Point;
@@ -54,17 +54,17 @@ export interface CircuitGeometry {
 
 const TWO_PI = Math.PI * 2;
 
-export function tierFor(routerCount: number): Tier {
+function tierFor(routerCount: number): Tier {
   if (routerCount <= 5) return "A";
   if (routerCount <= 12) return "B";
   return "C";
 }
 
-export function nodeSizeFor(tier: Tier): number {
+function nodeSizeFor(tier: Tier): number {
   return tier === "A" ? 56 : tier === "B" ? 34 : 14;
 }
 
-export function walletSizeFor(tier: Tier): { width: number; height: number } {
+function walletSizeFor(tier: Tier): { width: number; height: number } {
   return tier === "A" ? { width: 132, height: 58 } : { width: 104, height: 46 };
 }
 

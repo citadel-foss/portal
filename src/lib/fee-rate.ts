@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { estimateFees } from "../api/commands";
 import type { FeeEstimate } from "../api/types";
 
-export type FeeTier = "fast" | "medium" | "slow";
+type FeeTier = "fast" | "medium" | "slow";
 
 /** Portal's typo guard, the same one the backend applies to every swap and send. */
 export const MAX_FEE_RATE = 500;

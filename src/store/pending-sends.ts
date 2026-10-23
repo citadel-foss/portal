@@ -17,7 +17,7 @@ const STORAGE_KEY = "coinswap_pending_sends";
  * Recording the txid at broadcast is what makes a send visible immediately and keeps a self-send
  * visible at all.
  */
-export interface PendingSend {
+interface PendingSend {
   txid: string;
   /** The wallet's on-disk path, so a record can never surface under a different wallet. */
   walletPath: string;

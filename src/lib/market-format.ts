@@ -5,7 +5,7 @@
 import { truncateMiddle } from "./wallet-format";
 
 /** The bare host, scheme and port stripped — the part that actually names a router. */
-export function torEndpointHost(value: string, stripOnion = false): string {
+function torEndpointHost(value: string, stripOnion = false): string {
   const text = (value ?? "").trim();
   if (!text) return "unknown";
   const noScheme = text.replace(/^https?:\/\//i, "").replace(/^tcp:\/\//i, "").split("/")[0];
@@ -31,7 +31,7 @@ export function routerName(address: string): string {
   return formatTorEndpoint(address, 12, 8, true);
 }
 
-export interface RouterFeeEstimate {
+interface RouterFeeEstimate {
   baseFee: number;
   liquidityFee: number;
   timeFee: number;

@@ -10,7 +10,7 @@ import type { RecoveryPhrase } from "../../api/types";
  * time, so nothing here is skippable: Continue waits for the words to be revealed and the user to
  * say they wrote them down.
  */
-export function RecoveryPhraseScreen({
+function RecoveryPhraseScreen({
   words,
   subject,
   onSaved,

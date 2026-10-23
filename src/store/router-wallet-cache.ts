@@ -9,7 +9,7 @@ import type { AddressType, NewAddress, TxSummary, UtxoEntry } from "../api/types
 /** The same window the Tx tab has always asked for. */
 const TRANSACTION_WINDOW = 30;
 
-export interface RouterWalletSnapshot {
+interface RouterWalletSnapshot {
   utxos: UtxoEntry[];
   transactions: TxSummary[];
   /** Per type, so switching Taproot/SegWit shows the last address at once while it is re-checked. */

@@ -426,15 +426,7 @@ pub static OPERATIONS: &[Operation] = &[
     }),
     op("get_swap_preparation", false, |ctx, args| {
         let _ = (&ctx, &args);
-        Box::pin(async move {
-            #[derive(serde::Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct Args {
-                since: u64,
-            }
-            let body: Args = parse(args)?;
-            encode(&ops::taker_swap::get_swap_preparation(&*ctx.taker()?, body.since).await?)
-        })
+        Box::pin(async move { encode(&ops::taker_swap::get_swap_preparation(&*ctx.taker()?)?) })
     }),
     op("get_swap_progress", false, |ctx, args| {
         let _ = (&ctx, &args);

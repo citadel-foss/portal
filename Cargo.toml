@@ -10,9 +10,7 @@ license = "MIT"
 # Single source of truth for versions shared by the hosts and the core library, so a bump
 # cannot leave two crates linking different copies of the same types.
 [workspace.dependencies]
-# Pinned: the next master commit (openswap#1137) removes the swap tracker Portal reads. Back to
-# `branch = "master"` once Portal moves to the wallet-held swap state.
-openswap = { git = "https://github.com/citadel-foss/openswap", rev = "5245d8ef594a0adaf01f20a42401a1e22d8bdc77" }
+openswap = { git = "https://github.com/citadel-foss/openswap", branch = "master" }
 # openswap's own version and features, so both resolve to one crate.
 electrum-client = { version = "0.24", default-features = false, features = ["proxy", "use-rustls-ring"] }
 serde = { version = "1", features = ["derive"] }

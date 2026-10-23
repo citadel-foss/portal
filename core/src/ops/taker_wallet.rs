@@ -15,7 +15,7 @@ use openswap::bitcoin::{Address, Amount, OutPoint, ScriptBuf, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
-use openswap::wallet::{AddressType, SecretMnemonic, UTXOSpendInfo, Wallet};
+use openswap::wallet::{AddressType, SecretMnemonic, UTXOSpendInfo, Wallet, WalletError};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -64,7 +64,7 @@ pub fn list_wallets(data_dir: Option<String>) -> Result<Vec<WalletListing>, AppE
     Ok(storage::list_wallets(&data_dir)?
         .into_iter()
         .map(|name| {
-            let network = storage::wallet_network(&storage::wallet_data_dir(&root, &name), &name);
+            let network = storage::wallet_network(&storage::wallet_data_dir(&root, &name));
             WalletListing { name, network }
         })
         .collect())
@@ -232,6 +232,7 @@ async fn open_taker(
         ConnectionTypeDto::Clearnet => ConnectionType::Clearnet,
     };
     let phrase_password = config.wallet_password.clone();
+    let journal_password = config.wallet_password.clone();
     let chain_config = chain_backend::load(session);
     let init_cfg = TakerInitConfig {
         data_dir: Some(key.to_path_buf()),
@@ -262,8 +263,6 @@ async fn open_taker(
     let wallet_key = key.to_path_buf();
     // Registered before `Taker::init`, not after: the threads it starts log straight away, and
     // only a registered wallet can claim their unattributed lines.
-    // Before the crate opens the wallet: its startup recovery writes reports straight away.
-    storage::move_sidecars_out(key, &config.wallet_name)?;
     crate::logging::register_wallet(config.wallet_name.clone(), key.to_path_buf());
     let taker = tokio::task::spawn_blocking(move || {
         let _log = crate::logging::wallet_scope(wallet_key.clone());
@@ -283,6 +282,8 @@ async fn open_taker(
             }
         }
     })?;
+    // Only now: openswap's one-time upgrade reads it while opening.
+    crate::storage::remove_legacy_tracker(&key.join("swap_tracker.cbor"));
     // Only a wallet this call created has a phrase to show.
     let new_phrase = if creating {
         match read_sealed_phrase(taker.get_wallet().clone(), phrase_password).await {
@@ -318,16 +319,25 @@ async fn open_taker(
         })?;
     }
 
+    let journal_dir = key.to_path_buf();
+    // PBKDF2, so off the async runtime; the password has just opened the wallet.
+    let journal_key = tokio::task::spawn_blocking(move || {
+        crate::ops::taker_journal::derive_key(&journal_dir, journal_password)
+    })
+    .await
+    .map_err(AppError::internal)??;
     let instance = Arc::new(TakerInstance {
         wallet_name: config.wallet_name.clone(),
         data_dir: key.to_path_buf(),
         root: root.to_path_buf(),
         wallet: taker.get_wallet().clone(),
+        journal_key,
         offer_sync: taker.offer_sync_client(),
         taker: Arc::new(Mutex::new(Some(taker))),
         chain_backend: chain_config,
         socks_port: tor.socks_port,
         active_swap: Mutex::new(None),
+        preparation: Default::default(),
         sync_cancel: Arc::new(AtomicBool::new(false)),
         sync_in_flight: Arc::new(AtomicBool::new(false)),
         is_offerbook_syncing: AtomicBool::new(false),
@@ -470,7 +480,7 @@ pub(crate) fn verify_wallet_password(
     match load_sensitive_struct::<serde::de::IgnoredAny, SerdeCbor>(path, password) {
         Ok(_) => Ok(()),
         Err(SecurityError::Decryption | SecurityError::PasswordRequired) => Err(wrong()),
-        Err(e) => Err(AppError::new(ErrorCode::WalletLoadFailed, format!("{e:?}"))),
+        Err(e) => Err(WalletError::Security(e).into()),
     }
 }
 
@@ -482,6 +492,7 @@ fn verify_backup_password(path: &Path, password: String) -> Result<(), AppError>
             ErrorCode::WalletWrongPassword,
             "incorrect backup password",
         )),
+        Err(e @ SecurityError::NeedsUpgrade(_)) => Err(WalletError::Security(e).into()),
         Err(e) => Err(AppError::new(
             ErrorCode::InvalidInput,
             format!("this file is not a readable Portal backup: {e:?}"),
@@ -762,8 +773,7 @@ impl Drop for StagedFile {
     }
 }
 
-/// Restore from a Rust-selected backup before `init_taker`. Bad password/file panics (caught via
-/// from_wallet_join_error); a real WalletError is swallowed by the crate, so check the output.
+/// Restore from a Rust-selected backup before `init_taker`.
 pub async fn restore_wallet(
     state: &Arc<AppState>,
     session: &str,
@@ -830,8 +840,8 @@ pub(crate) async fn take_restore_selection(
     selection_id: Uuid,
     password: &str,
 ) -> Result<ChosenBackup, AppError> {
-    // The crate only logs a wrong backup password and writes nothing, which reads as a failed
-    // restore.
+    // The crate reports a wrong backup password only as untyped text, so it is checked here,
+    // where it gets its own code.
     let chosen = state
         .pending_file_selections
         .lock()?
@@ -875,27 +885,20 @@ pub(crate) async fn restore_backup(
     backend: openswap::wallet::BackendConfig,
     password: String,
 ) -> Result<(), AppError> {
-    let restored_path = wallet_path(&dir, &wallet_name);
     let log_dir = dir.clone();
     tokio::task::spawn_blocking(move || {
         let _log = crate::logging::wallet_scope(log_dir);
-        openswap::wallet::ffi::restore_wallet_gui_app(
+        openswap::wallet::ffi::restore_wallet_from_backup_gui_app(
             Some(dir),
             Some(wallet_name),
             backend,
             backup.path.clone(),
             Some(password),
+            openswap::wallet::RestoreOptions::default(),
         )
     })
     .await
-    .map_err(from_wallet_join_error)?;
-
-    if !restored_path.exists() {
-        return Err(AppError::new(
-            ErrorCode::WalletLoadFailed,
-            "restore did not produce a wallet file — check the app log for the underlying cause",
-        ));
-    }
+    .map_err(from_wallet_join_error)??;
     Ok(())
 }
 
@@ -910,7 +913,7 @@ pub(crate) fn normalize_phrase(phrase: &str) -> String {
 }
 
 /// The crate's error for a wrong word, count or checksum, worded for the user.
-fn phrase_error(error: openswap::wallet::WalletError) -> AppError {
+fn phrase_error(error: WalletError) -> AppError {
     match error {
         openswap::wallet::WalletError::BIP39(_) => AppError::new(
             ErrorCode::InvalidInput,
@@ -1151,8 +1154,8 @@ struct LastAddresses {
     issued: HashMap<String, String>,
 }
 
-fn last_address_path(taker: &TakerInstance) -> Result<PathBuf, AppError> {
-    storage::sidecar_path(&taker.data_dir, &taker.wallet_name, "last_address.json")
+fn last_address_path(taker: &TakerInstance) -> PathBuf {
+    taker.data_dir.join("last_address.json")
 }
 
 fn load_last_addresses(path: &Path) -> LastAddresses {
@@ -1189,7 +1192,7 @@ pub async fn get_new_address(
         ));
     }
     let wallet = taker.wallet.clone();
-    let path = last_address_path(taker)?;
+    let path = last_address_path(taker);
     tokio::task::spawn_blocking(move || issue_unused_address(&wallet, &path, address_type))
         .await
         .map_err(AppError::internal)?
@@ -1348,9 +1351,8 @@ pub async fn get_transactions(
     skip: Option<usize>,
 ) -> Result<Vec<TxSummary>, AppError> {
     let wallet = taker.wallet.clone();
-    let issued_path = last_address_path(taker)?;
-    let seen_path =
-        storage::sidecar_path(&taker.data_dir, &taker.wallet_name, "tx_first_seen.json")?;
+    let issued_path = last_address_path(taker);
+    let seen_path = taker.data_dir.join("tx_first_seen.json");
     tokio::task::spawn_blocking(move || -> Result<Vec<TxSummary>, AppError> {
         let wallet = wallet.read()?;
         let txs = wallet.get_transactions(count, skip)?;
@@ -1476,7 +1478,7 @@ impl AddressPaths {
 }
 
 pub async fn list_addresses(taker: &TakerInstance) -> Result<Vec<WalletAddressDto>, AppError> {
-    let (wallet, issued_path) = (taker.wallet.clone(), last_address_path(taker)?);
+    let (wallet, issued_path) = (taker.wallet.clone(), last_address_path(taker));
     let (backend, socks_port) = (taker.chain_backend.clone(), Some(taker.socks_port));
     tokio::task::spawn_blocking(move || -> Result<Vec<WalletAddressDto>, AppError> {
         address_rows(&*wallet.read()?, &issued_path, &backend, socks_port)
@@ -1674,7 +1676,6 @@ pub async fn estimate_send_fee(
         let vsize = (base * 4 + witness + 2).div_ceil(4) as u64;
         Ok(SendFeeEstimate {
             fee_sats: (fee_rate * vsize as f64).ceil() as u64,
-            vsize,
             inputs: coins.len(),
         })
     })
@@ -1852,7 +1853,6 @@ pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
         return Ok(PriceEstimate {
             usd: quote.usd,
             cached: false,
-            fetched_at: quote.fetched_at,
         });
     }
     let live = tokio::task::spawn_blocking(|| -> Result<CachedBtcPrice, AppError> {
@@ -1892,7 +1892,6 @@ pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
             Ok(PriceEstimate {
                 usd: quote.usd,
                 cached: false,
-                fetched_at: quote.fetched_at,
             })
         }
         Err(live_error) => match last {
@@ -1904,7 +1903,6 @@ pub async fn get_btc_price() -> Result<PriceEstimate, AppError> {
                 Ok(PriceEstimate {
                     usd: quote.usd,
                     cached: true,
-                    fetched_at: quote.fetched_at,
                 })
             }
             None => Err(live_error),

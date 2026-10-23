@@ -755,8 +755,6 @@ fn failed(failure: ErrorCode, error: String) -> BackendStatus {
         chain: None,
         blocks: None,
         synced: false,
-        subversion: None,
-        verification_progress: None,
         signet_challenge: None,
     }
 }
@@ -776,8 +774,6 @@ fn probe_electrum(config: &ChainBackendConfig, socks_port: Option<u16>) -> Backe
             chain: Some(info.chain.to_string()),
             blocks: Some(info.blocks),
             synced: true,
-            subversion: None,
-            verification_progress: Some(1.0),
             signet_challenge: None,
         },
         // With retries off, as openswap sets them, electrum-client drops a failed call's error
@@ -872,8 +868,6 @@ fn probe_core_rpc(node: &NodeBackendDto) -> BackendStatus {
         chain: Some(info.chain.to_string()),
         blocks: Some(info.blocks),
         synced: !info.initial_block_download && info.blocks == info.headers,
-        subversion: client.get_network_info().ok().map(|n| n.subversion),
-        verification_progress: Some(info.verification_progress),
         signet_challenge: signet_challenge(&client, info.chain),
     }
 }
@@ -1149,8 +1143,6 @@ mod tests {
             chain: Some("main".into()),
             blocks: Some(1),
             synced: true,
-            subversion: None,
-            verification_progress: Some(1.0),
             signet_challenge: None,
         };
         remember_probe(&before, None, &reachable);
@@ -1254,8 +1246,6 @@ mod tests {
             chain: Some("signet".into()),
             blocks: Some(1),
             synced: true,
-            subversion: None,
-            verification_progress: Some(1.0),
             signet_challenge: None,
         };
         let here = ChainBackendConfig::default();

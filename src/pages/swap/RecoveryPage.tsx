@@ -7,6 +7,7 @@ import type {
   LogLine,
   RecoveredContract,
   RecoveryContract,
+  RecoveryPhase,
   RecoveryStatus,
   SwapTrackerProgress,
 } from "../../api/types";
@@ -34,51 +35,28 @@ import { useSwapCircuit } from "./circuit/useSwapCircuit";
 // The crate's recovery loop retries once a minute. This status read also consults the chain, so
 // matching that cadence avoids opening several redundant Electrum connections per recovery pass.
 const POLL_MS = 60_000;
-const PHASE_LABEL: Record<string, string> = {
-  preimage_stamped: "Preimage stamped",
-  swapcoins_persisted: "Swapcoins persisted",
-  incoming_recovered: "Incoming leg reclaimed",
-  outgoing_recovered: "Outgoing leg reclaimed",
-  cleaned_up: "Fully reclaimed",
-};
-
-function recoveryLabel(phase: string, running: boolean | undefined): string {
-  if (phase !== "not_started") return PHASE_LABEL[phase] ?? phase;
+function recoveryLabel(phase: RecoveryPhase, running: boolean | undefined): string {
+  if (phase === "cleaned_up") return "Fully reclaimed";
   if (running === true) return "Recovery running";
   if (running === false) return "Recovery not running";
   return "Recovery status unavailable";
 }
 
-/** Whose money a settled contract turned out to be. The crate's resolution says how the output
- *  was spent, not by whom, so it reads differently per leg: an outgoing contract spent by
- *  someone else ("discarded") is the router taking its payment. */
-function settled(r: RecoveredContract, swapReceived: boolean): { label: string; yours: boolean } {
-  if (r.resolution === "unresolved") return { label: "Unresolved", yours: false };
-  if (r.leg === "incoming") {
-    return r.resolution === "hashlock" || r.resolution === "key_path"
-      ? { label: "Claimed into your wallet", yours: true }
-      : { label: "Taken back by the router", yours: false };
-  }
-  if (r.resolution === "timelock") return { label: "Refunded to you", yours: true };
-  return r.resolution === "discarded" && !swapReceived
-    ? { label: "Never funded — nothing to reclaim", yours: false }
-    : { label: "Claimed by the router", yours: false };
-}
-
-function SettledRow({ contract, swapReceived }: { contract: RecoveredContract; swapReceived: boolean }) {
-  const outcome = settled(contract, swapReceived);
+/** A claim the recovery broadcast: a hashlock claim takes the route's payment to this wallet,
+ *  a timelock claim refunds its own funding. */
+function SettledRow({ contract }: { contract: RecoveredContract }) {
   return (
     <div className="flex items-center justify-between gap-3 py-3">
       <span className="flex min-w-0 flex-col gap-1.5">
-        <Identifier value={contract.contractTxid} className="text-[12px] leading-[1.45] text-muted" />
-        <StatusChip tone={outcome.yours ? "success" : "subtle"} className="self-start">
-          {outcome.label}
+        <Identifier value={contract.txid} className="text-[12px] leading-[1.45] text-muted" />
+        <StatusChip tone="success" className="self-start">
+          {contract.leg === "incoming" ? "Claimed into your wallet" : "Refunded to you"}
         </StatusChip>
       </span>
-      {contract.spendingTxid && (
+      {contract.txid && (
         <span className="flex flex-none items-center gap-2">
-          <CopyButton text={contract.spendingTxid} />
-          <ExternalLinkButton txid={contract.spendingTxid} />
+          <CopyButton text={contract.txid} />
+          <ExternalLinkButton txid={contract.txid} />
         </span>
       )}
     </div>
@@ -253,7 +231,7 @@ export function RecoveryPage() {
   // A finished recovery still has a story to tell — it is reachable from the history, where the
   // question is "what happened to that swap?", not "is anything outstanding?".
   if (status && !status.active && status.swapId) {
-    const refunded = status.resolved.some((r) => r.leg === "outgoing" && r.resolution === "timelock");
+    const refunded = status.resolved.some((r) => r.leg === "outgoing");
     return (
       <div className="h-full overflow-y-auto px-8 py-10">
         <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
@@ -311,11 +289,7 @@ export function RecoveryPage() {
               </h2>
               <div className="mt-1 divide-y divide-line">
                 {status.resolved.map((c) => (
-                  <SettledRow
-                    key={`${c.contractTxid}-${c.spendingTxid ?? ""}`}
-                    contract={c}
-                    swapReceived={status.swapReceived}
-                  />
+                  <SettledRow key={c.txid} contract={c} />
                 ))}
               </div>
             </Card>
@@ -361,9 +335,9 @@ export function RecoveryPage() {
   );
   const resolvedCount = status?.resolved.length ?? 0;
   const pendingCount = pending.length;
-  const routerSettled = status?.resolved.find(
-    (r) => r.leg === "outgoing" && r.resolution !== "unresolved",
-  );
+  // Only this wallet's own claims are recorded, so a refund is the one outcome that shows; with
+  // nothing left owed and none, the router claimed its payment.
+  const refunded = status?.resolved.some((r) => r.leg === "outgoing") ?? false;
 
   // The three things that actually happen, in order. Each state is read off the contracts rather
   // than a timer: the crate writes no progress until a claim lands.
@@ -372,17 +346,13 @@ export function RecoveryPage() {
         { label: "Swapped coins received in your wallet", state: "passed" },
         routerOwed.length > 0
           ? { label: "Waiting for the router to claim its payment", state: "running" }
-          : routerSettled?.resolution === "timelock"
+          : refunded
             ? { label: "Refunded to you — the router backed out of the swap", state: "passed" }
-            : routerSettled
-              ? { label: "The router claimed its payment", state: "passed" }
-              : // Spent, so gone from the wallet's coins, but the crate records it only once
-                // the spend confirms.
-                { label: "The router's claim is confirming", state: "running" },
+            : { label: "The router claimed its payment", state: "passed" },
         // Never "passed" here: a settled recovery renders the completed view instead.
         {
           label: "Swap settled",
-          state: routerSettled && routerOwed.length === 0 ? "running" : "idle",
+          state: routerOwed.length === 0 ? "running" : "idle",
         },
       ]
     : [
@@ -578,7 +548,7 @@ export function RecoveryPage() {
               <ContractRow key={`${c.outpoint.txid}:${c.outpoint.vout}`} contract={c} />
             ))}
             {(status?.resolved ?? []).map((r) => (
-              <SettledRow key={r.contractTxid} contract={r} swapReceived={status?.swapReceived ?? false} />
+              <SettledRow key={r.txid} contract={r} />
             ))}
             {pendingCount === 0 && resolvedCount === 0 && (
               <p className="py-5 text-[12px] text-subtle">

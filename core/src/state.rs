@@ -84,8 +84,8 @@ pub type SessionId = String;
 pub const DESKTOP_SESSION: &str = "desktop";
 
 /// One unlocked wallet and everything its Taker needs. Keyed by the wallet's own data dir:
-/// the crate keeps its swap tracker and offerbook per data dir, so two Takers can only share a
-/// process safely when each has a directory to itself.
+/// the crate keeps its offerbook and config, and Portal its swap journal, per data dir, so two
+/// Takers can only share a process safely when each has a directory to itself.
 pub struct TakerInstance {
     pub wallet_name: String,
     /// The crate's `data_dir` for this wallet, and the registry key.
@@ -96,6 +96,8 @@ pub struct TakerInstance {
     pub taker: Arc<Mutex<Option<Taker>>>,
     /// Cached from `taker.get_wallet()` so wallet reads never contend with the taker mutex.
     pub wallet: Arc<RwLock<Wallet>>,
+    /// Seals this wallet's swap journal, derived from its password at unlock.
+    pub journal_key: openswap::security::KeyMaterial,
     pub offer_sync: OfferSyncClient,
     /// Exact chain route this Taker was built against. A later gate choice in another
     /// session never changes it.
@@ -103,6 +105,9 @@ pub struct TakerInstance {
     pub socks_port: u16,
     /// One swap at a time per wallet.
     pub active_swap: Mutex<Option<ActiveSwap>>,
+    /// How far a `prepare_swap` in flight has got. It holds the taker for its whole run, so its
+    /// own log lines are the only progress there is.
+    pub preparation: Arc<Mutex<Option<crate::types::SwapPreparationDto>>>,
     /// Aborts an in-flight `Wallet::sync_and_save`. The crate's `sync_no_fail` retries a failing
     /// backend forever and only exits on success or this flag, so without it an Electrum outage
     /// pins a blocking thread for the rest of the process's life.
@@ -128,9 +133,14 @@ pub struct TakerInstance {
 
 impl TakerInstance {
     pub fn swap_running(&self) -> bool {
-        self.active_swap.lock().is_ok_and(|swap| {
+        self.running_swap_id().is_some()
+    }
+
+    pub fn running_swap_id(&self) -> Option<String> {
+        self.active_swap.lock().ok().and_then(|swap| {
             swap.as_ref()
-                .is_some_and(|s| s.phase == SwapLifecycle::Running)
+                .filter(|s| s.phase == SwapLifecycle::Running)
+                .map(|s| s.swap_id.clone())
         })
     }
 }
@@ -232,22 +242,21 @@ impl AppState {
 
 pub struct ActiveSwap {
     pub swap_id: String,
-    /// The quote `prepare_swap` returned. Router fees exist nowhere else — not in the crate's
-    /// `SwapRecord`, not in `swap_tracker.cbor` — so without this a remounted Swap page can
-    /// never redraw the per-hop amounts for a swap already in flight.
+    /// The quote `prepare_swap` returned. Router fees exist nowhere else, so without this a
+    /// remounted Swap page can never redraw the per-hop amounts for a swap already in flight.
     pub summary: crate::types::SwapSummaryDto,
     pub phase: SwapLifecycle,
     pub backend_fingerprint: String,
     pub started_at: Option<SystemTime>,
     pub error: Option<String>,
-    pub outgoing: Arc<OutgoingConfirmation>,
+    /// Saved to the wallet's swap journal from `start_swap` on.
+    pub journal: Arc<Mutex<crate::ops::taker_journal::SwapEntry>>,
     pub funding_waits: Arc<Mutex<FundingWaits>>,
 }
 
 /// The txids each funding wait of the running swap polled, one group per leg in route order:
 /// the swap waits on its legs one at a time, and on every split of a leg at once. Read off the
-/// crate's wait log, because a leg's contract reaches the tracker only after it confirms, and a
-/// Legacy leg's never does: its tracker txid is a contract broadcast only on failure.
+/// crate's wait log, the only place a leg's on-chain txids are named before it confirms.
 #[derive(Default)]
 pub struct FundingWaits {
     pub legs: Vec<Vec<String>>,
@@ -271,15 +280,6 @@ impl FundingWaits {
             }
         }
     }
-}
-
-/// Whether our taproot funding has confirmed. Finding out is an Electrum round trip, so it runs
-/// off the progress poll's request path, one check at a time, and latches: one failed or
-/// skipped check must not walk the circuit back a hop.
-#[derive(Default)]
-pub struct OutgoingConfirmation {
-    pub confirmed: AtomicBool,
-    pub checking: AtomicBool,
 }
 
 pub struct PendingFileSelection {

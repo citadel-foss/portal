@@ -287,8 +287,7 @@ export function SwapPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Live per-router detail straight off swap_tracker.cbor — same 2s poll cadence the old Electron
-  // app used for its disk-read poll of the same file.
+  // Live per-router detail, polled every 2s.
   //
   // The same poll is what ends the swap. `swap://finished` is a notification, not the source of
   // truth, and a browser that misses one — a dropped SSE stream, a session that idled out during
@@ -307,7 +306,7 @@ export function SwapPage() {
       void Promise.all([getSwapTracker(), getSwapProgress()])
         .then(async ([next, progress]) => {
           if (cancelled) return;
-          // A handoff to recovery releases the swap slot, and the tracker read with it; keeping
+          // A handoff to recovery releases the swap slot, and the live read with it; keeping
           // the last one leaves the circuit where the swap actually stopped.
           if (next) setTracker(next);
           if (progress !== null) return;
@@ -489,14 +488,8 @@ export function SwapPage() {
     () =>
       routers.filter((m) => {
         if (!m.offer) return false;
-        const routerProtocol = m.protocol?.toLowerCase();
-        // "unified" routers (the crate's current default) speak both — only a router pinned to
-        // the other protocol is actually incompatible.
-        return (
-          !routerProtocol ||
-          routerProtocol === "unified" ||
-          routerProtocol === protocol
-        );
+        // No features yet means the router hasn't said; the crate checks again when it connects.
+        return m.features.length === 0 || m.features.includes(protocol);
       }),
     [routers, protocol],
   );
@@ -781,7 +774,7 @@ export function SwapPage() {
     !paymentsHeld;
 
   // Only while `submitting`: this is the one window where the taker mutex is held by a call that
-  // reports nothing, so the tracker file is the only progress signal there is.
+  // reports nothing, so the crate's own log lines are the only progress signal there is.
   useEffect(() => {
     if (!submitting || preparingSince === null) {
       setPreparation(null);
@@ -789,7 +782,7 @@ export function SwapPage() {
     }
     let cancelled = false;
     const poll = () => {
-      void getSwapPreparation(preparingSince)
+      void getSwapPreparation()
         .then((next) => {
           if (!cancelled) setPreparation(next);
         })
@@ -900,9 +893,9 @@ export function SwapPage() {
   }
 
   if (submitting) {
-    // Every step here is real: no record on disk yet means the crate is still refreshing the
-    // marketplace, a record means routers are picked, and the per-router `negotiated` flags are
-    // where the count comes from. Nothing is faked forward on a timer.
+    // Every step here is real: nothing yet means the crate is still refreshing the marketplace,
+    // a preparation means routers are picked, and each router's acceptance is where the count
+    // comes from. Nothing is faked forward on a timer.
     const discovered = preparation !== null;
     const negotiated = discovered && preparation.negotiatedCount >= preparation.routerCount;
     const negotiating = discovered && !negotiated;

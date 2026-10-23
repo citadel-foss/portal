@@ -13,8 +13,8 @@ import type {
 export const REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 const SYNC_TIME_STORAGE_KEY = "coinswap_wallet_last_sync";
 
-export type WalletSyncStatus = "idle" | "syncing" | "synced" | "error";
-export type WalletHistoryStatus = "idle" | "loading" | "loaded" | "error";
+type WalletSyncStatus = "idle" | "syncing" | "synced" | "error";
+type WalletHistoryStatus = "idle" | "loading" | "loaded" | "error";
 
 function loadSyncTimes(): Record<string, number> {
   try {

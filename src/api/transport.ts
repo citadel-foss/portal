@@ -7,7 +7,7 @@
  */
 import { host } from "@host";
 
-export interface Transport {
+interface Transport {
   /** Invoke one operation by its contract name. Callers go through `commands.ts`, which
    *  pairs each name with its own request and result types. */
   invoke<T>(name: string, args?: Record<string, unknown>): Promise<T>;

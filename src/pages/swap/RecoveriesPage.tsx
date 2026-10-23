@@ -2,7 +2,7 @@ import { AlertTriangle, ChevronRight, LifeBuoy, RefreshCw, ShieldCheck } from "l
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getRecoveryStatus, listRecoveries } from "../../api/commands";
-import type { RecoveryStatus, RecoverySummary } from "../../api/types";
+import type { RecoveryPhase, RecoveryStatus, RecoverySummary } from "../../api/types";
 import {
   BackButton,
   Card,
@@ -21,14 +21,8 @@ import { useToastStore } from "../../store/toast";
 // consults the chain, so polling faster only adds redundant Electrum connections.
 const POLL_MS = 60_000;
 
-const PHASE_LABEL: Record<string, string> = {
-  incoming_recovered: "Incoming leg reclaimed",
-  outgoing_recovered: "Outgoing leg reclaimed",
-  cleaned_up: "Finished",
-};
-
-function recoveryLabel(phase: string, running: boolean | undefined): string {
-  if (phase !== "not_started") return PHASE_LABEL[phase] ?? phase;
+function recoveryLabel(phase: RecoveryPhase, running: boolean | undefined): string {
+  if (phase === "cleaned_up") return "Finished";
   if (running === true) return "Recovery running";
   if (running === false) return "Recovery not running";
   return "Recovery status unavailable";

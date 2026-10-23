@@ -23,7 +23,7 @@ interface SwapPrepareState {
 
 const currentWallet = () => useWalletCacheStore.getState().info?.walletPath ?? null;
 
-export const useSwapPrepareStore = create<SwapPrepareState>((set, get) => ({
+const useSwapPrepareStore = create<SwapPrepareState>((set, get) => ({
   walletPath: null,
   since: null,
   review: null,

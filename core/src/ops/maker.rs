@@ -143,28 +143,23 @@ async fn construct_server(
     config: MakerInitConfig,
     data_dir: PathBuf,
 ) -> Result<Arc<MakerServer>, AppError> {
-    let socks_port = crate::tor::ensure_tor()
-        .map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?
-        .socks_port;
-    // Read once: the network recorded must be the one this server was built on, even if the
-    // session's backend changes while `MakerServer::init` runs.
+    crate::tor::ensure_tor().map_err(|e| AppError::new(ErrorCode::TorUnreachable, e))?;
     let chain = chain_backend::load(session);
-    // Before the crate opens the wallet: its startup recovery writes reports straight away.
-    crate::storage::move_sidecars_out(&data_dir, &config.wallet_name)?;
     let server_config = build_config(&chain, config, data_dir.clone())?;
     let server = tokio::task::spawn_blocking(move || MakerServer::init(server_config))
         .await
         .map_err(from_wallet_join_error)?
         .map_err(AppError::from)?;
-    chain_backend::record_network_once(session, data_dir, chain, socks_port);
+    // Only now: openswap's one-time upgrade reads it while opening.
+    crate::storage::remove_legacy_tracker(&data_dir.join("maker_swap_tracker.cbor"));
     Ok(Arc::new(server))
 }
 
 /// Unwinds a failed `init_maker` so the attempt can be retried.
 ///
 /// `created` is the wallet this attempt made, if it made one: `MakerServer::init` goes through
-/// `Wallet::load_or_init` and can create the wallet before a later step (sync, watch service,
-/// report load) fails, and leaving it behind would reject every retry of the same name. A
+/// `Wallet::load_or_init` and can create the wallet before a later step (sync, watch service)
+/// fails, and leaving it behind would reject every retry of the same name. A
 /// wallet that was already there — a removed router being registered again — is `None`, and
 /// is never touched: it holds that router's funds and bond.
 fn abort_failed_creation(
@@ -1072,16 +1067,7 @@ pub async fn start_maker(
     let server_thread = thread::Builder::new()
         .name(format!("maker-{router_id}"))
         .spawn(move || {
-            let cleanup_server = run_server.clone();
             let result = start_server(run_server);
-            if result.is_err() {
-                // `openswap::start_server` has early error paths after it may
-                // have spawned background work. Ensure those services cannot
-                // outlive a failed maker runtime.
-                cleanup_server.shutdown.store(true, Ordering::Relaxed);
-                cleanup_server.watch_service.shutdown();
-                let _ = cleanup_server.thread_pool.join_all_threads();
-            }
             let phase = match result {
                 Ok(()) => MakerPhase::Stopped,
                 Err(e) => MakerPhase::Failed {

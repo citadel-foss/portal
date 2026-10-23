@@ -30,12 +30,11 @@ export const STATUS_LABEL: Record<SwapStatus, string> = {
   recovery_timelock: "Recovered (timelock)",
   recovered: "Interrupted · recovered",
   interrupted: "Interrupted · recovering",
-  unfinished: "Never finished",
   failed: "Failed",
 };
 
-/** Where a swap's row leads. A tracker-only row has no report of its own, but it is a recovery,
- *  so it opens that, finished ones included. A swap that never reached recovery has nothing. */
+/** Where a swap's row leads. A journal-only row has no report of its own, but it is a recovery,
+ *  so it opens that, finished ones included. */
 export function swapReportLink(r: SwapReportSummary): string | null {
   if (r.reported) return `/swap/reports/${encodeURIComponent(r.swapId)}`;
   if (r.status === "interrupted" || r.status === "recovered")
@@ -286,7 +285,7 @@ export function ReportHero({ label, amountSats, secondary, tags, durationSeconds
  * Renders whatever the crate's `DeniabilityProof` JSON happens to contain, without hardcoding
  * field names — the Taproot and Legacy variants differ and the shape may evolve upstream.
  */
-export function JsonEntries({ value, depth = 0 }: { value: unknown; depth?: number }) {
+function JsonEntries({ value, depth = 0 }: { value: unknown; depth?: number }) {
   if (value === null || value === undefined) return <span className="text-subtle">—</span>;
 
   if (typeof value === "string") {

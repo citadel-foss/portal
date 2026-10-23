@@ -155,17 +155,15 @@ function OverviewPanel({
   info: WalletInfo;
   balances: Balances | null;
   bonds: FidelityBond[];
-  reports: RouterSwapReportSummary[];
+  /** `null` while the router is stopped: its reports live inside its wallet. */
+  reports: RouterSwapReportSummary[] | null;
 }) {
   const [copied, setCopied] = useState(false);
   const tor = status.torAddress;
   const total = balances
     ? balances.regular + balances.swap + balances.contract + balances.fidelity
     : 0;
-  const earnings = reports.reduce(
-    (sum, report) => sum + report.feeEarnedSats,
-    0,
-  );
+  const earnings = reports?.reduce((sum, report) => sum + report.feeEarnedSats, 0);
   return (
     <div className="space-y-4">
       {balances ? (
@@ -220,8 +218,8 @@ function OverviewPanel({
           />
           <DataMetric
             label="Net earnings"
-            value={<SatsAmount sats={earnings} />}
-            detail={`${reports.length} saved swap reports`}
+            value={earnings === undefined ? "—" : <SatsAmount sats={earnings} />}
+            detail={reports ? `${reports.length} saved swap reports` : "Start the router to read its reports"}
             icon={<CircleDollarSign size={14} />}
             tone="text-success"
           />
@@ -333,17 +331,23 @@ function ReportList({
   reports,
 }: {
   routerId: string;
-  reports: RouterSwapReportSummary[];
+  reports: RouterSwapReportSummary[] | null;
 }) {
   return (
     <Card className="border-line-strong">
       <div className="flex items-center justify-between border-b border-line px-5 py-4">
         <h2 className="font-header text-[14px] font-bold">Swap reports</h2>
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
-          {reports.length} reports
-        </span>
+        {reports && (
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-subtle">
+            {reports.length} reports
+          </span>
+        )}
       </div>
-      {reports.length === 0 ? (
+      {reports === null ? (
+        <p className="p-8 text-center text-[12px] text-subtle">
+          Reports are kept inside the router's wallet. Start the router to see them.
+        </p>
+      ) : reports.length === 0 ? (
         <p className="p-8 text-center text-[12px] text-subtle">
           Completed router swaps will appear here.
         </p>
@@ -1400,7 +1404,7 @@ export function RouterWorkspacePage() {
   const [info, setInfo] = useState<WalletInfo | null>(null);
   const [balances, setBalances] = useState<Balances | null>(null);
   const [bonds, setBonds] = useState<FidelityBond[]>([]);
-  const [reports, setReports] = useState<RouterSwapReportSummary[]>([]);
+  const [reports, setReports] = useState<RouterSwapReportSummary[] | null>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [showStart, setShowStart] = useState(false);
@@ -1423,7 +1427,13 @@ export function RouterWorkspacePage() {
     ]);
     setBalances(b.status === "fulfilled" ? b.value : null);
     setBonds(f.status === "fulfilled" ? f.value : []);
-    setReports(r.status === "fulfilled" ? r.value : []);
+    setReports(
+      r.status === "fulfilled"
+        ? r.value
+        : isAppError(r.reason) && r.reason.code === "ROUTER_NOT_RUNNING"
+          ? null
+          : [],
+    );
     setLoading(false);
   }, [id]);
   useEffect(() => {

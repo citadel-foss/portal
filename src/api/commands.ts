@@ -409,14 +409,10 @@ export function getSwapProgress(): Promise<SwapProgress | null> {
   return invoke("get_swap_progress");
 }
 
-// Live per-router detail read straight from swap_tracker.cbor — poll this every couple seconds
-// while a swap is running, same cadence as the old Electron app's disk-read poll.
-/**
- * Progress for a `prepareSwap` still in flight. Safe to poll while it blocks — it reads the
- * tracker file, not the taker. `since` is the unix second preparation began.
- */
-export function getSwapPreparation(since: number): Promise<SwapPreparation | null> {
-  return invoke("get_swap_preparation", { since });
+/** Progress for a `prepareSwap` still in flight. Safe to poll while it blocks — it never takes
+ *  the taker. */
+export function getSwapPreparation(): Promise<SwapPreparation | null> {
+  return invoke("get_swap_preparation");
 }
 
 /** Omit `swapId` for the running swap; pass one to read a swap the app has already released. */

@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use openswap::taker::offers::{MakerOfferCandidate, MakerProtocol, MakerState, OfferBook};
+use openswap::taker::offers::{MakerOfferCandidate, MakerState, OfferBook};
 
 use crate::error::{AppError, ErrorCode};
 use crate::state::{try_lock_taker, TakerInstance};
@@ -42,11 +42,6 @@ fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
         MakerState::Banned(_) => "bad",
         MakerState::Unavailable(_) => "unresponsive",
     };
-    let protocol = m.protocol.map(|p| match p {
-        MakerProtocol::Legacy => "legacy".to_string(),
-        MakerProtocol::Taproot => "taproot".to_string(),
-        MakerProtocol::Unified => "unified".to_string(),
-    });
     let offer = m.offer.map(|o| {
         let bond = &o.fidelity.bond;
         let outpoint = bond.outpoint();
@@ -67,7 +62,7 @@ fn to_maker_dto(m: MakerOfferCandidate) -> MakerDto {
     });
     MakerDto {
         address: m.address.to_string(),
-        protocol,
+        features: m.features,
         offer,
         state: state.to_string(),
     }

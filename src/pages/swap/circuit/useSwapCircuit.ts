@@ -11,7 +11,7 @@ import type {
 /** Six acts, one headline each. Acts before `route` have nothing on-chain — see `committed`. */
 export type Act = "find" | "deal" | "fund" | "route" | "finalizing" | "settle";
 
-export const ACT_LABEL: Record<Act, string> = {
+const ACT_LABEL: Record<Act, string> = {
   find: "Find",
   deal: "Deal",
   fund: "Fund",
@@ -45,12 +45,6 @@ export const STAGE_LABEL: Record<RouterStage, string> = {
 };
 
 /**
- * Past-tense name for each flag the crate sets, keyed by its field name. Both protocols' flag
- * sets are here — a router carries one set or the other, never both. This is hover-card detail
- * only: the flags are not evenly spaced in time, and taproot writes five of them at once, so
- * the narrative comes from `stage` instead.
- */
-/**
  * What the swap is doing at each phase, for the stretches with no router of its own to name:
  * everything before the funds move, and the final sweep after the last key is forwarded.
  * Each phase names the *next* piece of work, since the crate stamps a phase on completing one.
@@ -68,7 +62,7 @@ const PHASE_DOING: Record<TrackerPhase, string> = {
 };
 
 /** An edge is a contract transaction, so it has its own lifecycle independent of its endpoints. */
-export type EdgeStage = "pending" | "built" | "broadcast" | "confirming" | "confirmed";
+type EdgeStage = "pending" | "built" | "broadcast" | "confirming" | "confirmed";
 
 export const EDGE_STAGE_LABEL: Record<EdgeStage, string> = {
   pending: "Not started",
@@ -80,11 +74,6 @@ export const EDGE_STAGE_LABEL: Record<EdgeStage, string> = {
 
 export type Tone = "idle" | "active" | "success" | "danger";
 
-export interface Milestone {
-  key: string;
-  done: boolean;
-}
-
 export interface HopView {
   index: number;
   address: string;
@@ -92,7 +81,6 @@ export interface HopView {
   stage: RouterStage;
   tone: Tone;
   fee?: RouterFeeInfo;
-  milestones: Milestone[];
 }
 
 export interface EdgeView {
@@ -117,7 +105,7 @@ export interface CircuitView {
   /**
    * Asserted by the page, not inferred from the route. "Every router settled" comes well before
    * the swap is over — the crate still has to sweep the incoming contract and write the report —
-   * and the tracker's own `completed` lands before that report exists. Taking it from the page
+   * and the journal's own `completed` lands before that report exists. Taking it from the page
    * keeps the diagram, the heading and the View Report button changing at one moment.
    */
   complete: boolean;
@@ -215,10 +203,6 @@ export function useSwapCircuit(
         stage: live?.stage ?? "waiting",
         tone: "idle" as Tone,
         fee,
-        milestones: (live?.milestones ?? []).map((m) => ({
-          key: m.key,
-          done: m.done,
-        })),
       };
     });
 
@@ -243,31 +227,14 @@ export function useSwapCircuit(
               : "idle";
     });
 
-    // Which contract txs each leg carries. Only the two legs touching the wallet are recorded
-    // per-leg; everything between two routers arrives as one flat list, so it can only be
-    // attributed when it divides evenly across those legs. Until a leg's txids are recorded it
-    // has none, and one strand stands in for the unknown.
-    const betweenRouters = Math.max(0, routerCount - 1);
-    const watchonly = tracker?.watchonlyContractTxids ?? [];
-    const perIntermediate =
-      betweenRouters > 0 && watchonly.length % betweenRouters === 0
-        ? watchonly.length / betweenRouters
-        : 0;
-    const waited = tracker?.fundingWaitTxids ?? [];
     // What a leg's funding wait polled is its on-chain transaction, known from the moment the
-    // wait starts; the tracker records a leg only once it confirms. A Legacy leg's tracker
-    // txid is a contract that is broadcast only on failure, so it has no link to offer.
+    // wait starts. Our own Taproot contracts are also named as they are broadcast; nothing else
+    // is known about a leg until its wait begins, and one strand stands in for the unknown.
+    const waited = tracker?.fundingWaitTxids ?? [];
     const txidsFor = (index: number): string[] => {
       if (waited[index]?.length) return waited[index];
-      if (tracker?.protocol === "legacy") return [];
-      return recordedTxidsFor(index);
-    };
-    const recordedTxidsFor = (index: number): string[] => {
-      if (index === 0) return tracker?.outgoingContractTxids ?? [];
-      if (index === routerCount) return tracker?.incomingContractTxids ?? [];
-      if (perIntermediate === 0) return [];
-      // Leg 1 is the first router-to-router hop, so it starts at the front of the flat list.
-      return watchonly.slice((index - 1) * perIntermediate, index * perIntermediate);
+      if (index === 0 && tracker?.protocol === "taproot") return tracker.outgoingContractTxids;
+      return [];
     };
 
     // Edge k carries the value leaving slot k. Amounts descend as each router takes its fee.
@@ -279,11 +246,9 @@ export function useSwapCircuit(
 
       let stage: EdgeStage = "pending";
       if (index === 0) {
-        // Your own funding transaction. Legacy reports its confirmation directly; for taproot the
-        // backend reads it off the wallet's history. The first hop reaching `routed` implies it
-        // too, since a maker won't fund its own contract until ours has confirmed.
-        const ours = hops[0]?.milestones.find((m) => m.key === "prev_funding_confirmed");
-        if (ours?.done || tracker?.outgoingConfirmed || (hops[0] && atLeast(hops[0].stage, "routed")))
+        // Your own funding transaction. The first hop reaching `routed` implies it too, since a
+        // maker won't fund its own contract until ours has confirmed.
+        if (tracker?.outgoingConfirmed || (hops[0] && atLeast(hops[0].stage, "routed")))
           stage = "confirmed";
         else if (committed) stage = "broadcast";
         else if (phase === "funding_created") stage = "built";
@@ -315,9 +280,9 @@ export function useSwapCircuit(
     // unconfirmed answers "what is the swap waiting on" without that off-by-one.
     const liveEdge = edges.findIndex((e) => e.stage !== "confirmed");
 
-    // The route is funded strictly one leg at a time, so only the live leg may be lit. Without
-    // this, hop 1 showed two: the tracker marks router 1 `confirming` as soon as the route starts
-    // moving, which lights its outgoing leg while our own funding leg is still broadcasting.
+    // The route is funded strictly one leg at a time, so only the live leg may be lit: a router
+    // whose stage moves before our own funding has confirmed would otherwise light its outgoing
+    // leg while ours is still broadcasting.
     if (liveEdge !== -1) {
       for (const edge of edges.slice(liveEdge + 1)) {
         edge.stage = "pending";

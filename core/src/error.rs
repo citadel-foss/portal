@@ -35,6 +35,11 @@ pub enum ErrorCode {
     WalletOpenElsewhere,
     /// A browser asked to join a running wallet over a backend on a different chain.
     WalletNetworkMismatch,
+    /// The wallet file needs a newer openswap than this build carries.
+    WalletNeedsUpgrade,
+    /// openswap's one-time upgrade of an older wallet refused: it still has swaps the older
+    /// build has to finish.
+    WalletUpgradeBlocked,
     // runtime
     NotInitialized,
     SwapInProgress,
@@ -103,6 +108,8 @@ impl ErrorCode {
             | Self::WalletLoadFailed
             | Self::WalletOpenElsewhere
             | Self::WalletNetworkMismatch
+            | Self::WalletNeedsUpgrade
+            | Self::WalletUpgradeBlocked
             | Self::InsufficientFunds
             | Self::NotEnoughRouters
             | Self::InvalidInput
@@ -227,6 +234,27 @@ impl From<TakerError> for AppError {
 
 impl From<WalletError> for AppError {
     fn from(e: WalletError) -> Self {
+        match &e {
+            WalletError::NeedsUpgrade(_)
+            | WalletError::Security(SecurityError::NeedsUpgrade(_)) => {
+                return AppError::new(
+                    ErrorCode::WalletNeedsUpgrade,
+                    "This was saved by a newer version of Portal. Update Portal to open it.",
+                )
+            }
+            // The upgrade's refusal is an untyped `General`; its opening words are the signal.
+            WalletError::General(reason) if reason.starts_with("Cannot upgrade ") => {
+                return Self {
+                    code: ErrorCode::WalletUpgradeBlocked,
+                    message: "This still has swaps from an older version of Portal. Open it once \
+                        in the previous Portal release and let those swaps finish, then come back \
+                        to this version."
+                        .into(),
+                    details: Some(serde_json::json!({ "reason": reason })),
+                }
+            }
+            _ => {}
+        }
         let code = match &e {
             WalletError::InsufficientFund { .. } => ErrorCode::InsufficientFunds,
             WalletError::InvalidAddress(_) => ErrorCode::InvalidInput,
@@ -239,12 +267,7 @@ impl From<WalletError> for AppError {
             | WalletError::Security(SecurityError::Decryption | SecurityError::PasswordRequired) => {
                 ErrorCode::WalletWrongPassword
             }
-            // `check_node_requirements` reports a missing ZMQ publisher as an untyped
-            // `General`, so its wording is the only signal. If upstream rewords it this falls
-            // back to the generic load failure rather than misreporting something else.
-            WalletError::General(message) if message.to_lowercase().contains("zmq") => {
-                ErrorCode::ZmqUnreachable
-            }
+            WalletError::Zmq(_) => ErrorCode::ZmqUnreachable,
             _ => ErrorCode::WalletLoadFailed,
         };
         let details = match &e {
@@ -264,8 +287,11 @@ impl From<WalletError> for AppError {
 
 impl From<MakerError> for AppError {
     fn from(e: MakerError) -> Self {
+        // Same as a taker's: the wallet failure carries its own classification.
+        if let MakerError::Wallet(wallet) = e {
+            return AppError::from(wallet);
+        }
         let code = match &e {
-            MakerError::Wallet(_) => ErrorCode::WalletLoadFailed,
             MakerError::IO(_) => ErrorCode::Io,
             MakerError::InsufficientLiquidity { .. } => ErrorCode::InsufficientFunds,
             MakerError::TorError(_) => ErrorCode::TorUnreachable,
@@ -291,10 +317,8 @@ impl<T> From<std::sync::PoisonError<T>> for AppError {
     }
 }
 
-/// Openswap used to panic (not Result::Err) on a wrong password or corrupt wallet file; this
-/// classifies the spawn_blocking JoinError's panic message into a proper ErrorCode instead of a
-/// generic Internal. Upstream now returns `WalletError::Security` for that, but the panic paths
-/// outside wallet decryption remain, so this stays.
+/// A panic while loading a wallet means a file the crate could not make sense of, not a bug in
+/// Portal, so it reads as a load failure rather than `Internal`.
 ///
 /// Takes Tokio's error, not a host error type: both hosts run wallet work on the same blocking
 /// pool, and only the host knows how to unwrap its own wrapper around this.
@@ -309,15 +333,7 @@ pub fn from_wallet_join_error(join_err: tokio::task::JoinError) -> AppError {
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "wallet operation panicked".to_string());
 
-    let code = if msg.contains("Failed to decrypt") {
-        ErrorCode::WalletWrongPassword
-    } else if msg.contains("Failed to read the file") {
-        ErrorCode::WalletNotFound
-    } else {
-        // e.g. "Failed to deserialize file ...": corrupt/foreign wallet file.
-        ErrorCode::WalletLoadFailed
-    };
-    AppError::new(code, msg)
+    AppError::new(ErrorCode::WalletLoadFailed, msg)
 }
 
 #[cfg(test)]
@@ -363,6 +379,23 @@ mod tests {
         assert!(json.get("details").is_none(), "absent details stay absent");
     }
 
+    /// Both refusals of openswap's on-disk upgrade reach the unlock screen as their own codes,
+    /// through the taker's and the router's wrappers alike.
+    #[test]
+    fn wallet_upgrade_refusals_have_their_own_codes() {
+        let newer = TakerError::Wallet(WalletError::NeedsUpgrade(vec!["future".into()]));
+        assert_eq!(AppError::from(newer).code, ErrorCode::WalletNeedsUpgrade);
+        let sealed = WalletError::Security(SecurityError::NeedsUpgrade(vec!["future".into()]));
+        assert_eq!(AppError::from(sealed).code, ErrorCode::WalletNeedsUpgrade);
+
+        let blocked = MakerError::Wallet(WalletError::General(
+            "Cannot upgrade /w: the wallet has open swaps. Stop every older openswap process".into(),
+        ));
+        let error = AppError::from(blocked);
+        assert_eq!(error.code, ErrorCode::WalletUpgradeBlocked);
+        assert!(error.details.unwrap()["reason"].as_str().unwrap().contains("open swaps"));
+    }
+
     /// Non-wallet taker failures keep their own mapping.
     #[test]
     fn other_taker_failures_are_unchanged() {
@@ -370,18 +403,5 @@ mod tests {
             AppError::from(TakerError::NotEnoughMakersInOfferBook).code,
             ErrorCode::NotEnoughRouters
         );
-    }
-
-    #[test]
-    fn a_panicking_wallet_load_is_still_classified() {
-        // The historical path: upstream panicked rather than returning an error.
-        let joined = std::thread::spawn(|| panic!("Failed to decrypt the wallet file"))
-            .join()
-            .unwrap_err();
-        let message = joined
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        assert!(message.contains("Failed to decrypt"));
     }
 }

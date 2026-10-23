@@ -21,10 +21,9 @@ const STATUS_LABEL: Record<SwapStatus, string> = {
   success: "Success",
   recovery_hashlock: "Recovered (hashlock)",
   recovery_timelock: "Recovered (timelock)",
-  // No report was written for these — the swap tracker is all there is. See `SwapStatus`.
+  // No report was written for these — the swap journal is all there is. See `SwapStatus`.
   recovered: "Interrupted · recovered",
   interrupted: "Interrupted · recovering",
-  unfinished: "Never finished",
   failed: "Failed",
 };
 const STATUS_TONE: Record<SwapStatus, "success" | "warning" | "danger"> = {
@@ -33,7 +32,6 @@ const STATUS_TONE: Record<SwapStatus, "success" | "warning" | "danger"> = {
   recovery_timelock: "warning",
   recovered: "warning",
   interrupted: "warning",
-  unfinished: "warning",
   failed: "danger",
 };
 
@@ -84,7 +82,7 @@ export function SwapReportsPage() {
   const stats = useMemo(() => {
     const all = reports ?? [];
     // Anything that isn't a success. An interrupted swap has no report of its own, so counting
-    // only the report file's `failed` reported zero while money was still in a contract.
+    // only the crate's `failed` reported zero while money was still in a contract.
     const unsuccessful = all.filter((r) => r.status !== "success").length;
     const totalVolume = all.reduce((sum, r) => sum + r.outgoingAmountSats, 0);
     const totalFees = all.reduce((sum, r) => sum + r.feePaidSats, 0);
@@ -209,7 +207,7 @@ export function SwapReportsPage() {
                 ) : (
                   <div
                     key={r.swapId}
-                    title="No report was written for this swap — these are the figures the swap tracker kept"
+                    title="No report was written for this swap — these are the figures Portal kept"
                     className={`${grid} opacity-70`}
                   >
                     {cells}
