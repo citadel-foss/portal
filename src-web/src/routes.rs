@@ -37,7 +37,9 @@ impl IntoResponse for ApiError {
 impl From<AppError> for ApiError {
     fn from(error: AppError) -> Self {
         let status = match error.code {
-            ErrorCode::NotInitialized | ErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
+            ErrorCode::NotInitialized
+            | ErrorCode::InvalidInput
+            | ErrorCode::RecoveryPhraseNotSaved => StatusCode::BAD_REQUEST,
             ErrorCode::AuthorizationDenied => StatusCode::FORBIDDEN,
             ErrorCode::SwapInProgress
             | ErrorCode::RouterBusy
@@ -200,6 +202,7 @@ pub fn router(state: WebState) -> Router {
         .route(&c.route("/health/live"), get(live))
         .route(&c.route("/health/ready"), get(ready))
         .layer(RequestBodyLimitLayer::new(crate::files::MAX_UPLOAD_BYTES))
+        .layer(crate::assets::no_store())
         .with_state(state)
 }
 
@@ -470,6 +473,7 @@ async fn durable(
                                 | ErrorCode::WalletNetworkMismatch
                                 | ErrorCode::WalletOpenElsewhere
                                 | ErrorCode::NotInitialized
+                                | ErrorCode::RecoveryPhraseNotSaved
                         );
                         let _ = if settled {
                             journal.mark_failed(&id, error)

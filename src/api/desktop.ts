@@ -1,6 +1,7 @@
 /** Desktop host: Tauri's per-command IPC and its window event channel. */
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -68,4 +69,5 @@ export const host: Host = {
     routerId === undefined
       ? tauriInvoke<string>("backup_wallet", { password, walletPassword })
       : tauriInvoke<string>("backup_maker_wallet", { routerId, password, walletPassword }),
+  protectScreen: (on) => getCurrentWindow().setContentProtected(on),
 };

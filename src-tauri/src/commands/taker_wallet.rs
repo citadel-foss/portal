@@ -134,20 +134,28 @@ pub async fn restore_wallet_from_mnemonic(
 }
 
 #[tauri::command]
-pub fn get_recovery_phrase(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Option<RecoveryPhraseDto>, AppError> {
-    ensure_main_window(&window)?;
-    taker_wallet::get_recovery_phrase(&state, &*desktop_taker(&state)?, DESKTOP_SESSION)
+pub fn recovery_phrase_saved(state: tauri::State<'_, Arc<AppState>>) -> Result<bool, AppError> {
+    Ok(taker_wallet::recovery_phrase_saved(&*desktop_taker(
+        &state,
+    )?))
 }
 
 #[tauri::command]
-pub fn confirm_recovery_phrase_saved(
+pub async fn reveal_recovery_phrase(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, Arc<AppState>>,
-    id: Uuid,
+    wallet_password: String,
+) -> Result<RecoveryPhraseDto, AppError> {
+    ensure_main_window(&window)?;
+    taker_wallet::reveal_recovery_phrase(&*desktop_taker(&state)?, wallet_password).await
+}
+
+#[tauri::command]
+pub async fn confirm_recovery_phrase_saved(
+    state: tauri::State<'_, Arc<AppState>>,
+    wallet_password: String,
 ) -> Result<(), AppError> {
-    taker_wallet::confirm_recovery_phrase_saved(&state, DESKTOP_SESSION, id)
+    taker_wallet::confirm_recovery_phrase_saved(&*desktop_taker(&state)?, wallet_password).await
 }
 
 #[tauri::command]
@@ -226,7 +234,7 @@ pub async fn get_new_address(
     state: tauri::State<'_, Arc<AppState>>,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    taker_wallet::get_new_address(&state, &*desktop_taker(&state)?, address_type).await
+    taker_wallet::get_new_address(&*desktop_taker(&state)?, address_type).await
 }
 
 #[tauri::command]

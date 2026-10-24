@@ -8,7 +8,7 @@ use std::time::{Instant, SystemTime};
 use openswap::maker::MakerServer;
 use openswap::taker::offers::OfferSyncClient;
 use openswap::taker::Taker;
-use openswap::wallet::{SecretMnemonic, Wallet};
+use openswap::wallet::Wallet;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -46,23 +46,6 @@ pub struct MakerRuntime {
     pub chain_backend: ChainBackendConfig,
 }
 
-/// A new wallet's recovery phrase, held from creation until its creator says it is written down.
-/// The crate hands it out exactly once, so losing it here — a reload, a dropped response, a sign
-/// out — would lose it for good. Memory only, read only by the creating session, and dropped with
-/// that session so nothing waits on a confirmation no one can give.
-pub struct PendingPhrase {
-    /// Sent back with the confirmation, so a page still showing another phrase cannot clear this one.
-    pub id: Uuid,
-    pub words: SecretMnemonic,
-    pub session: SessionId,
-    /// Its unsaved-phrase marker, cleared on confirmation.
-    pub marker: PathBuf,
-    /// The wallet's or router's data dir lock, so another Portal on this machine, which knows
-    /// nothing of the phrase, cannot open or start it meanwhile. Shared with a wallet's open
-    /// Taker, so a sign out releases the dir only once the phrase is gone too.
-    pub(crate) dir_lock: Arc<crate::storage::WalletDirLock>,
-}
-
 /// One persisted maker registration plus its optional process-local runtime.
 /// Runtime objects are reconstructed after an app restart and after every
 /// explicit stop; only settings and wallet files survive those boundaries.
@@ -72,7 +55,9 @@ pub struct MakerHandle {
     pub phase: MakerPhase,
     /// Prevents an old server/watcher thread from updating a newer lifecycle.
     pub generation: u64,
-    pub pending_phrase: Option<PendingPhrase>,
+    /// Its wallet was seen without a confirmed recovery phrase. Only known once a create or start
+    /// has opened the wallet, which a stopped router's password-sealed file allows no other way.
+    pub phrase_unsaved: bool,
 }
 
 /// Identifies one client of the runtime: a browser session on the web, the window on desktop.
@@ -128,7 +113,7 @@ pub struct TakerInstance {
     pub sessions: Mutex<HashSet<SessionId>>,
     /// Held for the Taker's whole life, including its release, so another process on the same
     /// files cannot open this wallet while it is still being written.
-    pub(crate) dir_lock: Mutex<Option<Arc<crate::storage::WalletDirLock>>>,
+    pub(crate) dir_lock: Mutex<Option<crate::storage::WalletDirLock>>,
 }
 
 impl TakerInstance {
@@ -169,33 +154,12 @@ pub struct AppState {
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
-    /// New wallets' phrases by wallet data dir. Kept out of `TakerInstance`, which a sign out
-    /// drops while the wallet is still unsaved.
-    pub(crate) pending_phrases: Mutex<HashMap<PathBuf, PendingPhrase>>,
-    /// Sessions `end_session` has run for. A create still finishing when its session ends must not
-    /// hold a phrase for it afterwards.
-    /// Pruned after a day, which no create outlasts.
-    pub(crate) ended_sessions: Mutex<HashMap<SessionId, Instant>>,
     /// Domain events. Each host subscribes and forwards these onto its own transport, so
     /// publishers never learn whether they are talking to a webview or a browser.
     pub events: EventSink,
 }
 
 impl AppState {
-    /// Runs `hold` only while `session` is live, under the lock `end_session` marks it ended with,
-    /// so a phrase is either held before that session's cleanup or never held at all.
-    pub(crate) fn hold_phrase_for(
-        &self,
-        session: &str,
-        hold: impl FnOnce(),
-    ) -> Result<(), AppError> {
-        let ended = self.ended_sessions.lock()?;
-        if !ended.contains_key(session) {
-            hold();
-        }
-        Ok(())
-    }
-
     /// The wallet this session has unlocked.
     ///
     /// A binding alone is not enough: a session waiting on another's init is bound before its
@@ -320,25 +284,5 @@ mod funding_waits_tests {
             waits.observe(txid);
         }
         assert_eq!(waits.legs, vec![vec!["a", "b"], vec!["c", "d"], vec!["e"]]);
-    }
-}
-
-#[cfg(test)]
-mod phrase_tests {
-    use super::AppState;
-
-    /// A create that finishes after its session ended must not hold a phrase no one can confirm.
-    #[test]
-    fn an_ended_session_is_never_handed_a_phrase() {
-        let state = AppState::default();
-        state
-            .ended_sessions
-            .lock()
-            .unwrap()
-            .insert("gone".into(), std::time::Instant::now());
-        let mut held = Vec::new();
-        state.hold_phrase_for("gone", || held.push("gone")).unwrap();
-        state.hold_phrase_for("live", || held.push("live")).unwrap();
-        assert_eq!(held, ["live"]);
     }
 }

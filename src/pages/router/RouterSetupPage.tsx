@@ -10,12 +10,13 @@ import {
   stopRouter,
   syncRouterWallet,
 } from "../../api/commands";
-import type { LogLine, RouterPhase } from "../../api/types";
+import { isAppError, type LogLine, type RouterPhase } from "../../api/types";
 import { AddressQr, Card, LogViewer, Notice, SatsAmount } from "../../components/ui/display";
 import { Checklist, type CheckState } from "../../components/ui/Checklist";
 import { Button, LinkButton, PasswordField } from "../../components/ui/inputs";
 import { IntroStage } from "../../components/ui/IntroStage";
 import { FaucetButton } from "../../components/app/FaucetButton";
+import { useRecheckRecoveryPhrase } from "../../components/app/RecoveryPhrase";
 import { copyText } from "../../lib/clipboard";
 import { useToastStore } from "../../store/toast";
 
@@ -82,6 +83,7 @@ export function RouterSetupPage() {
   const id = routerId!;
   const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
+  const recheckPhrase = useRecheckRecoveryPhrase();
 
   const [name, setName] = useState(id);
   const [stage, setStage] = useState<Stage>("starting");
@@ -150,7 +152,9 @@ export function RouterSetupPage() {
         }
         await startRouter(id);
       } catch (e) {
-        if (!cancelled) fail((e as { message?: string })?.message ?? "Could not start the router.");
+        if (cancelled) return;
+        if (isAppError(e) && e.code === "RECOVERY_PHRASE_NOT_SAVED") return recheckPhrase();
+        fail((e as { message?: string })?.message ?? "Could not start the router.");
       }
     })();
 
@@ -158,7 +162,7 @@ export function RouterSetupPage() {
       cancelled = true;
       void unlisten.then((off) => off());
     };
-  }, [id, applyPhase, fail]);
+  }, [id, applyPhase, fail, recheckPhrase]);
 
   // The bond wait has no end of its own: an unfunded router would otherwise run until the app
   // quits, and a router that is not stopped cannot be removed.
@@ -183,6 +187,7 @@ export function RouterSetupPage() {
       setWalletPassword("");
       setNeedsPassword(false);
     } catch (e) {
+      if (isAppError(e) && e.code === "RECOVERY_PHRASE_NOT_SAVED") return recheckPhrase();
       setError((e as { message?: string })?.message ?? "Could not unlock the router wallet.");
     } finally {
       setStartingWithPassword(false);

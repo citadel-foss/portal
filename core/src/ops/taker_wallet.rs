@@ -15,7 +15,7 @@ use openswap::bitcoin::{Address, Amount, OutPoint, ScriptBuf, Txid};
 use openswap::maker::nostr::NOSTR_RELAYS;
 use openswap::taker::api::ConnectionType;
 use openswap::taker::{Taker, TakerInitConfig};
-use openswap::wallet::{AddressType, SecretMnemonic, UTXOSpendInfo, Wallet, WalletError};
+use openswap::wallet::{AddressType, UTXOSpendInfo, Wallet, WalletError};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -201,37 +201,12 @@ async fn open_taker(
     crate::security::fs::ensure_private_dir(&root.join(storage::WALLET_DATA_DIR))?;
     crate::security::fs::ensure_private_dir(key)?;
     crate::security::fs::ensure_private_dir(&key.join("wallets"))?;
-    // An unsaved phrase may still hold this dir's lock from before a sign out; a second flock on
-    // it from this process would be refused.
-    let parked = state
-        .pending_phrases
-        .lock()?
-        .get(key)
-        .map(|pending| pending.dir_lock.clone());
-    let wallet_file = wallet_path(key, &config.wallet_name);
-    let marker = storage::unsaved_phrase_marker(key, &config.wallet_name);
-    let dir_lock = match parked {
-        Some(lock) => lock,
-        None => {
-            let lock = storage::lock_wallet_dir(key)?;
-            storage::discard_unsaved_wallet(key, &config.wallet_name)?;
-            Arc::new(lock)
-        }
-    };
-    // `Taker::init` writes a new wallet before steps that can still fail, and the phrase dies with
-    // the error. Removing a wallet this call created lets the retry create it again, phrase and
-    // all; nothing could have been funded from it yet, and the dir lock keeps it this call's. A
-    // lookup error is not absence: taken for a create, an existing wallet would be marked.
-    let creating = !wallet_file.try_exists()?;
-    if creating {
-        std::fs::write(&marker, b"")?;
-    }
+    let dir_lock = storage::lock_wallet_dir(key)?;
 
     let connection_type = match config.connection_type {
         ConnectionTypeDto::Tor => ConnectionType::Tor,
         ConnectionTypeDto::Clearnet => ConnectionType::Clearnet,
     };
-    let phrase_password = config.wallet_password.clone();
     let journal_password = config.wallet_password.clone();
     let chain_config = chain_backend::load(session);
     let init_cfg = TakerInitConfig {
@@ -272,53 +247,9 @@ async fn open_taker(
     .await
     .map_err(from_wallet_join_error)
     .and_then(|init| init.map_err(AppError::from))
-    .inspect_err(|_| {
-        crate::logging::unregister_wallet(key);
-        if creating {
-            let _ = std::fs::remove_file(&wallet_file);
-            // Kept while the wallet is: its phrase died with the error.
-            if matches!(wallet_file.try_exists(), Ok(false)) {
-                let _ = storage::clear_unsaved_phrase_marker(&marker);
-            }
-        }
-    })?;
+    .inspect_err(|_| crate::logging::unregister_wallet(key))?;
     // Only now: openswap's one-time upgrade reads it while opening.
     crate::storage::remove_legacy_tracker(&key.join("swap_tracker.cbor"));
-    // Only a wallet this call created has a phrase to show.
-    let new_phrase = if creating {
-        match read_sealed_phrase(taker.get_wallet().clone(), phrase_password).await {
-            Ok(words) => Some(words),
-            Err(error) => {
-                // Dropping a Taker saves the wallet file, which can take seconds and would
-                // recreate the file removed below if it ran after.
-                let _ = tokio::task::spawn_blocking(move || drop(taker)).await;
-                crate::logging::unregister_wallet(key);
-                let _ = std::fs::remove_file(&wallet_file);
-                if matches!(wallet_file.try_exists(), Ok(false)) {
-                    let _ = storage::clear_unsaved_phrase_marker(&marker);
-                }
-                return Err(error);
-            }
-        }
-    } else {
-        None
-    };
-    if let Some(words) = new_phrase {
-        let mut pending = state.pending_phrases.lock()?;
-        state.hold_phrase_for(session, || {
-            pending.insert(
-                key.to_path_buf(),
-                crate::state::PendingPhrase {
-                    id: Uuid::new_v4(),
-                    words,
-                    session: session.to_string(),
-                    marker: marker.clone(),
-                    dir_lock: dir_lock.clone(),
-                },
-            );
-        })?;
-    }
-
     let journal_dir = key.to_path_buf();
     // PBKDF2, so off the async runtime; the password has just opened the wallet.
     let journal_key = tokio::task::spawn_blocking(move || {
@@ -360,75 +291,66 @@ async fn open_taker(
     Ok((instance, result))
 }
 
-/// The phrase the crate sealed into a wallet it just created. The key derivation is slow, so it
-/// runs off the async threads.
-pub(crate) async fn read_sealed_phrase(
-    wallet: Arc<RwLock<Wallet>>,
-    password: Option<String>,
-) -> Result<SecretMnemonic, AppError> {
-    let password = Zeroizing::new(password.unwrap_or_default());
+/// A wallet's recovery phrase, decrypted for this one response. The password is asked every
+/// time and nothing keeps the words afterwards; the crate's sealed copy in the wallet file is the
+/// only one that lasts. Shared with the router wallet.
+pub(crate) async fn reveal_phrase(
+    wallet: impl AsRef<RwLock<Wallet>> + Send + 'static,
+    password: String,
+) -> Result<RecoveryPhraseDto, AppError> {
+    let password = Zeroizing::new(password);
     tokio::task::spawn_blocking(move || {
-        wallet
+        let mnemonic = wallet
+            .as_ref()
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .get_wallet_mnemonic(password)
+            .get_wallet_mnemonic(password)?;
+        Ok(RecoveryPhraseDto {
+            words: mnemonic.words(),
+        })
     })
     .await
     .map_err(from_wallet_join_error)?
-    .map_err(AppError::from)
 }
 
-/// The new wallet's recovery phrase, for the session that created it, until it confirms it saved
-/// it. Not cleared by reading, so a reload before confirming shows it again.
-pub fn get_recovery_phrase(
-    state: &AppState,
-    taker: &TakerInstance,
-    session: &str,
-) -> Result<Option<RecoveryPhraseDto>, AppError> {
-    match state.pending_phrases.lock()?.get(&taker.data_dir) {
-        None if !matches!(
-            storage::unsaved_phrase_marker(&taker.data_dir, &taker.wallet_name).try_exists(),
-            Ok(false)
-        ) => Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "This wallet's recovery phrase was never saved and can no longer be shown. Sign out \
-             and open the wallet again: Portal creates it afresh, with a new phrase to save.",
-        )),
-        None => Ok(None),
-        Some(pending) if pending.session == session => Ok(Some(RecoveryPhraseDto {
-            id: pending.id,
-            words: pending.words.words().to_string(),
-        })),
-        // The words stay with their creator, but the wallet is not to be used, and so not funded,
-        // until they are saved.
-        Some(_) => Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "This wallet's recovery phrase has not been saved yet. Save it in the browser that \
-             created the wallet, then try again.",
-        )),
-    }
-}
-
-/// Clears the phrase this session was shown, by its id: the session may have moved to another
-/// wallet since, and that one's words were never on this page.
-pub fn confirm_recovery_phrase_saved(
-    state: &AppState,
-    session: &str,
-    id: Uuid,
+/// Records in the wallet file that its phrase is written down. Shared with the router wallet.
+pub(crate) async fn confirm_phrase(
+    wallet: impl AsRef<RwLock<Wallet>> + Send + 'static,
+    password: String,
 ) -> Result<(), AppError> {
-    let mut pending = state.pending_phrases.lock()?;
-    let Some((key, marker)) = pending
-        .iter()
-        .find(|(_, p)| p.id == id && p.session == session)
-        .map(|(key, p)| (key.clone(), p.marker.clone()))
-    else {
-        return Ok(());
-    };
-    // Cleared first: a marker that outlived its phrase would have a saved wallet taken for one
-    // that never was, and removed.
-    storage::clear_unsaved_phrase_marker(&marker)?;
-    pending.remove(&key);
-    Ok(())
+    let password = Zeroizing::new(password);
+    tokio::task::spawn_blocking(move || {
+        wallet
+            .as_ref()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .confirm_seed_backup(password)
+            .map_err(AppError::from)
+    })
+    .await
+    .map_err(from_wallet_join_error)?
+}
+
+pub fn recovery_phrase_saved(taker: &TakerInstance) -> bool {
+    taker
+        .wallet
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .seed_backed_up()
+}
+
+pub async fn reveal_recovery_phrase(
+    taker: &TakerInstance,
+    password: String,
+) -> Result<RecoveryPhraseDto, AppError> {
+    reveal_phrase(taker.wallet.clone(), password).await
+}
+
+pub async fn confirm_recovery_phrase_saved(
+    taker: &TakerInstance,
+    password: String,
+) -> Result<(), AppError> {
+    confirm_phrase(taker.wallet.clone(), password).await
 }
 
 /// Adds a session to a wallet another session already has open.
@@ -576,27 +498,8 @@ pub fn release_session(state: &Arc<AppState>, session: &str) {
 /// A session that is gone for good: signed out or expired. Also drops its gate choice, which
 /// can hold a node's RPC password.
 pub fn end_session(state: &Arc<AppState>, session: &str) {
-    if let Ok(mut ended) = state.ended_sessions.lock() {
-        ended.retain(|_, at| at.elapsed() < Duration::from_secs(24 * 60 * 60));
-        ended.insert(session.to_string(), std::time::Instant::now());
-    }
     release_session(state, session);
     chain_backend::forget_session(session);
-    // Only this session could read or confirm them, and a router stays unstartable while one waits.
-    if let Ok(mut pending) = state.pending_phrases.lock() {
-        pending.retain(|_, phrase| phrase.session != session);
-    }
-    if let Ok(mut makers) = state.makers.lock() {
-        for entry in makers.values_mut() {
-            if entry
-                .pending_phrase
-                .as_ref()
-                .is_some_and(|p| p.session == session)
-            {
-                entry.pending_phrase = None;
-            }
-        }
-    }
 }
 
 /// Drops the wallet at `key` if nothing is using it any more.
@@ -821,8 +724,6 @@ pub async fn restore_wallet(
         ));
     }
     let backup = take_restore_selection(state, selection_id, &password).await?;
-    // A restored wallet can hold funds; a marker left from an abandoned create would get it removed.
-    storage::clear_unsaved_phrase_marker(&storage::unsaved_phrase_marker(&dir, &wallet_name))?;
     let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
     restore_backup(backup, dir, wallet_name, backend, password).await
 }
@@ -949,14 +850,16 @@ pub(crate) async fn restore_phrase(
     let log_dir = dir.clone();
     tokio::task::spawn_blocking(move || {
         let _log = crate::logging::wallet_scope(log_dir);
-        openswap::wallet::ffi::restore_wallet_from_mnemonic_gui_app(
-            Some(dir),
-            wallet_name,
-            backend,
-            phrase,
-            Some(password),
+        let confirm = Zeroizing::new(password.clone());
+        let mut wallet = Wallet::restore_from_mnemonic(
+            Zeroizing::new(phrase),
+            &wallet_path(&dir, &wallet_name),
+            &backend,
             openswap::wallet::RestoreOptions::default(),
-        )
+            Zeroizing::new(password),
+        )?;
+        // Typed in just now, so already written down.
+        wallet.confirm_seed_backup(confirm)
     })
     .await
     .map_err(from_wallet_join_error)?
@@ -1001,8 +904,6 @@ pub async fn restore_wallet_from_mnemonic(
             format!("a wallet named '{wallet_name}' already exists — pick another name"),
         ));
     }
-    // A restored wallet can hold funds; a marker left from an abandoned create would get it removed.
-    storage::clear_unsaved_phrase_marker(&storage::unsaved_phrase_marker(&dir, &wallet_name))?;
     let backend = chain_backend::resolve(session, &wallet_name, socks_port)?;
     let restored = restore_phrase(phrase, dir, wallet_name, backend, password).await;
     // The crate writes the file before its scan; a failed restore would otherwise leave a name
@@ -1174,21 +1075,14 @@ fn save_last_addresses(path: &Path, addrs: &LastAddresses) -> Result<(), AppErro
 /// standard HD-wallet gap-limit-safe behavior — repeat calls (page reload, switching type) must
 /// not advance the derivation index for no reason.
 pub async fn get_new_address(
-    state: &AppState,
     taker: &TakerInstance,
     address_type: AddressTypeDto,
 ) -> Result<NewAddress, AppError> {
-    // A receive address is how a new wallet gets funded, and a page opened before this session
-    // switched wallets never passed the new wallet's phrase screen.
-    if state.pending_phrases.lock()?.contains_key(&taker.data_dir)
-        || !matches!(
-            storage::unsaved_phrase_marker(&taker.data_dir, &taker.wallet_name).try_exists(),
-            Ok(false)
-        )
-    {
+    // A receive address is how a wallet gets funded, so not before its words are written down.
+    if !recovery_phrase_saved(taker) {
         return Err(AppError::new(
-            ErrorCode::InvalidInput,
-            "This wallet's recovery phrase has not been saved yet. Reload the page to save it.",
+            ErrorCode::RecoveryPhraseNotSaved,
+            "Save this wallet's recovery phrase before receiving to it.",
         ));
     }
     let wallet = taker.wallet.clone();
@@ -2032,5 +1926,17 @@ mod phrase_tests {
             "abandon abandon about"
         );
         assert_eq!(normalize_phrase(" \n "), "");
+    }
+
+    /// The frontend reads exactly `words`; the hand-written `Serialize` must keep that shape.
+    #[test]
+    fn a_revealed_phrase_crosses_as_its_words_alone() {
+        let dto = crate::types::RecoveryPhraseDto {
+            words: zeroize::Zeroizing::new("abandon about".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap(),
+            serde_json::json!({ "words": "abandon about" })
+        );
     }
 }
