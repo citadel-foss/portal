@@ -408,6 +408,7 @@ export const host: Host = {
     setTimeout(() => URL.revokeObjectURL(url), 0);
     return name;
   },
+  protectScreen: async () => {},
 };
 
 /** A hidden input rather than a native dialog: the browser owns file choice, and the page

@@ -20,22 +20,31 @@ pub fn get_router_defaults() -> RouterDefaultsDto {
 }
 
 #[tauri::command]
-pub fn get_router_recovery_phrase(
-    window: tauri::WebviewWindow,
+pub fn router_recovery_phrase_saved(
     state: tauri::State<'_, Arc<AppState>>,
     router_id: String,
-) -> Result<Option<RecoveryPhraseDto>, AppError> {
-    crate::native::ensure_main_window(&window)?;
-    maker::get_router_recovery_phrase(&state, DESKTOP_SESSION, &router_id)
+) -> Result<bool, AppError> {
+    maker::router_recovery_phrase_saved(&state, &router_id)
 }
 
 #[tauri::command]
-pub fn confirm_router_recovery_phrase_saved(
+pub async fn reveal_router_recovery_phrase(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, Arc<AppState>>,
     router_id: String,
-    id: uuid::Uuid,
+    wallet_password: String,
+) -> Result<RecoveryPhraseDto, AppError> {
+    crate::native::ensure_main_window(&window)?;
+    maker::reveal_router_recovery_phrase(&state, &router_id, wallet_password).await
+}
+
+#[tauri::command]
+pub async fn confirm_router_recovery_phrase_saved(
+    state: tauri::State<'_, Arc<AppState>>,
+    router_id: String,
+    wallet_password: String,
 ) -> Result<(), AppError> {
-    maker::confirm_router_recovery_phrase_saved(&state, DESKTOP_SESSION, &router_id, id)
+    maker::confirm_router_recovery_phrase_saved(&state, &router_id, wallet_password).await
 }
 
 #[tauri::command]

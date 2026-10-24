@@ -11,3 +11,4 @@ export const pickFile = host.pickFile;
 export const selectBackup = host.selectBackup;
 export const createBackup = host.createBackup;
 export const awaitRestart = host.awaitRestart;
+export const protectScreen = host.protectScreen;

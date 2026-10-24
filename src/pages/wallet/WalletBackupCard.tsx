@@ -1,6 +1,7 @@
 import { Check, Save } from "lucide-react";
 import { useEffect, useState } from "react";
-import { checkBackend } from "../../api/commands";
+import { checkBackend, revealRecoveryPhrase } from "../../api/commands";
+import { ShowRecoveryPhrase } from "../../components/app/RecoveryPhrase";
 import { createBackup } from "../../platform";
 import type { BackendStatus } from "../../api/types";
 import { Card } from "../../components/ui/display";
@@ -31,7 +32,7 @@ export function WalletFooterCard() {
             Wallet backup
           </h2>
           <p className="mt-1 text-[11px] text-muted">
-            An encrypted export for recovery or migration
+            The recovery phrase, and an encrypted export for recovery or migration
           </p>
         </div>
         <span
@@ -61,6 +62,9 @@ export function WalletFooterCard() {
         </span>
       </div>
 
+      <div className="border-b border-line p-5">
+        <ShowRecoveryPhrase subject="wallet" reveal={revealRecoveryPhrase} />
+      </div>
       <div className="p-5">
         <BackupForm />
       </div>
