@@ -10,3 +10,4 @@ export const pickDirectory = host.pickDirectory;
 export const pickFile = host.pickFile;
 export const selectBackup = host.selectBackup;
 export const createBackup = host.createBackup;
+export const protectScreen = host.protectScreen;

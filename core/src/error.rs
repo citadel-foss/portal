@@ -40,6 +40,9 @@ pub enum ErrorCode {
     /// openswap's one-time upgrade of an older wallet refused: it still has swaps the older
     /// build has to finish.
     WalletUpgradeBlocked,
+    /// The wallet's recovery phrase has not been confirmed as written down, so it may not be
+    /// funded yet.
+    RecoveryPhraseNotSaved,
     // runtime
     NotInitialized,
     SwapInProgress,
@@ -110,6 +113,7 @@ impl ErrorCode {
             | Self::WalletNetworkMismatch
             | Self::WalletNeedsUpgrade
             | Self::WalletUpgradeBlocked
+            | Self::RecoveryPhraseNotSaved
             | Self::InsufficientFunds
             | Self::NotEnoughRouters
             | Self::InvalidInput

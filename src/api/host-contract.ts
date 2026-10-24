@@ -66,6 +66,9 @@ export interface Host {
    *  file's name. `walletPassword` unseals the wallet's seed. Desktop saves it
    *  where a native dialog says; web has the server produce it and downloads it. */
   createBackup(walletPassword: string, password: string, routerId?: string): Promise<string>;
+  /** Keeps the window out of screenshots, recordings and screen shares while `on`. Desktop
+   *  only; a browser offers no such control. */
+  protectScreen(on: boolean): Promise<void>;
 }
 
 /** Mirrors `RestoreSelectionView` in core. */

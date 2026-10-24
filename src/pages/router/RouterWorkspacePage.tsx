@@ -35,6 +35,7 @@ import {
   getSavedRouterSettings,
   listRouterFidelityBonds,
   listRouterSwapReports,
+  revealRouterRecoveryPhrase,
   startRouter,
   stopRouter,
   sendRouterToAddress,
@@ -44,6 +45,7 @@ import {
 import { chosenFeeRate, type FeeChoice, useFeeEstimate } from "../../lib/fee-rate";
 import { BackupForm } from "../wallet/WalletBackupCard";
 import { AddressList } from "../../components/app/AddressList";
+import { ShowRecoveryPhrase, useRecheckRecoveryPhrase } from "../../components/app/RecoveryPhrase";
 import { isAppError } from "../../api/types";
 import type {
   AddressType,
@@ -918,6 +920,7 @@ function SettingsPanel({
 }) {
   const navigate = useNavigate();
   const pushToast = useToastStore((s) => s.push);
+  const recheckPhrase = useRecheckRecoveryPhrase();
   const [form, setForm] = useState<SettingsForm>(() =>
     settingsToForm(settings),
   );
@@ -1003,6 +1006,10 @@ function SettingsPanel({
       await startRouter(routerId, walletEncrypted ? restartPassword : undefined);
       return true;
     } catch (e) {
+      if (isAppError(e) && e.code === "RECOVERY_PHRASE_NOT_SAVED") {
+        recheckPhrase();
+        return false;
+      }
       setRestartPending(true);
       setRestartError(
         (e as { message?: string }).message ?? "The router did not start.",
@@ -1394,6 +1401,7 @@ export function RouterWorkspacePage() {
   const { routerId = "" } = useParams();
   const id = decodeURIComponent(routerId);
   const pushToast = useToastStore((s) => s.push);
+  const recheckPhrase = useRecheckRecoveryPhrase();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab") as Tab | null;
   const tab = TAB_OPTIONS.some((item) => item.value === requestedTab)
@@ -1487,6 +1495,7 @@ export function RouterWorkspacePage() {
       setWalletPassword("");
       await load();
     } catch (e) {
+      if (isAppError(e) && e.code === "RECOVERY_PHRASE_NOT_SAVED") return recheckPhrase();
       setStartError(
         isAppError(e) && e.code === "WALLET_WRONG_PASSWORD"
           ? "Wrong password for this router's wallet."
@@ -1624,7 +1633,15 @@ export function RouterWorkspacePage() {
               <Card className="border-line-strong">
                 <div className="border-b border-line px-5 py-4">
                   <h2 className="font-header text-[14px] font-bold">Wallet backup</h2>
-                  <p className="mt-1 text-[11px] text-muted">An encrypted export of this router&apos;s wallet</p>
+                  <p className="mt-1 text-[11px] text-muted">
+                    The recovery phrase, and an encrypted export of this router&apos;s wallet
+                  </p>
+                </div>
+                <div className="border-b border-line p-5">
+                  <ShowRecoveryPhrase
+                    subject="router"
+                    reveal={(password) => revealRouterRecoveryPhrase(id, password)}
+                  />
                 </div>
                 <div className="p-5">
                   <BackupForm routerId={id} />

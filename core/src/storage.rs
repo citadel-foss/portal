@@ -201,41 +201,6 @@ pub fn lock_wallet_dir(dir: &Path) -> Result<WalletDirLock, AppError> {
     Ok(WalletDirLock { _file: file })
 }
 
-/// Present from a new wallet's creation until its phrase is confirmed saved. The phrase lives in
-/// memory only, so past a restart or the end of its session this file is all that says it was
-/// never saved: nothing has been allowed to fund the wallet while it is here. Named for the one
-/// wallet it covers, since a router's data dir can hold wallets of other names.
-pub fn unsaved_phrase_marker(data_dir: &Path, wallet_name: &str) -> PathBuf {
-    data_dir.join(format!(".phrase-unsaved-{wallet_name}"))
-}
-
-pub fn clear_unsaved_phrase_marker(marker: &Path) -> Result<(), AppError> {
-    match fs::remove_file(marker) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-        _ => Ok(()),
-    }
-}
-
-/// Removes a wallet whose phrase was never saved and is no longer held, so it is created again
-/// with a phrase the user sees. It cannot hold funds: no address is issued and no router starts
-/// while its marker stands. Callers hold the dir lock and have checked no phrase is held for it.
-pub(crate) fn discard_unsaved_wallet(
-    data_dir: &Path,
-    wallet_name: &str,
-) -> Result<bool, AppError> {
-    let (wallet, marker) = (
-        wallet_path(data_dir, wallet_name),
-        unsaved_phrase_marker(data_dir, wallet_name),
-    );
-    if !(wallet.exists() && marker.exists()) {
-        return Ok(false);
-    }
-    fs::remove_file(&wallet)?;
-    clear_unsaved_phrase_marker(&marker)?;
-    log::info!("removed {wallet:?}: created, but its recovery phrase was never saved");
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,37 +277,5 @@ mod tests {
         drop(held);
         assert!(lock_wallet_dir(&root).is_ok(), "released on drop");
         fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// The only automatic wallet removal there is: it must never reach a wallet without its own
-    /// marker, including another wallet's in the same data dir.
-    #[test]
-    fn only_a_marked_wallet_is_discarded() {
-        let dir = scratch("unsaved");
-        fs::create_dir_all(dir.join("wallets")).unwrap();
-        let (wallet, other) = (wallet_path(&dir, "w"), wallet_path(&dir, "other"));
-        fs::write(&wallet, b"x").unwrap();
-        fs::write(&other, b"x").unwrap();
-
-        assert!(!discard_unsaved_wallet(&dir, "w").unwrap());
-        assert!(wallet.exists(), "a wallet with no marker is never touched");
-
-        fs::write(unsaved_phrase_marker(&dir, "other"), b"").unwrap();
-        assert!(!discard_unsaved_wallet(&dir, "w").unwrap());
-        assert!(wallet.exists(), "another wallet's marker never removes this one");
-
-        fs::write(unsaved_phrase_marker(&dir, "w"), b"").unwrap();
-        assert!(discard_unsaved_wallet(&dir, "w").unwrap());
-        assert!(!wallet.exists() && !unsaved_phrase_marker(&dir, "w").exists());
-        assert!(other.exists() && unsaved_phrase_marker(&dir, "other").exists());
-
-        fs::write(unsaved_phrase_marker(&dir, "w"), b"").unwrap();
-        assert!(
-            !discard_unsaved_wallet(&dir, "w").unwrap(),
-            "a stale marker alone removes nothing"
-        );
-        clear_unsaved_phrase_marker(&unsaved_phrase_marker(&dir, "w")).unwrap();
-        clear_unsaved_phrase_marker(&unsaved_phrase_marker(&dir, "w")).unwrap();
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

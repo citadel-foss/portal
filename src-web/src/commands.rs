@@ -77,16 +77,25 @@ pub fn lookup(name: &str) -> Option<&'static Operation> {
 }
 
 pub static OPERATIONS: &[Operation] = &[
-    // Mutating, though they only read: a read skips CSRF, and on Umbrel the session cookie
-    // reaches every app on the host. The phrase must need the login-only token.
-    op("get_recovery_phrase", true, |ctx, args| {
+    op("recovery_phrase_saved", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move { encode(&ops::taker_wallet::recovery_phrase_saved(&*ctx.taker()?)) })
+    }),
+    // Mutating, though it only reads: a read skips CSRF, and on Umbrel the session cookie reaches
+    // every app on the host. The phrase must need the login-only token.
+    op("reveal_recovery_phrase", true, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {
-            encode(&ops::taker_wallet::get_recovery_phrase(
-                &ctx.rt,
-                &*ctx.taker()?,
-                &ctx.session,
-            )?)
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                wallet_password: String,
+            }
+            let body: Args = parse(args)?;
+            encode(
+                &ops::taker_wallet::reveal_recovery_phrase(&*ctx.taker()?, body.wallet_password)
+                    .await?,
+            )
         })
     }),
     op("confirm_recovery_phrase_saved", true, |ctx, args| {
@@ -95,17 +104,19 @@ pub static OPERATIONS: &[Operation] = &[
             #[derive(serde::Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
-                id: Uuid,
+                wallet_password: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::taker_wallet::confirm_recovery_phrase_saved(
-                &ctx.rt,
-                &ctx.session,
-                body.id,
-            )?)
+            encode(
+                &ops::taker_wallet::confirm_recovery_phrase_saved(
+                    &*ctx.taker()?,
+                    body.wallet_password,
+                )
+                .await?,
+            )
         })
     }),
-    op("get_router_recovery_phrase", true, |ctx, args| {
+    op("router_recovery_phrase_saved", false, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move {
             #[derive(serde::Deserialize)]
@@ -114,11 +125,30 @@ pub static OPERATIONS: &[Operation] = &[
                 router_id: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::get_router_recovery_phrase(
+            encode(&ops::maker::router_recovery_phrase_saved(
                 &ctx.rt,
-                &ctx.session,
                 &body.router_id,
             )?)
+        })
+    }),
+    op("reveal_router_recovery_phrase", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                router_id: String,
+                wallet_password: String,
+            }
+            let body: Args = parse(args)?;
+            encode(
+                &ops::maker::reveal_router_recovery_phrase(
+                    &ctx.rt,
+                    &body.router_id,
+                    body.wallet_password,
+                )
+                .await?,
+            )
         })
     }),
     op("confirm_router_recovery_phrase_saved", true, |ctx, args| {
@@ -128,15 +158,17 @@ pub static OPERATIONS: &[Operation] = &[
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
                 router_id: String,
-                id: Uuid,
+                wallet_password: String,
             }
             let body: Args = parse(args)?;
-            encode(&ops::maker::confirm_router_recovery_phrase_saved(
-                &ctx.rt,
-                &ctx.session,
-                &body.router_id,
-                body.id,
-            )?)
+            encode(
+                &ops::maker::confirm_router_recovery_phrase_saved(
+                    &ctx.rt,
+                    &body.router_id,
+                    body.wallet_password,
+                )
+                .await?,
+            )
         })
     }),
     op("check_router_config", false, |ctx, args| {
@@ -819,10 +851,7 @@ pub static DURABLE: &[Operation] = &[
                 address_type: AddressTypeDto,
             }
             let body: Args = parse(args)?;
-            encode(
-                &ops::taker_wallet::get_new_address(&ctx.rt, &*ctx.taker()?, body.address_type)
-                    .await?,
-            )
+            encode(&ops::taker_wallet::get_new_address(&*ctx.taker()?, body.address_type).await?)
         })
     }),
     op("init_maker", true, |ctx, args| {
