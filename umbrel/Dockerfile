@@ -12,10 +12,11 @@ RUN npx tsc --noEmit && npx vite build --mode web
 
 FROM rust:1.98-bookworm AS backend
 WORKDIR /build
-# Embedded Tor is built from source by libtor, so its toolchain has to be present here and
-# nowhere in the runtime image.
+# The C toolchain for native crates. Embedded Tor needs none: core/build.rs fetches the Tor
+# Project's prebuilt bundle for this platform, checks its SHA-256 and compiles it in. Its only
+# system library at runtime is zlib, which every Debian image has.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config libssl-dev build-essential && rm -rf /var/lib/apt/lists/*
+      pkg-config build-essential && rm -rf /var/lib/apt/lists/*
 # Glob: CI has no Cargo.lock, and COPY fails on a missing file.
 COPY Cargo.toml Cargo.lock* version.txt ./
 COPY core ./core

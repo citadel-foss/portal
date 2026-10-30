@@ -25,7 +25,6 @@ minreq = { version = "2.12.0", features = ["https"] }
 # Own logger config (see core/src/logging.rs) - openswap's setup_taker_logger/setup_maker_logger
 # share one process-wide OnceLock, so we can't use both to get two separate log files.
 log4rs = "1.4.0"
-libtor = { version = "47.13", features = ["vendored-openssl"] }
 axum = { version = "0.8", features = ["json", "macros"] }
 tower-http = { version = "0.6", features = ["fs", "set-header", "limit"] }
 clap = { version = "4", features = ["derive", "env"] }

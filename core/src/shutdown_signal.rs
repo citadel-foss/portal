@@ -1,31 +1,14 @@
-//! Termination signals, owned by the host rather than by Tor.
+//! Termination signals, owned by the host.
 //!
-//! libtor runs Tor inside this process, and once it is up Tor gets the signal no matter what
-//! the host does. Two approaches were tried and measured against a running Tor, and neither
-//! works: masking the signals is worse than useless, because a process-directed signal goes
-//! to any thread that has not blocked it and Tor unblocks them in its own — so a mask simply
-//! guarantees Tor receives it. Reinstalling the disposition afterwards does not win either,
-//! because libevent watches signals through kqueue, which the disposition does not govern.
-//!
-//! So the host stops fighting for the signal and uses two facts instead:
-//!
-//! - [`arm`] installs a handler, which is what catches a signal arriving before Tor exists.
-//! - [`trip_if_adopted`] covers every moment after that. Reinstalling the handler was tried
-//!   and measured: it runs, and Tor still receives the signal, because libevent watches for
-//!   signals through kqueue rather than the disposition. So once Tor is running it always
-//!   takes the signal and exits — and an exit nobody asked for is itself the notification.
-//!   A Tor that died on its own is equally terminal: `tor_main` cannot run twice here.
+//! [`arm`] installs a handler that only sets a flag, and the host awaits [`wait`] to run its
+//! ordered teardown: makers, then the taker, then Tor. Tor runs as a child process in its own
+//! process group, so a signal meant for Portal reaches Portal alone and Tor is halted last, by
+//! that teardown, rather than going down under the makers that still route through it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 static TRIPPED: AtomicBool = AtomicBool::new(false);
-
-/// Whether a host has taken responsibility for acting on the flag. Claiming these signals
-/// without something waiting on [`wait`] would be worse than leaving them alone: the process
-/// would stop dying on SIGTERM and nothing would replace that. Both hosts opt in — the desktop
-/// one too, since Tor takes the signal whether or not it does.
-static ADOPTED: AtomicBool = AtomicBool::new(false);
 
 /// Poll interval for [`wait`]. Invisible against a teardown measured in seconds.
 const POLL: Duration = Duration::from_millis(150);
@@ -39,21 +22,11 @@ extern "C" fn on_signal(_sig: libc::c_int) {
 /// Claims `SIGTERM` and `SIGINT`. Only for a host that awaits [`wait`].
 #[cfg(unix)]
 pub fn arm() {
-    ADOPTED.store(true, Ordering::SeqCst);
     install();
 }
 
 #[cfg(not(unix))]
-pub fn arm() {
-    ADOPTED.store(true, Ordering::SeqCst);
-}
-
-/// Reports a termination that arrived some way other than a signal we caught.
-pub fn trip_if_adopted() {
-    if ADOPTED.load(Ordering::SeqCst) {
-        TRIPPED.store(true, Ordering::SeqCst);
-    }
-}
+pub fn arm() {}
 
 #[cfg(unix)]
 fn install() {

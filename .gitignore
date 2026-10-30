@@ -41,3 +41,6 @@ umbrel-upload/
 *.tar
 
 Cargo.lock
+
+# Tor expert bundles, fetched by core/scripts/fetch-tor.sh at build time.
+core/tor-bundle/

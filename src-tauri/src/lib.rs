@@ -229,10 +229,8 @@ pub fn run() {
             }
             portal_core::tor::sweep_stale_tor_dirs();
 
-            // Before Tor starts. Once it runs, Tor takes SIGTERM itself and exits, so without
-            // this the window outlived it: Tor gone, the app idle, and logout or shutdown
-            // waiting on a process that would never end. Quitting through Tauri runs the same
-            // teardown as the Quit menu.
+            // A SIGTERM or SIGINT quits through Tauri, which runs the same teardown as the
+            // Quit menu: routers and wallets first, Tor last.
             portal_core::shutdown_signal::arm();
             let quit = app.handle().clone();
             tauri::async_runtime::spawn(async move {

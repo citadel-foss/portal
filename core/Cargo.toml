@@ -20,10 +20,10 @@ argon2.workspace = true
 zeroize.workspace = true
 minreq.workspace = true
 log4rs.workspace = true
-libtor = { workspace = true, optional = true }
 
 [features]
 # Selected by each host, not here, so a headless build can opt out of the bundled Tor.
+# Embeds the official Tor expert bundle for the build target (see build.rs).
 default = []
-embedded-tor = ["dep:libtor"]
+embedded-tor = []
 

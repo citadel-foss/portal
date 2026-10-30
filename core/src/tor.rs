@@ -1,11 +1,14 @@
 //! Portal's own Tor, never a host one: the app must not depend on someone else's config or
-//! disturb it. One instance per process — `tor_main` cannot run twice, and a single Tor carries
-//! every maker's onion service anyway — and never shared with another Portal process: a desktop
-//! app and a web server each run their own, so quitting one cannot cut the other off.
+//! disturb it. One instance per process — a single Tor carries every maker's onion service
+//! anyway — and never shared with another Portal process: a desktop app and a web server each
+//! run their own, so quitting one cannot cut the other off.
+//!
+//! The Tor Project's own `tor` executable is compiled into the binary (see `build.rs`), written
+//! out next to Portal's data on first use, and run as a child process.
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Child;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -32,12 +35,8 @@ pub struct TorRuntime {
 /// the instance already starting instead of spawning a second one on a second pair of ports.
 static RUNTIME: Mutex<Option<TorRuntime>> = Mutex::new(None);
 
-/// Separate from `RUNTIME` because it is never cleared: `tor_main` cannot run twice in one
-/// process, so once a launch has been attempted the only way to another one is a new process.
-/// Without this a failed readiness wait — which clears `RUNTIME` — would let the next retry
-/// call `tor_main` a second time and take the whole app down with it.
-static STARTED: AtomicBool = AtomicBool::new(false);
-static EXITED: AtomicBool = AtomicBool::new(false);
+/// The `tor` process behind `RUNTIME`, kept to tell whether it is still running and to reap it.
+static PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 
 /// Starts Portal's Tor if it isn't running yet and returns the ports to bind to.
 pub fn ensure_tor() -> Result<TorRuntime, String> {
@@ -46,26 +45,19 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
     // every such caller for the best part of a minute.
     let runtime = {
         let mut slot = RUNTIME.lock().map_err(|e| e.to_string())?;
+        // A Tor that has died since takes its ports with it. Handing them out again would leave
+        // every caller waiting on a dead port, so it is replaced by a fresh one instead.
+        if slot.is_some() && !process_running() {
+            log::warn!("Portal's Tor exited on its own; starting a new one");
+            *slot = None;
+        }
         match slot.as_ref() {
             Some(runtime) => runtime.clone(),
             None => {
-                // `STARTED` is load-then-store rather than a swap, and stored only once
-                // `tor_main` has actually been spawned: picking ports or creating the Tor
-                // directory can fail without ever reaching it, and latching the flag there
-                // would answer every later retry with a permanent error over a transient
-                // fault. Safe as two steps because the `RUNTIME` lock is held across both.
-                if STARTED.load(Ordering::SeqCst) {
-                    return Err(
-                        "Portal's Tor already ran once this session and cannot be started \
-                         again in place. Quit and reopen Portal to try a fresh one."
-                            .to_string(),
-                    );
-                }
                 let (socks_port, control_port) = free_port_pair().map_err(|e| e.to_string())?;
                 let control_password = hex_upper(&random_bytes::<16>());
                 let hashed = hashed_control_password(&control_password, &random_bytes::<8>());
                 start_embedded_tor(&tor_dir()?, socks_port, control_port, &hashed)?;
-                STARTED.store(true, Ordering::SeqCst);
                 let runtime = TorRuntime {
                     socks_port,
                     control_port,
@@ -82,9 +74,13 @@ pub fn ensure_tor() -> Result<TorRuntime, String> {
     }
     // Otherwise the cached runtime would be handed to every later call, which would wait on
     // the same dead ports forever — the gate and every maker would stay down until restart.
-    // Halting clears the slot, so the next attempt starts over on a fresh pair.
+    // Halting clears the slot, so the next attempt starts over on a fresh pair: the likeliest
+    // cause is another program taking one of the ports between picking it and Tor binding it.
     shutdown();
-    Err("Portal's Tor did not open its SOCKS and control ports".to_string())
+    Err(format!(
+        "Portal's Tor did not open its SOCKS and control ports (see {})",
+        tor_dir()?.join("tor.log").display()
+    ))
 }
 
 /// Halts Portal's Tor through its own control port. The last thing stopped on quit: the
@@ -93,30 +89,35 @@ pub fn shutdown() {
     let Some(tor) = RUNTIME.lock().ok().and_then(|mut slot| slot.take()) else {
         return;
     };
-    // SIGNAL HALT rather than letting the thread die with the process, so Tor runs its own
-    // cleanup and writes back the cached consensus the next launch starts from.
+    // SIGNAL HALT rather than killing the process, so Tor runs its own cleanup and writes back
+    // the cached consensus the next launch starts from.
     if let Err(e) = signal_halt(&tor) {
         log::warn!("could not halt Portal's Tor cleanly: {e}");
     }
     let deadline = Instant::now() + HALT_TIMEOUT;
-    while Instant::now() < deadline && !EXITED.load(Ordering::Acquire) {
+    while Instant::now() < deadline && process_running() {
         std::thread::sleep(Duration::from_millis(100));
+    }
+    if let Some(mut child) = PROCESS.lock().ok().and_then(|mut slot| slot.take()) {
+        if matches!(child.try_wait(), Ok(None)) {
+            log::warn!("Portal's Tor did not halt in time; killing it");
+            let _ = child.kill();
+        }
+        let _ = child.wait();
     }
     // This process's directory goes with it once Tor has let go of it; the startup sweep only
     // reaches directories whose process is gone, and is left for the ones killed outright.
-    if EXITED.load(Ordering::Acquire) {
-        if let Ok(dir) = tor_dir() {
-            let _ = std::fs::remove_dir_all(dir);
-        }
+    if let Ok(dir) = tor_dir() {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
 /// Makes Tor throw away its current attempt and bootstrap from the start.
 ///
-/// `tor_main` only runs once per process, so there is no restarting Tor itself — but
-/// `DisableNetwork` is settable at runtime, and dropping the network and restoring it is what
-/// Tor Browser does to retry a stalled bootstrap. `SIGNAL RELOAD` is not equivalent: it rereads
-/// the config and leaves a wedged bootstrap exactly where it was.
+/// Restarting the process would move Tor to new ports under everything already bound to the
+/// old ones. `DisableNetwork` is settable at runtime instead, and dropping the network and
+/// restoring it is what Tor Browser does to retry a stalled bootstrap. `SIGNAL RELOAD` is not
+/// equivalent: it rereads the config and leaves a wedged bootstrap exactly where it was.
 pub fn restart_bootstrap() -> Result<(), String> {
     let tor = runtime().ok_or_else(|| "Portal's Tor has not started yet".to_string())?;
     let addr = SocketAddr::from(([127, 0, 0, 1], tor.control_port));
@@ -177,8 +178,7 @@ pub fn runtime() -> Option<TorRuntime> {
 ///
 /// Suffixed with the process id so a desktop app and a web server on one data root each run
 /// their own Tor without fighting over it. Tor refuses to start against a directory another
-/// Tor already holds — it waits five seconds, logs "No, it's still there. Exiting.", and dies,
-/// which takes Portal down with it moments after it has announced itself as listening.
+/// Tor already holds — it waits five seconds, logs "No, it's still there. Exiting.", and dies.
 fn tor_dir() -> Result<PathBuf, String> {
     crate::storage::openswap_root()
         .map(|dir| dir.join(format!("tor-manager-{}", std::process::id())))
@@ -261,8 +261,8 @@ fn hex_upper(bytes: &[u8]) -> String {
 }
 
 /// Tor's `HashedControlPassword` value: RFC2440 iterated-and-salted S2K over SHA1, rendered
-/// as `16:<salt><indicator><digest>`. `tor --hash-password` produces this; libtor exposes no
-/// equivalent, so it has to be computed here.
+/// as `16:<salt><indicator><digest>`. `tor --hash-password` produces this; computing it here
+/// keeps the plaintext off a command line that every local process can read.
 fn hashed_control_password(password: &str, salt: &[u8; 8]) -> String {
     use openswap::bitcoin::hashes::{sha1, Hash, HashEngine};
 
@@ -323,9 +323,67 @@ fn wait_until_ready(socks_port: u16, control_port: u16) -> bool {
         if socks5_responds(socks_port) && control_responds_as_tor(control_port) {
             return true;
         }
+        // A Tor that exited (a port taken, a bad directory) will not open them later.
+        if !process_running() {
+            return false;
+        }
         std::thread::sleep(Duration::from_millis(500));
     }
     false
+}
+
+/// Whether the `tor` process this one started is still running.
+fn process_running() -> bool {
+    PROCESS
+        .lock()
+        .ok()
+        .and_then(|mut slot| {
+            slot.as_mut()
+                .map(|child| matches!(child.try_wait(), Ok(None)))
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "embedded-tor")]
+mod bundle {
+    // Generated by build.rs: every file of the Tor expert bundle for this target.
+    include!(concat!(env!("OUT_DIR"), "/tor_bundle.rs"));
+}
+
+/// Writes the embedded Tor bundle out and returns the directory it is in.
+///
+/// Every launch compares what is on disk with what is embedded and rewrites any file that
+/// differs, so an upgrade, a half-written file or a tampered one is replaced before it runs.
+/// Each file is written aside and renamed into place: another Portal process may be starting
+/// the same `tor` at the same moment, and must never see half of one.
+#[cfg(feature = "embedded-tor")]
+fn install_bundle() -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = crate::storage::openswap_root()
+        .map(|root| root.join("tor-bin"))
+        .map_err(|e| e.message)?;
+    crate::security::fs::ensure_private_dir(&dir).map_err(|e| e.message)?;
+    for (name, bytes) in bundle::FILES {
+        let path = dir.join(name);
+        if std::fs::read(&path).is_ok_and(|on_disk| on_disk == *bytes) {
+            continue;
+        }
+        let partial = dir.join(format!(".{name}.{}", std::process::id()));
+        let written = std::fs::write(&partial, bytes)
+            .and_then(|()| {
+                std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o700))
+            })
+            .and_then(|()| std::fs::rename(&partial, &path));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!(
+                "could not install Portal's Tor at {}: {e}",
+                path.display()
+            ));
+        }
+    }
+    Ok(dir)
 }
 
 #[cfg(feature = "embedded-tor")]
@@ -335,53 +393,59 @@ fn start_embedded_tor(
     control_port: u16,
     hashed_password: &str,
 ) -> Result<(), String> {
-    use libtor::{Tor, TorFlag};
+    use std::process::{Command, Stdio};
 
     let data_dir = tor_dir.join("data");
     let cache_dir = tor_cache_dir()?;
     crate::security::fs::ensure_private_dir(tor_dir).map_err(|e| e.message)?;
     crate::security::fs::ensure_private_dir(&data_dir).map_err(|e| e.message)?;
     crate::security::fs::ensure_private_dir(&cache_dir).map_err(|e| e.message)?;
+    let bin_dir = install_bundle()?;
 
-    let handle = Tor::new()
-        // Tor writes its startup notices straight to the console before any Log config is
-        // applied, which buries whatever the host printed for the user to act on. The file
-        // log below is a separate setting and keeps working — nothing is lost, it moves.
-        .flag(TorFlag::Quiet())
-        .flag(TorFlag::DataDirectory(
-            data_dir.to_string_lossy().to_string(),
-        ))
+    // Neither torrc exists: `-f` and `--defaults-torrc` point at nothing so Tor never reads the
+    // host's, and everything Portal needs is on the command line.
+    let no_torrc = tor_dir.join("torrc").to_string_lossy().to_string();
+    let mut command = Command::new(bin_dir.join("tor"));
+    command
+        .args(["--ignore-missing-torrc", "-f", &no_torrc])
+        .args(["--defaults-torrc", &no_torrc])
+        .arg("--DataDirectory")
+        .arg(&data_dir)
         // Survives the per-process data directory, so a relaunch starts from a warm consensus
         // instead of downloading one.
-        .flag(TorFlag::CacheDirectory(
-            cache_dir.to_string_lossy().to_string(),
-        ))
-        .flag(TorFlag::SocksPort(socks_port))
-        .flag(TorFlag::ControlPort(control_port))
-        .flag(TorFlag::HashedControlPassword(hashed_password.to_string()))
-        .flag(TorFlag::LogTo(
-            libtor::LogLevel::Notice,
-            libtor::LogDestination::File(tor_dir.join("tor.log").to_string_lossy().to_string()),
-        ))
-        .start_background();
+        .arg("--CacheDirectory")
+        .arg(&cache_dir)
+        .args(["--SocksPort", &format!("127.0.0.1:{socks_port}")])
+        .args(["--ControlPort", &format!("127.0.0.1:{control_port}")])
+        .args(["--HashedControlPassword", hashed_password])
+        .args(["--CookieAuthentication", "0"])
+        .arg("--Log")
+        .arg(format!("notice file {}", tor_dir.join("tor.log").display()))
+        // Tor exits on its own once this process is gone, however it went — a Portal killed
+        // outright must not leave a Tor running behind it.
+        .args([
+            "--__OwningControllerProcess",
+            &std::process::id().to_string(),
+        ])
+        // Tor's startup notices would bury whatever the host printed for the user; the log
+        // file above keeps them.
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // The Linux bundle carries its own OpenSSL and libevent next to `tor`; the macOS one finds
+    // its libevent through `@executable_path` already.
+    #[cfg(target_os = "linux")]
+    command.env("LD_LIBRARY_PATH", &bin_dir);
+    // Its own process group, so a Ctrl-C in the terminal reaches Portal alone. Portal then
+    // stops the makers and the taker before halting Tor, rather than losing Tor under them.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
 
-    std::thread::spawn(move || {
-        match handle.join() {
-            Ok(Ok(code)) => log::info!("embedded tor exited with code {code}"),
-            Ok(Err(e)) => log::warn!("embedded tor error: {e:?}"),
-            Err(_) => log::warn!("embedded tor thread panicked"),
-        }
-        EXITED.store(true, Ordering::Release);
-        // `shutdown` clears the slot before Tor goes, so a slot still full means nobody here
-        // asked for this. During bootstrap that is how a SIGTERM looks from our side: Tor
-        // still owns the handler, catches it, and exits — and we would otherwise sit there
-        // until the supervisor lost patience. A genuine Tor crash lands here too, and is
-        // just as terminal: `tor_main` cannot be run a second time in this process.
-        if runtime().is_some() {
-            log::warn!("Portal's Tor exited on its own; shutting down");
-            crate::shutdown_signal::trip_if_adopted();
-        }
-    });
+    let child = command
+        .spawn()
+        .map_err(|e| format!("could not start Portal's Tor: {e}"))?;
+    log::info!("Portal's Tor started (pid {})", child.id());
+    *PROCESS.lock().map_err(|e| e.to_string())? = Some(child);
     Ok(())
 }
 
@@ -413,5 +477,108 @@ mod tests {
     fn port_pair_is_distinct() {
         let (socks, control) = free_port_pair().unwrap();
         assert_ne!(socks, control);
+    }
+
+    /// Runs the embedded Tor against the real network: bootstraps it, publishes an onion
+    /// service through openswap's own `ADD_ONION` the way a maker does, and reaches it back
+    /// through the SOCKS port the way a taker does. Needs the network, so only on request:
+    ///
+    /// `cargo test -p portal-core --features embedded-tor -- --ignored embedded_tor_end_to_end`
+    #[cfg(feature = "embedded-tor")]
+    #[test]
+    #[ignore = "needs the Tor network"]
+    fn embedded_tor_end_to_end() {
+        // A throwaway home, so the test never touches the real ~/.openswap.
+        let home = std::env::temp_dir().join(format!("portal-tor-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let tor = ensure_tor().expect("embedded Tor starts");
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while bootstrap_progress(&tor) != Some(100) {
+            assert!(Instant::now() < deadline, "Tor did not bootstrap in time");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+
+        let service = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let local_port = service.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in service.incoming().flatten() {
+                let _ = stream.write_all(b"portal");
+            }
+        });
+        let hostname = openswap::utill::get_ephemeral_address(
+            tor.control_port,
+            local_port,
+            &tor.control_password,
+            "NEW:ED25519-V3",
+            None,
+        )
+        .expect("ADD_ONION succeeds");
+
+        // A new onion service takes a while to publish its descriptor; keep trying until then.
+        let deadline = Instant::now() + Duration::from_secs(300);
+        loop {
+            if let Ok(reply) = fetch_through_socks(tor.socks_port, &hostname) {
+                assert_eq!(reply, b"portal");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "onion service never became reachable"
+            );
+            std::thread::sleep(Duration::from_secs(5));
+        }
+
+        shutdown();
+        assert!(runtime().is_none());
+        assert!(!process_running());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[cfg(feature = "embedded-tor")]
+    fn bootstrap_progress(tor: &TorRuntime) -> Option<u8> {
+        let mut stream = TcpStream::connect(("127.0.0.1", tor.control_port)).ok()?;
+        let mut reader = BufReader::new(stream.try_clone().ok()?);
+        let command = format!(
+            "AUTHENTICATE \"{}\"\r\nGETINFO status/bootstrap-phase\r\n",
+            tor.control_password
+        );
+        stream.write_all(command.as_bytes()).ok()?;
+        let mut line = String::new();
+        for _ in 0..2 {
+            line.clear();
+            reader.read_line(&mut line).ok()?;
+        }
+        line.split("PROGRESS=")
+            .nth(1)?
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// One SOCKS5 CONNECT by hostname to the openswap port, returning what the service sent.
+    #[cfg(feature = "embedded-tor")]
+    fn fetch_through_socks(socks_port: u16, hostname: &str) -> std::io::Result<Vec<u8>> {
+        use openswap::protocol::common_messages::OPENSWAP_PORT;
+
+        let mut stream = TcpStream::connect(("127.0.0.1", socks_port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(120)))?;
+        stream.write_all(&[0x05, 0x01, 0x00])?;
+        let mut reply = [0u8; 2];
+        stream.read_exact(&mut reply)?;
+        let mut request = vec![0x05, 0x01, 0x00, 0x03, hostname.len() as u8];
+        request.extend_from_slice(hostname.as_bytes());
+        request.extend_from_slice(&OPENSWAP_PORT.to_be_bytes());
+        stream.write_all(&request)?;
+        let mut reply = [0u8; 10];
+        stream.read_exact(&mut reply)?;
+        if reply[1] != 0x00 {
+            return Err(std::io::Error::other(format!("SOCKS reply {}", reply[1])));
+        }
+        let mut body = Vec::new();
+        stream.read_to_end(&mut body)?;
+        Ok(body)
     }
 }

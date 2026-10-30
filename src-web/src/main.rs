@@ -187,9 +187,7 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Stops accepting new work on SIGTERM or SIGINT, then lets in-flight requests drain.
 ///
-/// Deliberately not `tokio::signal`: embedded Tor replaces whatever handler is installed when
-/// it starts, and tokio installs its own only once, so it cannot be put back afterwards. The
-/// flag in `shutdown_signal` is re-armed after Tor is up and is the only thing that survives.
+/// Through `shutdown_signal`, the same flag the desktop host waits on.
 async fn await_signal() {
     portal_core::shutdown_signal::wait().await;
     log::info!("shutdown signal received; draining in-flight requests");

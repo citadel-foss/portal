@@ -92,8 +92,8 @@ pub enum ErrorClass {
 impl ErrorCode {
     pub fn class(self) -> ErrorClass {
         match self {
-            // Portal starts Tor itself and `libtor` can only start once per process, so a Tor
-            // that has gone away cannot be reached again from here at any speed.
+            // Portal starts Tor itself, and a replacement comes up on new ports: every wallet
+            // and router bound to the old ones has to be restarted with it.
             Self::TorUnreachable => ErrorClass::NeedsRestart,
 
             Self::SwapInProgress
