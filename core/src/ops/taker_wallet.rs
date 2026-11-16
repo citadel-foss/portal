@@ -247,6 +247,7 @@ async fn open_taker(
         socks_port: tor.socks_port,
         password: config.wallet_password,
         connection_type,
+        check_tor: true,
         // Always on: the crate skips screening while the list is empty, so the list alone
         // decides whether anything is refused.
         check_blocklist: Some(true),
