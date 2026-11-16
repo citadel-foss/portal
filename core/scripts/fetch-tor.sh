@@ -39,7 +39,7 @@ case "$target" in
 esac
 
 archive=tor-expert-bundle-$platform-$TOR_BROWSER_VERSION.tar.gz
-url=https://dist.torproject.org/torbrowser/$TOR_BROWSER_VERSION/$archive
+url=https://archive.torproject.org/tor-package-archive/torbrowser/$TOR_BROWSER_VERSION/$archive
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
