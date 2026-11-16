@@ -165,13 +165,22 @@
       "note": "Restore from a recovery phrase into a managed destination; no supplied server path. The `mnemonic` and `password` fields are scrubbed from the journal."
     },
     {
-      "name": "get_recovery_phrase",
+      "name": "recovery_phrase_saved",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Whether the open wallet's recovery phrase is confirmed as written down."
+    },
+    {
+      "name": "reveal_recovery_phrase",
       "executionClass": "transient",
       "desktop": true,
       "web": true,
       "webAdaptation": "none",
       "retryClass": "none",
-      "note": "Returns a new wallet's recovery phrase to the session that created it; CSRF-gated, never journaled."
+      "note": "Decrypts the open wallet's recovery phrase with its password for one response; CSRF-gated, never journaled."
     },
     {
       "name": "confirm_recovery_phrase_saved",
@@ -180,7 +189,7 @@
       "web": true,
       "webAdaptation": "none",
       "retryClass": "none",
-      "note": "Forgets the held recovery phrase once its creator has saved it."
+      "note": "Records in the wallet file that its recovery phrase is written down."
     },
     {
       "name": "backup_wallet",
@@ -489,13 +498,22 @@
       "note": "Use managed wallet/router IDs and validated server settings; reject client filesystem paths and unsupported transport fields."
     },
     {
-      "name": "get_router_recovery_phrase",
+      "name": "router_recovery_phrase_saved",
+      "executionClass": "read",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "False once a create or start has found the router's recovery phrase not yet written down."
+    },
+    {
+      "name": "reveal_router_recovery_phrase",
       "executionClass": "transient",
       "desktop": true,
       "web": true,
       "webAdaptation": "none",
       "retryClass": "none",
-      "note": "Returns a new router's recovery phrase to the session that created it; CSRF-gated, never journaled."
+      "note": "Decrypts a router's recovery phrase with its wallet password for one response; CSRF-gated, never journaled."
     },
     {
       "name": "confirm_router_recovery_phrase_saved",
@@ -504,7 +522,7 @@
       "web": true,
       "webAdaptation": "none",
       "retryClass": "none",
-      "note": "Forgets the held router recovery phrase once its creator has saved it."
+      "note": "Records in the router's wallet file that its recovery phrase is written down."
     },
     {
       "name": "update_maker_settings",

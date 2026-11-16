@@ -145,7 +145,7 @@ pub enum ConnectionTypeDto {
     Clearnet,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitConfig {
     pub wallet_name: String,
@@ -774,7 +774,7 @@ pub struct SwapReportDetail {
 // Maker
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MakerInitConfig {
     /// Stable registration ID. Wallet name remains independently configurable.
@@ -807,12 +807,19 @@ pub struct MakerInitConfig {
     pub mnemonic: Option<String>,
 }
 
-/// A new wallet's or router's phrase, still waiting to be saved.
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+/// A wallet's or router's recovery phrase, decrypted for one response. Wiped on drop, and not
+/// `Debug` or `Clone`, so no copy outlives the response or reaches a log.
 pub struct RecoveryPhraseDto {
-    pub id: uuid::Uuid,
-    pub words: String,
+    pub words: zeroize::Zeroizing<String>,
+}
+
+impl serde::Serialize for RecoveryPhraseDto {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut dto = serializer.serialize_struct("RecoveryPhraseDto", 1)?;
+        dto.serialize_field("words", self.words.as_str())?;
+        dto.end()
+    }
 }
 
 /// Persisted registration settings. Wallet and Tor control passwords are

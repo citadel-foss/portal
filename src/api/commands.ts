@@ -154,13 +154,18 @@ export function restoreWalletFromMnemonic(
   });
 }
 
-/** A new wallet's recovery phrase, until `confirmRecoveryPhraseSaved`; null for any other wallet. */
-export function getRecoveryPhrase(): Promise<RecoveryPhrase | null> {
-  return invoke("get_recovery_phrase");
+/** Whether the open wallet's recovery phrase is confirmed as written down. */
+export function recoveryPhraseSaved(): Promise<boolean> {
+  return invoke("recovery_phrase_saved");
 }
 
-export function confirmRecoveryPhraseSaved(id: string): Promise<void> {
-  return invoke("confirm_recovery_phrase_saved", { id });
+/** Decrypts the open wallet's phrase for this one call; nothing keeps it afterwards. */
+export function revealRecoveryPhrase(walletPassword: string): Promise<RecoveryPhrase> {
+  return invoke("reveal_recovery_phrase", { walletPassword });
+}
+
+export function confirmRecoveryPhraseSaved(walletPassword: string): Promise<void> {
+  return invoke("confirm_recovery_phrase_saved", { walletPassword });
 }
 
 // ---------------------------------------------------------------------------
@@ -279,13 +284,17 @@ export function initRouter(config: RouterInitConfig): Promise<RouterStatus> {
   return invoke("init_maker", { config });
 }
 
-/** A new router's recovery phrase, only for the browser that created it, until confirmed. */
-export function getRouterRecoveryPhrase(routerId: string): Promise<RecoveryPhrase | null> {
-  return invoke("get_router_recovery_phrase", { routerId });
+/** False once a create or start has found this router's phrase not yet written down. */
+export function routerRecoveryPhraseSaved(routerId: string): Promise<boolean> {
+  return invoke("router_recovery_phrase_saved", { routerId });
 }
 
-export function confirmRouterRecoveryPhraseSaved(routerId: string, id: string): Promise<void> {
-  return invoke("confirm_router_recovery_phrase_saved", { routerId, id });
+export function revealRouterRecoveryPhrase(routerId: string, walletPassword: string): Promise<RecoveryPhrase> {
+  return invoke("reveal_router_recovery_phrase", { routerId, walletPassword });
+}
+
+export function confirmRouterRecoveryPhraseSaved(routerId: string, walletPassword: string): Promise<void> {
+  return invoke("confirm_router_recovery_phrase_saved", { routerId, walletPassword });
 }
 
 export function updateRouterSettings(routerId: string, settings: RouterSettings): Promise<RouterSettings> {

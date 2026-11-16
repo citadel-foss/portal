@@ -7,6 +7,7 @@
   ],
   "permissions": [
     "core:default",
+    "core:window:allow-set-content-protected",
     "dialog:allow-open",
     {
       "identifier": "opener:allow-open-url",
@@ -84,7 +85,8 @@
     "allow-get-wallet-info",
     "allow-import-dashboard-makers",
     "allow-init-maker",
-    "allow-get-router-recovery-phrase",
+    "allow-router-recovery-phrase-saved",
+    "allow-reveal-router-recovery-phrase",
     "allow-confirm-router-recovery-phrase-saved",
     "allow-init-taker",
     "allow-list-dashboard-imports",
@@ -106,7 +108,8 @@
     "allow-restart-tor-bootstrap",
     "allow-restore-wallet",
     "allow-restore-wallet-from-mnemonic",
-    "allow-get-recovery-phrase",
+    "allow-recovery-phrase-saved",
+    "allow-reveal-recovery-phrase",
     "allow-confirm-recovery-phrase-saved",
     "allow-send-to-address",
     "allow-set-chain-backend",
