@@ -15,7 +15,7 @@ const OUR_INFRASTRUCTURE = /(^|\.)(citadelfoss\.xyz|openswap\.live)$/;
 export const FAUCET_URL = "https://faucet.citadelfoss.xyz";
 
 interface ConnectionState {
-  /** Fixed for the session — adopted at the gate and never re-read. */
+  /** The backend adopted at the gate; cleared, with `status`, whenever the gate adopts another. */
   config: ChainBackendConfig | null;
   /** null until the first probe answers, so "unknown" is never rendered as "down". */
   status: BackendStatus | null;
