@@ -360,7 +360,7 @@ export function ConnectPage() {
       await setChainBackend(config);
       // Back at the gate the user may have switched chains, and what the previous backend
       // answered would keep filtering the wallet and router lists until a reload.
-      useConnectionStore.setState({ config: null, status: null });
+      useConnectionStore.getState().reset();
       setConnected();
       navigate("/launch", { replace: true });
     } catch (e) {
