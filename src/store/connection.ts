@@ -15,27 +15,36 @@ const OUR_INFRASTRUCTURE = /(^|\.)(citadelfoss\.xyz|openswap\.live)$/;
 export const FAUCET_URL = "https://faucet.citadelfoss.xyz";
 
 interface ConnectionState {
-  /** Fixed for the session — adopted at the gate and never re-read. */
+  /** The backend adopted at the gate; cleared, with `status`, whenever the gate adopts another. */
   config: ChainBackendConfig | null;
   /** null until the first probe answers, so "unknown" is never rendered as "down". */
   status: BackendStatus | null;
   refresh: () => Promise<void>;
+  reset: () => void;
 }
+
+let generation = 0;
 
 export const useConnectionStore = create<ConnectionState>((set) => ({
   config: null,
   status: null,
   refresh: async () => {
+    const mine = generation;
     if (!useConnectionStore.getState().config) {
       await getChainBackend()
-        .then((config) => set({ config }))
+        .then((config) => mine === generation && set({ config }))
         .catch(() => {});
     }
     // A probe that throws is the transport failing, which is itself an answer: the backend is
     // not reachable. Anything else would leave a dead node showing as live forever.
     await checkBackend()
-      .then((status) => set({ status }))
-      .catch(() => set({ status: null }));
+      .then((status) => mine === generation && set({ status }))
+      .catch(() => mine === generation && set({ status: null }));
+  },
+  reset: () => {
+    // Also retires any probe still in flight, so the previous backend's answer cannot land after.
+    generation += 1;
+    set({ config: null, status: null });
   },
 }));
 

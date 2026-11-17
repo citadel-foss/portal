@@ -30,6 +30,7 @@ import {
 import { IntroStage } from "../../components/ui/IntroStage";
 import { wait } from "../../lib/timing";
 import { openExternal } from "../../platform";
+import { useConnectionStore } from "../../store/connection";
 import { useSessionStore } from "../../store/session";
 import { formatDuration, formatNumber } from "../../lib/wallet-format";
 
@@ -357,6 +358,9 @@ export function ConnectPage() {
       // shown: navigating anyway would bounce straight back and read as the page reloading
       // itself for no reason.
       await setChainBackend(config);
+      // Back at the gate the user may have switched chains, and what the previous backend
+      // answered would keep filtering the wallet and router lists until a reload.
+      useConnectionStore.getState().reset();
       setConnected();
       navigate("/launch", { replace: true });
     } catch (e) {
