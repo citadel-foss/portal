@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 
 use portal_core::error::AppError;
-use portal_core::state::AppState;
+use portal_core::state::{AppState, TakerInstance};
 use portal_core::types::{MakerPhase, QuitBlockers};
 
 /// Latched by whichever path starts the teardown, so a second Quit while one is already
@@ -24,15 +24,30 @@ static CHECKING: AtomicBool = AtomicBool::new(false);
 fn quit_blockers(state: &AppState) -> QuitBlockers {
     // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
     // and survives a restart, and quitting mid-recovery is the one thing that actually stalls it.
-    let recovery_running = state.open_takers().iter().any(|taker| {
+    let recovering = |taker: &Arc<TakerInstance>| {
         taker
             .wallet
             .read()
             .is_ok_and(|w| !w.list_live_contract_spend_info().is_empty())
-    });
-    // After the wallet reads, which can wait out a sync while the window stays usable: a swap or
-    // router started during that wait must still be asked about.
-    let swap_running = state.open_takers().iter().any(|taker| taker.swap_running());
+    };
+    // Until a snapshot holds no wallet left to read: each read can wait out a sync while the window
+    // stays usable, and a wallet opened, or a swap or router started, meanwhile must still count.
+    let mut checked: Vec<Arc<TakerInstance>> = Vec::new();
+    let mut recovery_running = false;
+    let takers = loop {
+        let takers = state.open_takers();
+        let unseen: Vec<_> = takers
+            .iter()
+            .filter(|taker| !checked.iter().any(|seen| Arc::ptr_eq(seen, taker)))
+            .cloned()
+            .collect();
+        if unseen.is_empty() {
+            break takers;
+        }
+        recovery_running = recovery_running || unseen.iter().any(recovering);
+        checked.extend(unseen);
+    };
+    let swap_running = takers.iter().any(|taker| taker.swap_running());
     // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
     // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
     // about a maker that finished long ago.
@@ -86,9 +101,9 @@ pub fn begin_quit(app: &AppHandle) {
     });
 }
 
-/// Routes the Dock's Quit, and any other native `terminate:`, through `begin_quit`. tao's app
-/// delegate has no `applicationShouldTerminate:`, so without this the terminate goes straight to
-/// `RunEvent::Exit` and the whole teardown runs on the main thread with nothing on screen.
+/// Routes the Dock's Quit, and any other user-initiated `terminate:`, through `begin_quit`. tao's
+/// app delegate has no `applicationShouldTerminate:`, so without this the terminate goes straight
+/// to `RunEvent::Exit` and the whole teardown runs on the main thread with nothing on screen.
 /// tao's own exit stops the run loop and calls `process::exit`, never `terminate:`, so
 /// cancelling here cannot also cancel the exit that ends `run_quit`.
 #[cfg(target_os = "macos")]
@@ -96,16 +111,34 @@ pub fn route_native_terminate(app: &AppHandle) {
     use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
     use objc2::{sel, MainThreadMarker};
     use objc2_app_kit::NSApplication;
+    use objc2_foundation::NSAppleEventManager;
     use std::sync::OnceLock;
 
     static APP: OnceLock<AppHandle> = OnceLock::new();
+    /// `kAEQuitReason`, which the system sets on the quit event for a logout, restart or shutdown.
+    const QUIT_REASON: u32 = u32::from_be_bytes(*b"why?");
+    const TERMINATE_CANCEL: usize = 0;
+    const TERMINATE_NOW: usize = 1;
 
-    /// `NSTerminateCancel`.
     extern "C-unwind" fn should_terminate(_: &AnyObject, _: Sel, _: &AnyObject) -> usize {
+        // Cancelling would abort the whole logout or restart, so those keep the native path.
+        let by_system = NSAppleEventManager::sharedAppleEventManager()
+            .currentAppleEvent()
+            .is_some_and(|event| {
+                // SAFETY: `attributeDescriptorForKeyword:` takes an `AEKeyword` (u32) and returns
+                // a nullable descriptor.
+                let reason: Option<objc2::rc::Retained<AnyObject>> = unsafe {
+                    objc2::msg_send![&*event, attributeDescriptorForKeyword: QUIT_REASON]
+                };
+                reason.is_some()
+            });
+        if by_system {
+            return TERMINATE_NOW;
+        }
         if let Some(app) = APP.get() {
             begin_quit(app);
         }
-        0
+        TERMINATE_CANCEL
     }
 
     let _ = APP.set(app.clone());
