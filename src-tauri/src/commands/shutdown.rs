@@ -30,6 +30,9 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
             .read()
             .is_ok_and(|w| !w.list_live_contract_spend_info().is_empty())
     };
+    // Before the wallet reads as well as after: a swap that funds and fails during a read releases
+    // its slot on the way into recovery, which a wallet already read would no longer show.
+    let swap_at_start = state.open_takers().iter().any(|taker| taker.swap_running());
     // Until a snapshot holds no wallet left to read: each read can wait out a sync while the window
     // stays usable, and a wallet opened, or a swap or router started, meanwhile must still count.
     let mut checked: Vec<Arc<TakerInstance>> = Vec::new();
@@ -47,7 +50,7 @@ fn quit_blockers(state: &AppState) -> QuitBlockers {
         recovery_running = recovery_running || unseen.iter().any(recovering);
         checked.extend(unseen);
     };
-    let swap_running = takers.iter().any(|taker| taker.swap_running());
+    let swap_running = swap_at_start || takers.iter().any(|taker| taker.swap_running());
     // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
     // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
     // about a maker that finished long ago.
