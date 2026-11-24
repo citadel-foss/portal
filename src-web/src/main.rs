@@ -183,22 +183,41 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Connect info feeds the login throttle's per-client count.
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .with_graceful_shutdown(await_signal())
-        .await?;
+    let server = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(await_signal());
+    // Bounded: a client that stops reading never lets its connection finish, which would hold
+    // teardown off indefinitely. What is still open afterwards ends with the runtime.
+    let drain_limit = DRAIN_LIMIT.min(Duration::from_secs(shutdown_timeout) / 4);
+    tokio::select! {
+        served = server => served?,
+        _ = async {
+            portal_core::shutdown_signal::wait().await;
+            tokio::time::sleep(drain_limit).await;
+        } => log::warn!("connections still open after {:?}; closing them", drain_limit),
+    }
 
     // Reached once in-flight requests have drained. Everything below outlives the HTTP
     // server: routers, the wallet and Tor are the process, not the transport.
-    teardown(&state, Duration::from_secs(shutdown_timeout)).await;
+    let drained = SHUTDOWN_AT.get().map_or(Duration::ZERO, |at| at.elapsed());
+    teardown(&state, Duration::from_secs(shutdown_timeout).saturating_sub(drained)).await;
     console.reattach();
     Ok(())
 }
+
+/// The most in-flight requests get to finish once shutdown starts. Never more than a quarter of
+/// the stop budget: the rest belongs to the teardown, which is what protects funds.
+const DRAIN_LIMIT: Duration = Duration::from_secs(10);
+
+/// When shutdown was asked for. The drain and the teardown share one stop budget from here, so
+/// together they still fit the supervisor's grace period.
+static SHUTDOWN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// Stops accepting new work on SIGTERM or SIGINT, then lets in-flight requests drain.
 ///
 /// Through `shutdown_signal`, the same flag the desktop host waits on.
 async fn await_signal() {
     portal_core::shutdown_signal::wait().await;
+    let _ = SHUTDOWN_AT.set(std::time::Instant::now());
     log::info!("shutdown signal received; draining in-flight requests");
 }
 

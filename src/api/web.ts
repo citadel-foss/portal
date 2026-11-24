@@ -242,7 +242,7 @@ async function post(path: string, body: unknown): Promise<Response> {
  *  slow start. */
 const RESTART_WAIT_MS = 5 * 60 * 1000;
 
-async function runRestore(): Promise<{
+async function runRestore(signal?: AbortSignal): Promise<{
   authenticated: boolean;
   hasOwner: boolean;
 }> {
@@ -256,6 +256,7 @@ async function runRestore(): Promise<{
     response = await fetch(`${API}/session`, {
       credentials: "same-origin",
       headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {},
+      signal,
     });
   } catch {
     throw {
@@ -315,7 +316,9 @@ export const host: Host = {
     const deadline = Date.now() + RESTART_WAIT_MS;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 2_000));
-      const info = await runRestore().catch(() => null);
+      // Bounded per request too: one stalled answer must not outlive the deadline.
+      const signal = AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now())));
+      const info = await runRestore(signal).catch(() => null);
       if (info && !info.authenticated) {
         window.location.hash = "#/login";
         window.location.reload();

@@ -202,6 +202,9 @@ where
             state.events.publish(AppEvent::UpdateProgress(progress))
         })?;
         (placement.unpack)(&download, &staging)?;
+        // Again after the download, waiting out a sync if need be: a swap or router can start
+        // during it. Before the guard, so a slow wallet read holds up nobody else.
+        ensure_idle(state)?;
         let guard = SensitiveOperationGuard::acquire(
             &state.sensitive_operation_active,
             SensitiveOperation::InstallUpdate,
@@ -210,7 +213,12 @@ where
         if !state.close_for_restart()? {
             return Err(busy());
         }
-        let committed = ensure_idle(state).and_then(|()| (placement.commit)(&download, &staging));
+        // With the guard held and opens closed, nothing may wait here: a wallet mid-sync is busy.
+        let committed = if state.idle_now() {
+            (placement.commit)(&download, &staging)
+        } else {
+            Err(busy())
+        };
         if committed.is_err() {
             state.reopen_after_restart_refused();
         }

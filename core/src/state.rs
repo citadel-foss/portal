@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime};
@@ -11,7 +11,7 @@ use openswap::taker::Taker;
 use openswap::wallet::{SecretMnemonic, Wallet};
 use uuid::Uuid;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::events::EventSink;
 use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto, QuitBlockers};
 
@@ -152,6 +152,10 @@ pub(crate) enum TakerSlot {
     Open(Arc<TakerInstance>),
 }
 
+pub(crate) const ROUTERS_OPEN: u8 = 0;
+const ROUTERS_CLOSED_FOR_UPDATE: u8 = 1;
+pub(crate) const ROUTERS_CLOSED_FOR_SHUTDOWN: u8 = 2;
+
 #[derive(Default)]
 pub struct AppState {
     pub(crate) takers: Mutex<HashMap<PathBuf, TakerSlot>>,
@@ -169,10 +173,11 @@ pub struct AppState {
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
-    /// Set under `makers` by `shutdown_all`, or by an update about to commit. A start still
-    /// constructing its server when the app shuts down has no runtime for that pass to stop, so
-    /// it checks this before installing one, as well as on admission.
-    pub(crate) makers_closed: AtomicBool,
+    /// Router admission: [`ROUTERS_OPEN`], closed for an update that may still be refused, or
+    /// closed for shutdown, which nothing reopens. A start still constructing its server at
+    /// shutdown has no runtime for that pass to stop, so it checks this before installing one,
+    /// as well as on admission.
+    pub(crate) router_gate: AtomicU8,
     /// Set under `takers` once an update is committing, so no wallet starts opening between
     /// the last idle check and the restart: teardown skips a wallet still in `Taker::init`.
     takers_closed: AtomicBool,
@@ -221,11 +226,18 @@ impl AppState {
             checked.extend(unseen);
         };
         let swap_running = swap_at_start || takers.iter().any(|taker| taker.swap_running());
-        // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
-        // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
-        // about a maker that finished long ago.
-        let running_routers = self
-            .makers
+        QuitBlockers {
+            swap_running,
+            recovery_running,
+            running_routers: self.running_routers(),
+        }
+    }
+
+    /// Keyed on phase, not on `runtime` being present: a server thread that exits on its own
+    /// sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
+    /// about a maker that finished long ago.
+    fn running_routers(&self) -> Vec<String> {
+        self.makers
             .lock()
             .map(|makers| {
                 makers
@@ -243,12 +255,20 @@ impl AppState {
                     .map(|entry| entry.settings.router_id.clone())
                     .collect()
             })
-            .unwrap_or_default();
-        QuitBlockers {
-            swap_running,
-            recovery_running,
-            running_routers,
-        }
+            .unwrap_or_default()
+    }
+
+    /// `running_work` without waiting, for a caller holding gates others are queued on: a wallet
+    /// a sync is writing counts as busy instead of being waited out.
+    pub fn idle_now(&self) -> bool {
+        let wallets_idle = self.open_takers().iter().all(|taker| {
+            !taker.swap_running()
+                && taker
+                    .wallet
+                    .try_read()
+                    .is_ok_and(|w| w.list_live_contract_spend_info().is_empty())
+        });
+        wallets_idle && self.running_routers().is_empty()
     }
 
     /// Stops new wallet opens and router starts ahead of a restart, unless a wallet is already
@@ -261,14 +281,29 @@ impl AppState {
             }
             self.takers_closed.store(true, Ordering::Release);
         }
-        let _makers = self.makers.lock()?;
-        self.makers_closed.store(true, Ordering::Release);
+        let Ok(_makers) = self.makers.lock() else {
+            self.takers_closed.store(false, Ordering::Release);
+            return Err(AppError::new(ErrorCode::StatePoisoned, "router registry lock poisoned"));
+        };
+        // Fails only if shutdown already closed it, which is final anyway.
+        let _ = self.router_gate.compare_exchange(
+            ROUTERS_OPEN,
+            ROUTERS_CLOSED_FOR_UPDATE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
         Ok(true)
     }
 
+    /// Undoes `close_for_restart`, but never a shutdown's close.
     pub fn reopen_after_restart_refused(&self) {
         self.takers_closed.store(false, Ordering::Release);
-        self.makers_closed.store(false, Ordering::Release);
+        let _ = self.router_gate.compare_exchange(
+            ROUTERS_CLOSED_FOR_UPDATE,
+            ROUTERS_OPEN,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 
     pub(crate) fn wallet_opens_closed(&self) -> bool {
@@ -470,5 +505,44 @@ mod phrase_tests {
         state.hold_phrase_for("gone", || held.push("gone")).unwrap();
         state.hold_phrase_for("live", || held.push("live")).unwrap();
         assert_eq!(held, ["live"]);
+    }
+}
+
+#[cfg(test)]
+mod restart_gate_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_update_reopens_routers_but_never_undoes_a_shutdown() {
+        let state = AppState::default();
+        assert!(state.close_for_restart().unwrap());
+        assert!(state.wallet_opens_closed());
+        assert_ne!(state.router_gate.load(Ordering::Acquire), ROUTERS_OPEN);
+        state.reopen_after_restart_refused();
+        assert!(!state.wallet_opens_closed());
+        assert_eq!(state.router_gate.load(Ordering::Acquire), ROUTERS_OPEN);
+
+        assert!(state.close_for_restart().unwrap());
+        state
+            .router_gate
+            .store(ROUTERS_CLOSED_FOR_SHUTDOWN, Ordering::Release);
+        state.reopen_after_restart_refused();
+        assert_eq!(
+            state.router_gate.load(Ordering::Acquire),
+            ROUTERS_CLOSED_FOR_SHUTDOWN
+        );
+    }
+
+    #[test]
+    fn a_wallet_still_opening_keeps_the_restart_gate_open() {
+        let state = AppState::default();
+        state
+            .takers
+            .lock()
+            .unwrap()
+            .insert(PathBuf::from("/wallet"), TakerSlot::Opening);
+        assert!(!state.close_for_restart().unwrap());
+        assert!(!state.wallet_opens_closed());
+        assert_eq!(state.router_gate.load(Ordering::Acquire), ROUTERS_OPEN);
     }
 }

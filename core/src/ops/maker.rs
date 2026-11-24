@@ -18,7 +18,9 @@ use crate::ops::chain_backend;
 use crate::ops::maker_settings;
 use crate::security::input::{validate_leaf_name, validate_password};
 use crate::security::operation::{SensitiveOperation, SensitiveOperationGuard};
-use crate::state::{try_lock_makers, AppState, MakerHandle, MakerRuntime};
+use crate::state::{
+    try_lock_makers, AppState, MakerHandle, MakerRuntime, ROUTERS_CLOSED_FOR_SHUTDOWN, ROUTERS_OPEN,
+};
 use crate::storage::wallet_path;
 use crate::types::{
     MakerInitConfig, MakerPhase, MakerPhaseEvent, MakerSettingsDto, MakerStatusDto,
@@ -341,7 +343,7 @@ pub async fn init_maker(
     let settings = MakerSettingsDto::from_init(&config, &data_dir);
     {
         let mut makers = try_lock_makers(&state.makers)?;
-        if state.makers_closed.load(Ordering::Acquire) {
+        if state.router_gate.load(Ordering::Acquire) != ROUTERS_OPEN {
             return Err(AppError::new(
                 ErrorCode::RouterBusy,
                 "Portal is restarting to finish an update",
@@ -762,7 +764,7 @@ pub async fn start_maker(
 
     {
         let mut makers = try_lock_makers(&state.makers)?;
-        if state.makers_closed.load(Ordering::Acquire) {
+        if state.router_gate.load(Ordering::Acquire) != ROUTERS_OPEN {
             return Err(AppError::new(
                 ErrorCode::RouterNotRunning,
                 "Portal is restarting to finish an update",
@@ -1050,7 +1052,7 @@ pub async fn start_maker(
     }
 
     let mut makers = state.makers.lock()?;
-    if state.makers_closed.load(Ordering::Acquire) {
+    if state.router_gate.load(Ordering::Acquire) != ROUTERS_OPEN {
         if let Some(entry) = makers.get_mut(&router_id) {
             entry.phase = MakerPhase::Stopped;
         }
@@ -1384,7 +1386,7 @@ pub fn shutdown_all(state: &Arc<AppState>) {
         .makers
         .lock()
         .map(|mut makers| {
-            state.makers_closed.store(true, Ordering::Release);
+            state.router_gate.store(ROUTERS_CLOSED_FOR_SHUTDOWN, Ordering::Release);
             makers
                 .values_mut()
                 .filter_map(|entry| {
