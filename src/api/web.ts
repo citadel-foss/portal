@@ -303,6 +303,7 @@ export const host: Host = {
     // The server has no user's Router Dashboard to read; the command is desktop-only.
     localDashboardImport: false,
     canQuit: false,
+    selfUpdate: false,
   },
   operations: {
     blocking: async () => {

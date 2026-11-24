@@ -169,6 +169,9 @@ pub struct AppState {
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
+    /// Set under `makers` by `shutdown_all`. A start still constructing its server when the app
+    /// shuts down has no runtime for that pass to stop, so it checks this before installing one.
+    pub(crate) makers_closed: AtomicBool,
     /// New wallets' phrases by wallet data dir. Kept out of `TakerInstance`, which a sign out
     /// drops while the wallet is still unsaved.
     pub(crate) pending_phrases: Mutex<HashMap<PathBuf, PendingPhrase>>,

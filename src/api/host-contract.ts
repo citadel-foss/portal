@@ -25,6 +25,8 @@ export interface HostCapabilities {
   nativeFilePicker: boolean;
   /** Quitting the process is offered. Never on the web: the supervisor owns the daemon. */
   canQuit: boolean;
+  /** The app can update itself. The web host is updated through its image instead. */
+  selfUpdate: boolean;
 }
 
 /** A durable operation whose outcome the server could not confirm. */

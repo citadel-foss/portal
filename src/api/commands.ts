@@ -28,6 +28,7 @@ import type {
   PriceEstimate,
   ProtocolVersion,
   RecoveryPhrase,
+  UpdateInfo,
   RecoveryStatus,
   RecoverySummary,
   SendResult,
@@ -92,6 +93,15 @@ export function restartTorBootstrap(): Promise<void> {
 /** Confirms a quit the user was warned about; the process exits once teardown finishes. */
 export function quitApp(): Promise<void> {
   return invoke("quit_app");
+}
+
+export function checkUpdate(): Promise<UpdateInfo> {
+  return invoke("check_update");
+}
+
+/** Resolves once the new build is in place; the app then quits and relaunches by itself. */
+export function installUpdate(): Promise<void> {
+  return invoke("install_update");
 }
 
 export function listWallets(dataDir?: string): Promise<WalletListing[]> {

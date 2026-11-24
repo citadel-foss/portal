@@ -1038,6 +1038,16 @@ pub async fn start_maker(
     }
 
     let mut makers = state.makers.lock()?;
+    if state.makers_closed.load(Ordering::Acquire) {
+        if let Some(entry) = makers.get_mut(&router_id) {
+            entry.phase = MakerPhase::Stopped;
+        }
+        drop(makers);
+        server.watch_service.shutdown();
+        drop(server);
+        emit_phase(state, &router_id, MakerPhase::Stopped);
+        return Err(AppError::new(ErrorCode::RouterNotRunning, "Portal is shutting down"));
+    }
     let entry = makers
         .get_mut(&router_id)
         .ok_or_else(|| AppError::maker_not_found(&router_id))?;
@@ -1362,6 +1372,7 @@ pub fn shutdown_all(state: &Arc<AppState>) {
         .makers
         .lock()
         .map(|mut makers| {
+            state.makers_closed.store(true, Ordering::Release);
             makers
                 .values_mut()
                 .filter_map(|entry| {

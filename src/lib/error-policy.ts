@@ -33,6 +33,7 @@ const GUIDANCE: Partial<Record<string, string>> = {
   WALLET_OPEN_ELSEWHERE: "Close it in the other Portal, or open it there.",
   WALLET_NEEDS_UPGRADE: "Download the latest Portal release.",
   CONTRACTS_BROADCASTED: "Your funds are in contracts. Portal is reclaiming them on the Recovery page.",
+  UPDATE_FAILED: "Try again, or download it from the release page.",
   INTERNAL: "If it keeps happening, the Logs page has the detail.",
   STATE_POISONED: "Restarting Portal should clear it.",
   IO: "If it keeps happening, the Logs page has the detail.",

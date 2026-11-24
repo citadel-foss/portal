@@ -29,6 +29,11 @@ minreq.workspace = true
 serde_cbor.workspace = true
 openswap.workspace = true
 tauri-plugin-single-instance = "2"
+# In-app update. ureq rather than minreq: it gives each resolved address its own connect
+# timeout, and one of GitHub's release-asset addresses can black-hole a connection.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+semver = "1"
+sha2 = "0.10"
 
 # The About panel (src/about.rs). Already in the tree through Tauri's menu backend; named here
 # only for the extra AppKit classes.

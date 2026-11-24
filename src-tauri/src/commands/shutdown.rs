@@ -21,7 +21,7 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 static CHECKING: AtomicBool = AtomicBool::new(false);
 
 /// Work that a quit would interrupt rather than finish, so the user is asked first.
-fn quit_blockers(state: &AppState) -> QuitBlockers {
+pub(crate) fn quit_blockers(state: &AppState) -> QuitBlockers {
     // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
     // and survives a restart, and quitting mid-recovery is the one thing that actually stalls it.
     let recovering = |taker: &Arc<TakerInstance>| {
@@ -100,7 +100,7 @@ pub fn begin_quit(app: &AppHandle) {
             let _ = app.emit("app://quit-blocked", blockers);
             return;
         }
-        run_quit(app);
+        run_quit(app, false);
     });
 }
 
@@ -174,11 +174,16 @@ pub fn route_native_terminate(app: &AppHandle) {
 /// Confirms a quit the user was warned about.
 #[tauri::command]
 pub fn quit_app(app: AppHandle) -> Result<(), AppError> {
-    run_quit(app);
+    run_quit(app, false);
     Ok(())
 }
 
-fn run_quit(app: AppHandle) {
+/// Same teardown as a quit, then launches the app again from its own path.
+pub(crate) fn relaunch(app: AppHandle) {
+    run_quit(app, true);
+}
+
+fn run_quit(app: AppHandle, restart: bool) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -188,7 +193,11 @@ fn run_quit(app: AppHandle) {
     let _ = app.emit("app://quitting", ());
     std::thread::spawn(move || {
         shutdown_runtime(&app);
-        app.exit(0);
+        if restart {
+            app.request_restart();
+        } else {
+            app.exit(0);
+        }
     });
 }
 

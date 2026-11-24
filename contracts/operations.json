@@ -750,6 +750,24 @@
       "note": "The supervisor owns service termination; web UI offers logout, not daemon quit."
     },
     {
+      "name": "check_update",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "replaced",
+      "retryClass": "none",
+      "note": "Reads the release's build.json. The web host is updated by its image, not by itself."
+    },
+    {
+      "name": "install_update",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": false,
+      "webAdaptation": "replaced",
+      "retryClass": "none",
+      "note": "Replaces the desktop app in place and relaunches it. The web host is updated by its image."
+    },
+    {
       "name": "list_taker_blocklist",
       "executionClass": "read",
       "desktop": true,

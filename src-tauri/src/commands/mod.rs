@@ -12,6 +12,7 @@ pub mod shutdown;
 pub mod taker_reports;
 pub mod taker_swap;
 pub mod taker_wallet;
+pub mod update;
 
 use std::sync::Arc;
 

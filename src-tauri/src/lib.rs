@@ -5,7 +5,7 @@ mod native;
 
 use commands::{
     auth, blocklist, chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet,
-    market, setup, shutdown, taker_reports, taker_swap, taker_wallet,
+    market, setup, shutdown, taker_reports, taker_swap, taker_wallet, update,
 };
 use std::sync::Arc;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -20,6 +20,11 @@ use portal_core::state::AppState;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
+
+/// The CI build counter (`0.1.0-beta.N+YYYYMMDD`); the package version stays fixed between releases.
+pub(crate) fn display_version() -> &'static str {
+    include_str!("../../version.txt").trim()
+}
 
 /// Label of the window declared in `tauri.conf.json`.
 const MAIN_WINDOW: &str = "main";
@@ -207,6 +212,8 @@ pub fn run() {
             logs::get_maker_logs,
             // app lifecycle
             shutdown::quit_app,
+            update::check_update,
+            update::install_update,
         ]))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -228,6 +235,7 @@ pub fn run() {
                 portal_core::logging::set_log_dir(root);
             }
             portal_core::tor::sweep_stale_tor_dirs();
+            update::sweep_staging();
 
             // A SIGTERM or SIGINT quits through Tauri, which runs the same teardown as the
             // Quit menu: routers and wallets first, Tor last.

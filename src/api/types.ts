@@ -78,6 +78,22 @@ export interface QuitBlockers {
   runningRouters: string[];
 }
 
+/** The latest published build against this one. `inPlace` is false when Portal can't replace its
+ *  own install (a package-manager install, a read-only folder) and should link the release. */
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  available: boolean;
+  inPlace: boolean;
+  releaseUrl: string;
+}
+
+/** Payload of `update://progress`. */
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
 export type ConnectionType = "tor" | "clearnet";
 
 export interface InitConfig {
@@ -175,6 +191,7 @@ export type ErrorCode =
   | "INVALID_FILE_SELECTION"
   | "BACKEND_ROUTE_CHANGED"
   | "CONTRACTS_BROADCASTED"
+  | "UPDATE_FAILED"
   | "INVALID_INPUT"
   | "STATE_POISONED"
   | "IO"
