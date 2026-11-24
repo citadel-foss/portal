@@ -299,6 +299,7 @@ pub fn run() {
                         edit.setHidden(true);
                     }
                 }
+                shutdown::route_native_terminate(app.handle());
                 app.on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => shutdown::begin_quit(app),
                     "about" => about::show(),
