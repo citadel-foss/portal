@@ -31,6 +31,17 @@ impl Console {
             Console::Inherited => println!("{text}"),
         }
     }
+
+    /// Points stdout back at the terminal. For a process about to `exec` its successor, which
+    /// would otherwise inherit `/dev/null` and lose the lines meant for a person.
+    pub fn reattach(self) {
+        #[cfg(unix)]
+        if let Console::Saved(file) = self {
+            use std::os::fd::AsRawFd;
+            // SAFETY: both descriptors are open; `file` closes its own copy on drop.
+            unsafe { libc::dup2(file.as_raw_fd(), libc::STDOUT_FILENO) };
+        }
+    }
 }
 
 /// Sends stdout to `/dev/null` and returns the real one. Call once, before any swap can run.

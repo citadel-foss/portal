@@ -124,6 +124,12 @@ pub async fn init_taker(
             match takers.get(&key) {
                 Some(TakerSlot::Open(taker)) => OpenStep::Join(taker.clone()),
                 Some(TakerSlot::Opening) => OpenStep::Wait,
+                None if state.wallet_opens_closed() => {
+                    return Err(AppError::new(
+                        ErrorCode::SensitiveOperationInProgress,
+                        "Portal is restarting to finish an update",
+                    ))
+                }
                 None => {
                     takers.insert(key.clone(), TakerSlot::Opening);
                     OpenStep::Init

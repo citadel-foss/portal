@@ -753,19 +753,19 @@
       "name": "check_update",
       "executionClass": "probe",
       "desktop": true,
-      "web": false,
-      "webAdaptation": "replaced",
+      "web": true,
+      "webAdaptation": "none",
       "retryClass": "none",
-      "note": "Reads the release's build.json. The web host is updated by its image, not by itself."
+      "note": "Reads the release's build.json. CSRF-protected on web: it reaches the network on the server's behalf."
     },
     {
       "name": "install_update",
       "executionClass": "transient",
       "desktop": true,
-      "web": false,
-      "webAdaptation": "replaced",
+      "web": true,
+      "webAdaptation": "none",
       "retryClass": "none",
-      "note": "Replaces the desktop app in place and relaunches it. The web host is updated by its image."
+      "note": "Replaces the installed app or server binary and restarts it; on web that restarts it for every session."
     },
     {
       "name": "list_taker_blocklist",

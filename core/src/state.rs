@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime};
@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::events::EventSink;
-use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto};
+use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto, QuitBlockers};
 
 /// Non-blocking taker lock — fails fast with SwapInProgress instead of
 /// blocking for however long a running swap holds the mutex.
@@ -169,9 +169,13 @@ pub struct AppState {
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
-    /// Set under `makers` by `shutdown_all`. A start still constructing its server when the app
-    /// shuts down has no runtime for that pass to stop, so it checks this before installing one.
+    /// Set under `makers` by `shutdown_all`, or by an update about to commit. A start still
+    /// constructing its server when the app shuts down has no runtime for that pass to stop, so
+    /// it checks this before installing one, as well as on admission.
     pub(crate) makers_closed: AtomicBool,
+    /// Set under `takers` once an update is committing, so no wallet starts opening between
+    /// the last idle check and the restart: teardown skips a wallet still in `Taker::init`.
+    takers_closed: AtomicBool,
     /// New wallets' phrases by wallet data dir. Kept out of `TakerInstance`, which a sign out
     /// drops while the wallet is still unsaved.
     pub(crate) pending_phrases: Mutex<HashMap<PathBuf, PendingPhrase>>,
@@ -185,6 +189,92 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Work that quitting or restarting would interrupt rather than finish, so the user is asked
+    /// first. Blocking: each wallet read can wait out a sync.
+    pub fn running_work(&self) -> QuitBlockers {
+        // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
+        // and survives a restart, and quitting mid-recovery is the one thing that actually stalls it.
+        let recovering = |taker: &Arc<TakerInstance>| {
+            taker
+                .wallet
+                .read()
+                .is_ok_and(|w| !w.list_live_contract_spend_info().is_empty())
+        };
+        // Before the wallet reads as well as after: a swap that funds and fails during a read releases
+        // its slot on the way into recovery, which a wallet already read would no longer show.
+        let swap_at_start = self.open_takers().iter().any(|taker| taker.swap_running());
+        // Until a snapshot holds no wallet left to read: each read can wait out a sync while the window
+        // stays usable, and a wallet opened, or a swap or router started, meanwhile must still count.
+        let mut checked: Vec<Arc<TakerInstance>> = Vec::new();
+        let mut recovery_running = false;
+        let takers = loop {
+            let takers = self.open_takers();
+            let unseen: Vec<_> = takers
+                .iter()
+                .filter(|taker| !checked.iter().any(|seen| Arc::ptr_eq(seen, taker)))
+                .cloned()
+                .collect();
+            if unseen.is_empty() {
+                break takers;
+            }
+            recovery_running = recovery_running || unseen.iter().any(recovering);
+            checked.extend(unseen);
+        };
+        let swap_running = swap_at_start || takers.iter().any(|taker| taker.swap_running());
+        // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
+        // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
+        // about a maker that finished long ago.
+        let running_routers = self
+            .makers
+            .lock()
+            .map(|makers| {
+                makers
+                    .values()
+                    .filter(|entry| {
+                        matches!(
+                            entry.phase,
+                            MakerPhase::Restoring
+                                | MakerPhase::Initializing
+                                | MakerPhase::Starting
+                                | MakerPhase::Running
+                                | MakerPhase::Stopping
+                        )
+                    })
+                    .map(|entry| entry.settings.router_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        QuitBlockers {
+            swap_running,
+            recovery_running,
+            running_routers,
+        }
+    }
+
+    /// Stops new wallet opens and router starts ahead of a restart, unless a wallet is already
+    /// opening. False leaves both open. Routers admitted earlier still show in `running_work`.
+    pub fn close_for_restart(&self) -> Result<bool, AppError> {
+        {
+            let takers = self.takers.lock()?;
+            if takers.values().any(|slot| matches!(slot, TakerSlot::Opening)) {
+                return Ok(false);
+            }
+            self.takers_closed.store(true, Ordering::Release);
+        }
+        let _makers = self.makers.lock()?;
+        self.makers_closed.store(true, Ordering::Release);
+        Ok(true)
+    }
+
+    pub fn reopen_after_restart_refused(&self) {
+        self.takers_closed.store(false, Ordering::Release);
+        self.makers_closed.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn wallet_opens_closed(&self) -> bool {
+        self.takers_closed.load(Ordering::Acquire)
+    }
+
     /// Runs `hold` only while `session` is live, under the lock `end_session` marks it ended with,
     /// so a phrase is either held before that session's cleanup or never held at all.
     pub(crate) fn hold_phrase_for(

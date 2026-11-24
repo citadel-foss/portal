@@ -28,7 +28,7 @@ const LICENSE: &str = "Open source under the MIT License";
 pub fn metadata(app: &tauri::App) -> tauri::menu::AboutMetadata<'_> {
     tauri::menu::AboutMetadata {
         name: Some("Portal".into()),
-        version: Some(crate::display_version().into()),
+        version: Some(portal_core::update::current_version().into()),
         comments: Some(format!(
             "Build date {}\nCommit {}",
             env!("PORTAL_BUILD_DATE"),
@@ -119,7 +119,7 @@ pub fn show() {
     };
     let mut values: Vec<Retained<AnyObject>> = vec![
         Retained::into_super(Retained::into_super(NSString::from_str("Portal"))),
-        Retained::into_super(Retained::into_super(NSString::from_str(crate::display_version()))),
+        Retained::into_super(Retained::into_super(NSString::from_str(portal_core::update::current_version()))),
         Retained::into_super(Retained::into_super(Retained::into_super(credits))),
     ];
     keys.push(ns_string!("Copyright"));

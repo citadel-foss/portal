@@ -21,11 +21,6 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
 
-/// The CI build counter (`0.1.0-beta.N+YYYYMMDD`); the package version stays fixed between releases.
-pub(crate) fn display_version() -> &'static str {
-    include_str!("../../version.txt").trim()
-}
-
 /// Label of the window declared in `tauri.conf.json`.
 const MAIN_WINDOW: &str = "main";
 

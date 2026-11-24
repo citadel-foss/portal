@@ -39,7 +39,12 @@ pub fn stream(
         // buffering rather than assuming an empty stream means nothing has happened.
         yield Ok(Event::default().event("stream-ready").data("{}"));
         loop {
-            match events.recv().await {
+            // Ended on shutdown, or the server's graceful drain waits on this tab until it closes.
+            let next = tokio::select! {
+                next = events.recv() => next,
+                _ = portal_core::shutdown_signal::wait() => break,
+            };
+            match next {
                 Ok(envelope) => {
                     let mine = envelope.wallet.as_ref().is_none_or(|wallet| {
                         runtime.wallet_of(_guard.session_id()).as_ref() == Some(wallet)

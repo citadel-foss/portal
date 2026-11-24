@@ -37,6 +37,12 @@ fn install() {
     }
 }
 
+/// Asks the process to stop as a signal would, through the same ordered teardown.
+#[cfg(unix)]
+pub fn trip() {
+    TRIPPED.store(true, Ordering::SeqCst);
+}
+
 /// Resolves when the process has been asked to stop.
 #[cfg(unix)]
 pub async fn wait() {

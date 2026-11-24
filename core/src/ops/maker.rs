@@ -341,6 +341,12 @@ pub async fn init_maker(
     let settings = MakerSettingsDto::from_init(&config, &data_dir);
     {
         let mut makers = try_lock_makers(&state.makers)?;
+        if state.makers_closed.load(Ordering::Acquire) {
+            return Err(AppError::new(
+                ErrorCode::RouterBusy,
+                "Portal is restarting to finish an update",
+            ));
+        }
         if makers.contains_key(&router_id) {
             return Err(AppError::new(
                 ErrorCode::RouterBusy,
@@ -756,6 +762,12 @@ pub async fn start_maker(
 
     {
         let mut makers = try_lock_makers(&state.makers)?;
+        if state.makers_closed.load(Ordering::Acquire) {
+            return Err(AppError::new(
+                ErrorCode::RouterNotRunning,
+                "Portal is restarting to finish an update",
+            ));
+        }
         let entry = makers
             .get_mut(&router_id)
             .ok_or_else(|| AppError::maker_not_found(&router_id))?;

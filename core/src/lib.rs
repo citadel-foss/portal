@@ -16,3 +16,4 @@ pub mod shutdown_signal;
 pub mod storage;
 pub mod tor;
 pub mod types;
+pub mod update;

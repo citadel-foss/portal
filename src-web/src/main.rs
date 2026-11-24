@@ -8,6 +8,7 @@ mod files;
 mod routes;
 mod sse;
 mod state;
+mod update;
 
 use std::sync::Arc;
 
@@ -44,11 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     portal_core::shutdown_signal::arm();
+    update::remember_exe(config.assets_dir.is_some());
 
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(serve(config))
+        .build()?;
+    let served = runtime.block_on(serve(config));
+    // Bounded: a blocking task still waiting on the network must not hold up the restart.
+    runtime.shutdown_timeout(Duration::from_secs(5));
+    served?;
+    update::relaunch_if_requested()
 }
 
 /// Best effort: a machine with no desktop, or no opener, still has the URL printed above.
@@ -164,7 +170,9 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         console.line(&format!("\nPortal is running. Open: {url}"));
         // Local use only, where the person who started it is at this machine's browser. A
         // server behind a proxy has no one at its screen, and the URL above is the answer.
-        if state.config.access_profile == config::AccessProfile::DevelopmentLoopback {
+        if state.config.access_profile == config::AccessProfile::DevelopmentLoopback
+            && std::env::var_os(update::RELAUNCHED_ENV).is_none()
+        {
             open_browser(&url);
         }
     } else {
@@ -182,6 +190,7 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // Reached once in-flight requests have drained. Everything below outlives the HTTP
     // server: routers, the wallet and Tor are the process, not the transport.
     teardown(&state, Duration::from_secs(shutdown_timeout)).await;
+    console.reattach();
     Ok(())
 }
 

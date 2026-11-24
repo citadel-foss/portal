@@ -238,6 +238,10 @@ async function post(path: string, body: unknown): Promise<Response> {
   });
 }
 
+/** Covers the server's full shutdown budget (routers finish their connections first) plus a
+ *  slow start. */
+const RESTART_WAIT_MS = 5 * 60 * 1000;
+
 async function runRestore(): Promise<{
   authenticated: boolean;
   hasOwner: boolean;
@@ -303,7 +307,25 @@ export const host: Host = {
     // The server has no user's Router Dashboard to read; the command is desktop-only.
     localDashboardImport: false,
     canQuit: false,
-    selfUpdate: false,
+    selfUpdate: true,
+  },
+  awaitRestart: async () => {
+    // The old server answers for this session until it stops; the new one has never seen it,
+    // so the first signed-out answer is the updated server.
+    const deadline = Date.now() + RESTART_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      const info = await runRestore().catch(() => null);
+      if (info && !info.authenticated) {
+        window.location.hash = "#/login";
+        window.location.reload();
+        return;
+      }
+    }
+    throw {
+      code: "SERVER_UNREACHABLE",
+      message: "Portal didn't come back after the update. Check the server's terminal or log.",
+    };
   },
   operations: {
     blocking: async () => {
