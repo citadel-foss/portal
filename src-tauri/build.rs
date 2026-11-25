@@ -160,6 +160,8 @@ fn main() {
         "quit_app",
         "check_update",
         "install_update",
+        "update_changes",
+        "update_blockers",
     ];
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS));

@@ -19,6 +19,8 @@ use crate::state::AppState;
 pub const RELEASE_URL: &str = "https://github.com/citadel-foss/portal/releases/tag/0.1.0-beta";
 const MANIFEST_URL: &str =
     "https://github.com/citadel-foss/portal/releases/download/0.1.0-beta/build.json";
+const CHANGES_URL: &str =
+    "https://github.com/citadel-foss/portal/releases/download/0.1.0-beta/changes.json";
 /// Siblings of the install named this way are a download in progress or the replaced copy.
 const STAGING_PREFIX: &str = ".portal-update-";
 /// Per address, so one that black-holes the connection falls through to the next. minreq gives
@@ -122,6 +124,92 @@ pub fn check(in_place: bool) -> Result<UpdateInfo, AppError> {
         in_place,
         release_url: RELEASE_URL,
     })
+}
+
+/// One build's entry in the release's `changes.json`, which CI extends on every publish.
+#[derive(serde::Deserialize)]
+struct Build {
+    version: String,
+    /// The build published before this one; its changes are everything merged since.
+    since: String,
+    portal: Vec<Merged>,
+    openswap: Vec<Merged>,
+}
+
+#[derive(serde::Deserialize)]
+struct Merged {
+    number: u64,
+    title: String,
+}
+
+/// A pull request merged after this build.
+#[derive(serde::Serialize)]
+pub struct Change {
+    number: u64,
+    title: String,
+    url: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct Changes {
+    portal: Vec<Change>,
+    openswap: Vec<Change>,
+    /// False when the release's history starts after this build.
+    complete: bool,
+}
+
+/// Blocking: one request to GitHub.
+pub fn changes() -> Result<Changes, AppError> {
+    #[derive(serde::Deserialize)]
+    struct Log {
+        builds: Vec<Build>,
+    }
+    let log: Log = get(CHANGES_URL, Duration::from_secs(30))
+        .and_then(|response| {
+            serde_json::from_reader(response.into_reader())
+                .map_err(|e| failed(format!("changes.json is unreadable: {e}")))
+        })
+        .map_err(|e| failed(format!("Couldn't load what changed: {}.", e.message)))?;
+    Ok(changes_since(log.builds, current_version()))
+}
+
+/// Newest first, each pull request once.
+fn changes_since(mut builds: Vec<Build>, current: &str) -> Changes {
+    builds.retain(|build| is_newer(&build.version, current));
+    builds.sort_by(|a, b| {
+        match (
+            semver::Version::parse(&a.version),
+            semver::Version::parse(&b.version),
+        ) {
+            (Ok(a), Ok(b)) => b.cmp_precedence(&a),
+            _ => std::cmp::Ordering::Equal,
+        }
+    });
+    // Each build names the one before it, so the history reaches back to this build once one
+    // of them was published on top of it or of something older.
+    let complete = builds.iter().any(|build| !is_newer(&build.since, current));
+    let mut changes = Changes {
+        portal: Vec::new(),
+        openswap: Vec::new(),
+        complete,
+    };
+    for build in builds {
+        for (repo, merged, into) in [
+            ("portal", build.portal, &mut changes.portal),
+            ("openswap", build.openswap, &mut changes.openswap),
+        ] {
+            for Merged { number, title } in merged {
+                if !into.iter().any(|change| change.number == number) {
+                    into.push(Change {
+                        number,
+                        title,
+                        url: format!("https://github.com/citadel-foss/{repo}/pull/{number}"),
+                    });
+                }
+            }
+        }
+    }
+    changes
 }
 
 /// Whether this process may replace `path` by renaming over it: a directory's rename also
@@ -405,6 +493,43 @@ mod tests {
         left.sort();
         assert_eq!(left, ["notes.txt", "portal-server", "portal-update-notes"]);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changes_cover_every_build_after_this_one() {
+        let build = |n: u32, since: u32, portal: &[u64], openswap: &[u64]| Build {
+            version: format!("0.1.0-beta.{n}+20261125"),
+            since: format!("0.1.0-beta.{since}+20261124"),
+            portal: portal
+                .iter()
+                .map(|&number| Merged { number, title: format!("pr {number}") })
+                .collect(),
+            openswap: openswap
+                .iter()
+                .map(|&number| Merged { number, title: format!("pr {number}") })
+                .collect(),
+        };
+        let numbers = |changes: &[Change]| changes.iter().map(|c| c.number).collect::<Vec<_>>();
+        let log = || {
+            vec![
+                build(71, 70, &[95], &[]),
+                build(73, 72, &[97], &[1242]),
+                build(72, 71, &[96], &[1234, 1242]),
+            ]
+        };
+
+        let changes = changes_since(log(), "0.1.0-beta.71+20261124");
+        assert_eq!(numbers(&changes.portal), [97, 96]);
+        assert_eq!(numbers(&changes.openswap), [1242, 1234]);
+        assert_eq!(
+            changes.openswap[1].url,
+            "https://github.com/citadel-foss/openswap/pull/1234"
+        );
+        assert!(changes.complete);
+
+        let changes = changes_since(log(), "0.1.0-beta.60+20261101");
+        assert_eq!(numbers(&changes.portal), [97, 96, 95]);
+        assert!(!changes.complete, "history starts at 70, after 60");
     }
 
     #[test]

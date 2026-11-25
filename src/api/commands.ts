@@ -29,6 +29,8 @@ import type {
   ProtocolVersion,
   RecoveryPhrase,
   UpdateInfo,
+  Changes,
+  QuitBlockers,
   RecoveryStatus,
   RecoverySummary,
   SendResult,
@@ -102,6 +104,14 @@ export function checkUpdate(): Promise<UpdateInfo> {
 /** Resolves once the new build is in place; the app then quits and relaunches by itself. */
 export function installUpdate(): Promise<void> {
   return invoke("install_update");
+}
+
+export function updateChanges(): Promise<Changes> {
+  return invoke("update_changes");
+}
+
+export function updateBlockers(): Promise<QuitBlockers> {
+  return invoke("update_blockers");
 }
 
 export function listWallets(dataDir?: string): Promise<WalletListing[]> {

@@ -124,13 +124,10 @@ pub async fn init_taker(
             match takers.get(&key) {
                 Some(TakerSlot::Open(taker)) => OpenStep::Join(taker.clone()),
                 Some(TakerSlot::Opening) => OpenStep::Wait,
-                None if state.wallet_opens_closed() => {
-                    return Err(AppError::new(
-                        ErrorCode::SensitiveOperationInProgress,
-                        "Portal is restarting to finish an update",
-                    ))
-                }
                 None => {
+                    if let Some(why) = state.wallet_opens_closed() {
+                        return Err(AppError::new(ErrorCode::SensitiveOperationInProgress, why));
+                    }
                     takers.insert(key.clone(), TakerSlot::Opening);
                     OpenStep::Init
                 }
@@ -666,11 +663,28 @@ fn spawn_release(state: &Arc<AppState>, taker: Arc<TakerInstance>) {
     }
 }
 
+const SHUTDOWN_OPENING_WAIT: Duration = Duration::from_secs(30);
+
 /// Drops every wallet and waits for all of them to finish saving. For the quit paths only.
 ///
 /// A wallet with a running swap is left alone: the swap thread holds its Taker for the whole
 /// swap, and the swap's own per-phase writes are what the next launch recovers from.
 pub fn shutdown_all(state: &Arc<AppState>) {
+    // An open already in `Taker::init` lands after the pass below unless it is waited for.
+    // Bounded, since init can wait on a recovery confirming, and desktop quit has no deadline.
+    state.close_wallets_for_shutdown();
+    let give_up = std::time::Instant::now() + SHUTDOWN_OPENING_WAIT;
+    while state.takers.lock().is_ok_and(|takers| {
+        takers
+            .values()
+            .any(|slot| matches!(slot, TakerSlot::Opening))
+    }) {
+        if std::time::Instant::now() >= give_up {
+            log::warn!("a wallet is still opening; shutting down without it");
+            break;
+        }
+        std::thread::sleep(OPENING_POLL);
+    }
     if let Ok(mut bindings) = state.bindings.lock() {
         bindings.clear();
     }

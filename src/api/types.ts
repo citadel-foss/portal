@@ -71,7 +71,7 @@ export interface TorStatus {
   controlPort?: number;
 }
 
-/** Work a quit would interrupt rather than finish. Payload of `app://quit-blocked`. */
+/** Work a quit or an update would interrupt rather than finish. Payload of `app://quit-blocked`. */
 export interface QuitBlockers {
   swapRunning: boolean;
   recoveryRunning: boolean;
@@ -86,6 +86,21 @@ export interface UpdateInfo {
   available: boolean;
   inPlace: boolean;
   releaseUrl: string;
+}
+
+/** A pull request merged between the running build and the release's. */
+export interface Change {
+  number: number;
+  title: string;
+  url: string;
+}
+
+/** What an update brings in, newest first, per repository. */
+export interface Changes {
+  portal: Change[];
+  openswap: Change[];
+  /** False when the release's history starts after this build, so only newer changes are listed. */
+  complete: boolean;
 }
 
 /** Payload of `update://progress`. */

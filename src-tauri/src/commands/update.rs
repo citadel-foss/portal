@@ -11,7 +11,8 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 
 use portal_core::error::{AppError, ErrorCode};
 use portal_core::state::AppState;
-use portal_core::update::{self, Placement, UpdateInfo};
+use portal_core::types::QuitBlockers;
+use portal_core::update::{self, Changes, Placement, UpdateInfo};
 
 enum Install {
     MacBundle(PathBuf),
@@ -52,6 +53,22 @@ pub async fn check_update() -> Result<UpdateInfo, AppError> {
     tauri::async_runtime::spawn_blocking(|| update::check(Install::current().is_some()))
         .await
         .map_err(AppError::internal)?
+}
+
+#[tauri::command]
+pub async fn update_changes() -> Result<Changes, AppError> {
+    tauri::async_runtime::spawn_blocking(update::changes)
+        .await
+        .map_err(AppError::internal)?
+}
+
+/// What has to stop before an update may install. Blocking: a wallet read can wait out a sync.
+#[tauri::command]
+pub async fn update_blockers(app: AppHandle) -> Result<QuitBlockers, AppError> {
+    let state = Arc::clone(&app.state::<Arc<AppState>>());
+    tauri::async_runtime::spawn_blocking(move || state.running_work())
+        .await
+        .map_err(AppError::internal)
 }
 
 /// Downloads, verifies and swaps in the latest build, then quits and relaunches through the

@@ -154,6 +154,79 @@ class Downloads(unittest.TestCase):
                 packaging.package(root / 'downloads', root / 'release')
 
 
+class Changes(unittest.TestCase):
+    previous = {"display_version": "0.1.0-beta.71+20261124", "portal_sha": "p71", "openswap_sha": "o71"}
+
+    def compare(self, repo, base, head):
+        self.calls.append((repo, base, head))
+        return {
+            "citadel-foss/portal": [
+                "fix: inside a merge",
+                "Merge pull request #96 from keraliss/desktop_update\n\nfeat: in-app update",
+                "ci: bump Portal display version to 0.1.0-beta.72+20261125",
+            ],
+            "citadel-foss/openswap": [
+                "feat(maker): drain in-flight swaps (#1234)\n\nbody",
+                "fix: refer to (see #12 for context)",
+                "fix(lightning): fail closed (#1242)",
+            ],
+        }[repo]
+
+    def setUp(self):
+        self.calls = []
+
+    def extend(self, history, previous, portal_sha="p72", openswap_sha="o72"):
+        return packaging.extend_changes(history, previous, "0.1.0-beta.72+20261125", portal_sha,
+                                        openswap_sha, "citadel-foss/portal", self.compare)
+
+    def test_new_build_lists_pull_requests_merged_since_the_last_one_newest_first(self):
+        older = {"version": "0.1.0-beta.71+20261124", "since": "0.1.0-beta.70+20261124",
+                 "portal": [{"number": 95, "title": "fix: quit hang"}], "openswap": []}
+        changes = self.extend({"builds": [older]}, self.previous)
+        self.assertEqual(changes["builds"][0], {
+            "version": "0.1.0-beta.72+20261125", "since": "0.1.0-beta.71+20261124",
+            "portal": [{"number": 96, "title": "feat: in-app update"}],
+            "openswap": [{"number": 1242, "title": "fix(lightning): fail closed"},
+                         {"number": 1234, "title": "feat(maker): drain in-flight swaps"}],
+        })
+        self.assertEqual(changes["builds"][1], older)
+        self.assertEqual(self.calls, [("citadel-foss/portal", "p71", "p72"),
+                                      ("citadel-foss/openswap", "o71", "o72")])
+
+    def test_unchanged_repository_is_not_compared(self):
+        changes = self.extend({}, self.previous, openswap_sha="o71")
+        self.assertEqual(changes["builds"][0]["openswap"], [])
+        self.assertEqual(self.calls, [("citadel-foss/portal", "p71", "p72")])
+
+    def test_history_not_ending_at_the_published_build_is_dropped(self):
+        stale = {"builds": [{"version": "0.1.0-beta.70+20261124", "since": "0.1.0-beta.69+20261124",
+                             "portal": [], "openswap": []}]}
+        changes = self.extend(stale, self.previous)
+        self.assertEqual([b["version"] for b in changes["builds"]], ["0.1.0-beta.72+20261125"])
+        self.assertEqual(changes["builds"][0]["since"], "0.1.0-beta.71+20261124")
+
+    def test_rerun_after_a_partial_upload_restarts_the_history(self):
+        stale = {"builds": [{"version": "0.1.0-beta.71+20261124", "since": "x", "portal": [], "openswap": []}]}
+        previous = dict(self.previous, display_version="0.1.0-beta.72+20261125")
+        changes = self.extend(stale, previous)
+        self.assertEqual(changes["builds"], [{"version": "0.1.0-beta.72+20261125",
+                                              "since": "0.1.0-beta.72+20261125",
+                                              "portal": [], "openswap": []}])
+
+    def test_rerun_keeps_the_published_history(self):
+        history = {"builds": [{"version": "0.1.0-beta.72+20261125", "since": "x", "portal": [], "openswap": []}]}
+        previous = dict(self.previous, display_version="0.1.0-beta.72+20261125")
+        self.assertIs(self.extend(history, previous), history)
+        self.assertEqual(self.calls, [])
+
+    def test_history_is_capped(self):
+        history = {"builds": [{"version": "0.1.0-beta.71+20261124"}]
+                   + [{"version": str(n)} for n in range(packaging.CHANGES_KEPT)]}
+        changes = self.extend(history, self.previous)
+        self.assertEqual(len(changes["builds"]), packaging.CHANGES_KEPT)
+        self.assertEqual(changes["builds"][0]["version"], "0.1.0-beta.72+20261125")
+
+
 class Diagnostics(unittest.TestCase):
     def test_rust_error_keeps_source_location_and_removes_color_and_timestamps(self):
         summary, excerpt = reporting.error_excerpt(

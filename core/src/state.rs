@@ -152,9 +152,30 @@ pub(crate) enum TakerSlot {
     Open(Arc<TakerInstance>),
 }
 
-pub(crate) const ROUTERS_OPEN: u8 = 0;
-const ROUTERS_CLOSED_FOR_UPDATE: u8 = 1;
-pub(crate) const ROUTERS_CLOSED_FOR_SHUTDOWN: u8 = 2;
+/// States of `router_gate` and `wallet_gate`. Shutdown's close is final; an update's is undone
+/// if the update is refused.
+pub(crate) const GATE_OPEN: u8 = 0;
+const GATE_CLOSED_FOR_UPDATE: u8 = 1;
+pub(crate) const GATE_CLOSED_FOR_SHUTDOWN: u8 = 2;
+
+// Both fail only against a shutdown's close, which must stand.
+fn close_for_update(gate: &AtomicU8) {
+    let _ = gate.compare_exchange(
+        GATE_OPEN,
+        GATE_CLOSED_FOR_UPDATE,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+fn reopen_after_update(gate: &AtomicU8) {
+    let _ = gate.compare_exchange(
+        GATE_CLOSED_FOR_UPDATE,
+        GATE_OPEN,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
 
 #[derive(Default)]
 pub struct AppState {
@@ -173,14 +194,15 @@ pub struct AppState {
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
-    /// Router admission: [`ROUTERS_OPEN`], closed for an update that may still be refused, or
+    /// Router admission: [`GATE_OPEN`], closed for an update that may still be refused, or
     /// closed for shutdown, which nothing reopens. A start still constructing its server at
     /// shutdown has no runtime for that pass to stop, so it checks this before installing one,
     /// as well as on admission.
     pub(crate) router_gate: AtomicU8,
-    /// Set under `takers` once an update is committing, so no wallet starts opening between
-    /// the last idle check and the restart: teardown skips a wallet still in `Taker::init`.
-    takers_closed: AtomicBool,
+    /// Wallet admission, changed under `takers`. Closed once an update is committing, so no
+    /// wallet starts opening between the last idle check and the restart, and for good at
+    /// shutdown, whose teardown would otherwise miss a wallet that opens after it.
+    wallet_gate: AtomicU8,
     /// New wallets' phrases by wallet data dir. Kept out of `TakerInstance`, which a sign out
     /// drops while the wallet is still unsaved.
     pub(crate) pending_phrases: Mutex<HashMap<PathBuf, PendingPhrase>>,
@@ -279,35 +301,36 @@ impl AppState {
             if takers.values().any(|slot| matches!(slot, TakerSlot::Opening)) {
                 return Ok(false);
             }
-            self.takers_closed.store(true, Ordering::Release);
+            close_for_update(&self.wallet_gate);
         }
         let Ok(_makers) = self.makers.lock() else {
-            self.takers_closed.store(false, Ordering::Release);
+            reopen_after_update(&self.wallet_gate);
             return Err(AppError::new(ErrorCode::StatePoisoned, "router registry lock poisoned"));
         };
-        // Fails only if shutdown already closed it, which is final anyway.
-        let _ = self.router_gate.compare_exchange(
-            ROUTERS_OPEN,
-            ROUTERS_CLOSED_FOR_UPDATE,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        close_for_update(&self.router_gate);
         Ok(true)
     }
 
     /// Undoes `close_for_restart`, but never a shutdown's close.
     pub fn reopen_after_restart_refused(&self) {
-        self.takers_closed.store(false, Ordering::Release);
-        let _ = self.router_gate.compare_exchange(
-            ROUTERS_CLOSED_FOR_UPDATE,
-            ROUTERS_OPEN,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        reopen_after_update(&self.wallet_gate);
+        reopen_after_update(&self.router_gate);
     }
 
-    pub(crate) fn wallet_opens_closed(&self) -> bool {
-        self.takers_closed.load(Ordering::Acquire)
+    /// Why a wallet may not start opening now, if it may not.
+    pub(crate) fn wallet_opens_closed(&self) -> Option<&'static str> {
+        match self.wallet_gate.load(Ordering::Acquire) {
+            GATE_OPEN => None,
+            GATE_CLOSED_FOR_UPDATE => Some("Portal is restarting to finish an update"),
+            _ => Some("Portal is shutting down"),
+        }
+    }
+
+    /// Refuses every later wallet open. Under `takers`, so no open is admitted after it.
+    pub(crate) fn close_wallets_for_shutdown(&self) {
+        let _takers = self.takers.lock();
+        self.wallet_gate
+            .store(GATE_CLOSED_FOR_SHUTDOWN, Ordering::Release);
     }
 
     /// Runs `hold` only while `session` is live, under the lock `end_session` marks it ended with,
@@ -516,21 +539,23 @@ mod restart_gate_tests {
     fn a_refused_update_reopens_routers_but_never_undoes_a_shutdown() {
         let state = AppState::default();
         assert!(state.close_for_restart().unwrap());
-        assert!(state.wallet_opens_closed());
-        assert_ne!(state.router_gate.load(Ordering::Acquire), ROUTERS_OPEN);
+        assert!(state.wallet_opens_closed().is_some());
+        assert_ne!(state.router_gate.load(Ordering::Acquire), GATE_OPEN);
         state.reopen_after_restart_refused();
-        assert!(!state.wallet_opens_closed());
-        assert_eq!(state.router_gate.load(Ordering::Acquire), ROUTERS_OPEN);
+        assert!(state.wallet_opens_closed().is_none());
+        assert_eq!(state.router_gate.load(Ordering::Acquire), GATE_OPEN);
 
         assert!(state.close_for_restart().unwrap());
         state
             .router_gate
-            .store(ROUTERS_CLOSED_FOR_SHUTDOWN, Ordering::Release);
+            .store(GATE_CLOSED_FOR_SHUTDOWN, Ordering::Release);
+        state.close_wallets_for_shutdown();
         state.reopen_after_restart_refused();
         assert_eq!(
             state.router_gate.load(Ordering::Acquire),
-            ROUTERS_CLOSED_FOR_SHUTDOWN
+            GATE_CLOSED_FOR_SHUTDOWN
         );
+        assert_eq!(state.wallet_opens_closed(), Some("Portal is shutting down"));
     }
 
     #[test]
@@ -542,7 +567,7 @@ mod restart_gate_tests {
             .unwrap()
             .insert(PathBuf::from("/wallet"), TakerSlot::Opening);
         assert!(!state.close_for_restart().unwrap());
-        assert!(!state.wallet_opens_closed());
-        assert_eq!(state.router_gate.load(Ordering::Acquire), ROUTERS_OPEN);
+        assert!(state.wallet_opens_closed().is_none());
+        assert_eq!(state.router_gate.load(Ordering::Acquire), GATE_OPEN);
     }
 }
