@@ -12,6 +12,7 @@ pub enum SensitiveOperation {
     StartSwap,
     BackupPrivateKey,
     RestorePrivateKey,
+    InstallUpdate,
 }
 
 /// RAII lock that releases the process-wide sensitive-operation flag on drop.

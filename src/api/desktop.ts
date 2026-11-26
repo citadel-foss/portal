@@ -35,7 +35,10 @@ export const host: Host = {
     localDashboardImport: true,
     // The desktop app owns its process; a browser session cannot stop the server.
     canQuit: true,
+    selfUpdate: true,
   },
+  // The whole app relaunches, and the quit overlay covers the window until it does.
+  awaitRestart: () => new Promise<void>(() => {}),
   // Desktop commands do not go through the operations journal, so nothing is ever blocked
   // and there is nothing to settle.
   operations: {

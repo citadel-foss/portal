@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime};
@@ -11,9 +11,9 @@ use openswap::taker::Taker;
 use openswap::wallet::{SecretMnemonic, Wallet};
 use uuid::Uuid;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::events::EventSink;
-use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto};
+use crate::types::{ChainBackendConfig, MakerPhase, MakerSettingsDto, QuitBlockers};
 
 /// Non-blocking taker lock — fails fast with SwapInProgress instead of
 /// blocking for however long a running swap holds the mutex.
@@ -152,6 +152,31 @@ pub(crate) enum TakerSlot {
     Open(Arc<TakerInstance>),
 }
 
+/// States of `router_gate` and `wallet_gate`. Shutdown's close is final; an update's is undone
+/// if the update is refused.
+pub(crate) const GATE_OPEN: u8 = 0;
+const GATE_CLOSED_FOR_UPDATE: u8 = 1;
+pub(crate) const GATE_CLOSED_FOR_SHUTDOWN: u8 = 2;
+
+// Both fail only against a shutdown's close, which must stand.
+fn close_for_update(gate: &AtomicU8) {
+    let _ = gate.compare_exchange(
+        GATE_OPEN,
+        GATE_CLOSED_FOR_UPDATE,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+fn reopen_after_update(gate: &AtomicU8) {
+    let _ = gate.compare_exchange(
+        GATE_CLOSED_FOR_UPDATE,
+        GATE_OPEN,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub(crate) takers: Mutex<HashMap<PathBuf, TakerSlot>>,
@@ -169,6 +194,15 @@ pub struct AppState {
     /// Maker registrations keyed by stable maker ID. Persisted registrations
     /// are loaded into this map on demand; no maker auto-starts at app launch.
     pub makers: Arc<Mutex<HashMap<String, MakerHandle>>>,
+    /// Router admission: [`GATE_OPEN`], closed for an update that may still be refused, or
+    /// closed for shutdown, which nothing reopens. A start still constructing its server at
+    /// shutdown has no runtime for that pass to stop, so it checks this before installing one,
+    /// as well as on admission.
+    pub(crate) router_gate: AtomicU8,
+    /// Wallet admission, changed under `takers`. Closed once an update is committing, so no
+    /// wallet starts opening between the last idle check and the restart, and for good at
+    /// shutdown, whose teardown would otherwise miss a wallet that opens after it.
+    wallet_gate: AtomicU8,
     /// New wallets' phrases by wallet data dir. Kept out of `TakerInstance`, which a sign out
     /// drops while the wallet is still unsaved.
     pub(crate) pending_phrases: Mutex<HashMap<PathBuf, PendingPhrase>>,
@@ -182,6 +216,123 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Work that quitting or restarting would interrupt rather than finish, so the user is asked
+    /// first. Blocking: each wallet read can wait out a sync.
+    pub fn running_work(&self) -> QuitBlockers {
+        // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
+        // and survives a restart, and quitting mid-recovery is the one thing that actually stalls it.
+        let recovering = |taker: &Arc<TakerInstance>| {
+            taker
+                .wallet
+                .read()
+                .is_ok_and(|w| !w.list_live_contract_spend_info().is_empty())
+        };
+        // Before the wallet reads as well as after: a swap that funds and fails during a read releases
+        // its slot on the way into recovery, which a wallet already read would no longer show.
+        let swap_at_start = self.open_takers().iter().any(|taker| taker.swap_running());
+        // Until a snapshot holds no wallet left to read: each read can wait out a sync while the window
+        // stays usable, and a wallet opened, or a swap or router started, meanwhile must still count.
+        let mut checked: Vec<Arc<TakerInstance>> = Vec::new();
+        let mut recovery_running = false;
+        let takers = loop {
+            let takers = self.open_takers();
+            let unseen: Vec<_> = takers
+                .iter()
+                .filter(|taker| !checked.iter().any(|seen| Arc::ptr_eq(seen, taker)))
+                .cloned()
+                .collect();
+            if unseen.is_empty() {
+                break takers;
+            }
+            recovery_running = recovery_running || unseen.iter().any(recovering);
+            checked.extend(unseen);
+        };
+        let swap_running = swap_at_start || takers.iter().any(|taker| taker.swap_running());
+        QuitBlockers {
+            swap_running,
+            recovery_running,
+            running_routers: self.running_routers(),
+        }
+    }
+
+    /// Keyed on phase, not on `runtime` being present: a server thread that exits on its own
+    /// sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
+    /// about a maker that finished long ago.
+    fn running_routers(&self) -> Vec<String> {
+        self.makers
+            .lock()
+            .map(|makers| {
+                makers
+                    .values()
+                    .filter(|entry| {
+                        matches!(
+                            entry.phase,
+                            MakerPhase::Restoring
+                                | MakerPhase::Initializing
+                                | MakerPhase::Starting
+                                | MakerPhase::Running
+                                | MakerPhase::Stopping
+                        )
+                    })
+                    .map(|entry| entry.settings.router_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `running_work` without waiting, for a caller holding gates others are queued on: a wallet
+    /// a sync is writing counts as busy instead of being waited out.
+    pub fn idle_now(&self) -> bool {
+        let wallets_idle = self.open_takers().iter().all(|taker| {
+            !taker.swap_running()
+                && taker
+                    .wallet
+                    .try_read()
+                    .is_ok_and(|w| w.list_live_contract_spend_info().is_empty())
+        });
+        wallets_idle && self.running_routers().is_empty()
+    }
+
+    /// Stops new wallet opens and router starts ahead of a restart, unless a wallet is already
+    /// opening. False leaves both open. Routers admitted earlier still show in `running_work`.
+    pub fn close_for_restart(&self) -> Result<bool, AppError> {
+        {
+            let takers = self.takers.lock()?;
+            if takers.values().any(|slot| matches!(slot, TakerSlot::Opening)) {
+                return Ok(false);
+            }
+            close_for_update(&self.wallet_gate);
+        }
+        let Ok(_makers) = self.makers.lock() else {
+            reopen_after_update(&self.wallet_gate);
+            return Err(AppError::new(ErrorCode::StatePoisoned, "router registry lock poisoned"));
+        };
+        close_for_update(&self.router_gate);
+        Ok(true)
+    }
+
+    /// Undoes `close_for_restart`, but never a shutdown's close.
+    pub fn reopen_after_restart_refused(&self) {
+        reopen_after_update(&self.wallet_gate);
+        reopen_after_update(&self.router_gate);
+    }
+
+    /// Why a wallet may not start opening now, if it may not.
+    pub(crate) fn wallet_opens_closed(&self) -> Option<&'static str> {
+        match self.wallet_gate.load(Ordering::Acquire) {
+            GATE_OPEN => None,
+            GATE_CLOSED_FOR_UPDATE => Some("Portal is restarting to finish an update"),
+            _ => Some("Portal is shutting down"),
+        }
+    }
+
+    /// Refuses every later wallet open. Under `takers`, so no open is admitted after it.
+    pub(crate) fn close_wallets_for_shutdown(&self) {
+        let _takers = self.takers.lock();
+        self.wallet_gate
+            .store(GATE_CLOSED_FOR_SHUTDOWN, Ordering::Release);
+    }
+
     /// Runs `hold` only while `session` is live, under the lock `end_session` marks it ended with,
     /// so a phrase is either held before that session's cleanup or never held at all.
     pub(crate) fn hold_phrase_for(
@@ -377,5 +528,46 @@ mod phrase_tests {
         state.hold_phrase_for("gone", || held.push("gone")).unwrap();
         state.hold_phrase_for("live", || held.push("live")).unwrap();
         assert_eq!(held, ["live"]);
+    }
+}
+
+#[cfg(test)]
+mod restart_gate_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_update_reopens_routers_but_never_undoes_a_shutdown() {
+        let state = AppState::default();
+        assert!(state.close_for_restart().unwrap());
+        assert!(state.wallet_opens_closed().is_some());
+        assert_ne!(state.router_gate.load(Ordering::Acquire), GATE_OPEN);
+        state.reopen_after_restart_refused();
+        assert!(state.wallet_opens_closed().is_none());
+        assert_eq!(state.router_gate.load(Ordering::Acquire), GATE_OPEN);
+
+        assert!(state.close_for_restart().unwrap());
+        state
+            .router_gate
+            .store(GATE_CLOSED_FOR_SHUTDOWN, Ordering::Release);
+        state.close_wallets_for_shutdown();
+        state.reopen_after_restart_refused();
+        assert_eq!(
+            state.router_gate.load(Ordering::Acquire),
+            GATE_CLOSED_FOR_SHUTDOWN
+        );
+        assert_eq!(state.wallet_opens_closed(), Some("Portal is shutting down"));
+    }
+
+    #[test]
+    fn a_wallet_still_opening_keeps_the_restart_gate_open() {
+        let state = AppState::default();
+        state
+            .takers
+            .lock()
+            .unwrap()
+            .insert(PathBuf::from("/wallet"), TakerSlot::Opening);
+        assert!(!state.close_for_restart().unwrap());
+        assert!(state.wallet_opens_closed().is_none());
+        assert_eq!(state.router_gate.load(Ordering::Acquire), GATE_OPEN);
     }
 }

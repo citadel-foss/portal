@@ -49,7 +49,7 @@ A single Portal app manages multiple wallets and routers. It builds as a native 
 web app for headless servers.
 
 Portal connects to third-party or self-hosted Electrum servers, or directly to a Bitcoin full node.
-All network traffic goes over Tor, and Portal manages Tor itself, so no local setup is needed.
+Swap and router traffic goes over Tor, and Portal manages Tor itself, so no local setup is needed. Update checks and downloads go to GitHub directly, not over Tor.
 
 Portal is built entirely on the OpenSwap Core APIs and the Rust-based Tauri framework. The result is
 a small, fast, cross-platform binary that runs comfortably on a low-cost VPS or a Raspberry Pi at

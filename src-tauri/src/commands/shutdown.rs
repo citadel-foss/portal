@@ -9,8 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 
 use portal_core::error::AppError;
-use portal_core::state::{AppState, TakerInstance};
-use portal_core::types::{MakerPhase, QuitBlockers};
+use portal_core::state::AppState;
 
 /// Latched by whichever path starts the teardown, so a second Quit while one is already
 /// running is ignored and `RunEvent::Exit` does not repeat the work.
@@ -19,66 +18,6 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 /// Held while `begin_quit` waits on the blocker check, so repeated quit gestures during a slow
 /// wallet sync share one answer instead of each showing the dialog or quitting on its own.
 static CHECKING: AtomicBool = AtomicBool::new(false);
-
-/// Work that a quit would interrupt rather than finish, so the user is asked first.
-fn quit_blockers(state: &AppState) -> QuitBlockers {
-    // Read from the wallet rather than `active_swap`: recovery outlives the swap that started it
-    // and survives a restart, and quitting mid-recovery is the one thing that actually stalls it.
-    let recovering = |taker: &Arc<TakerInstance>| {
-        taker
-            .wallet
-            .read()
-            .is_ok_and(|w| !w.list_live_contract_spend_info().is_empty())
-    };
-    // Before the wallet reads as well as after: a swap that funds and fails during a read releases
-    // its slot on the way into recovery, which a wallet already read would no longer show.
-    let swap_at_start = state.open_takers().iter().any(|taker| taker.swap_running());
-    // Until a snapshot holds no wallet left to read: each read can wait out a sync while the window
-    // stays usable, and a wallet opened, or a swap or router started, meanwhile must still count.
-    let mut checked: Vec<Arc<TakerInstance>> = Vec::new();
-    let mut recovery_running = false;
-    let takers = loop {
-        let takers = state.open_takers();
-        let unseen: Vec<_> = takers
-            .iter()
-            .filter(|taker| !checked.iter().any(|seen| Arc::ptr_eq(seen, taker)))
-            .cloned()
-            .collect();
-        if unseen.is_empty() {
-            break takers;
-        }
-        recovery_running = recovery_running || unseen.iter().any(recovering);
-        checked.extend(unseen);
-    };
-    let swap_running = swap_at_start || takers.iter().any(|taker| taker.swap_running());
-    // Keyed on phase, not on `runtime` being present: a server thread that exits on its own
-    // sets Stopped or Failed but leaves its runtime in place, and quitting would then warn
-    // about a maker that finished long ago.
-    let running_routers = state
-        .makers
-        .lock()
-        .map(|makers| {
-            makers
-                .values()
-                .filter(|entry| {
-                    matches!(
-                        entry.phase,
-                        MakerPhase::Initializing
-                            | MakerPhase::Starting
-                            | MakerPhase::Running
-                            | MakerPhase::Stopping
-                    )
-                })
-                .map(|entry| entry.settings.router_id.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    QuitBlockers {
-        swap_running,
-        recovery_running,
-        running_routers,
-    }
-}
 
 /// Entry point for every deliberate quit gesture. Asks first when something is mid-flight,
 /// otherwise goes straight to teardown.
@@ -90,7 +29,7 @@ pub fn begin_quit(app: &AppHandle) {
     // Off the main thread: a wallet sync holds the wallet's write lock for its whole run, and
     // the recovery check waiting behind it would freeze every window until the sync ended.
     std::thread::spawn(move || {
-        let blockers = quit_blockers(&app.state::<Arc<AppState>>());
+        let blockers = app.state::<Arc<AppState>>().running_work();
         CHECKING.store(false, Ordering::SeqCst);
         if blockers.swap_running
             || blockers.recovery_running
@@ -100,7 +39,7 @@ pub fn begin_quit(app: &AppHandle) {
             let _ = app.emit("app://quit-blocked", blockers);
             return;
         }
-        run_quit(app);
+        run_quit(app, false);
     });
 }
 
@@ -174,11 +113,16 @@ pub fn route_native_terminate(app: &AppHandle) {
 /// Confirms a quit the user was warned about.
 #[tauri::command]
 pub fn quit_app(app: AppHandle) -> Result<(), AppError> {
-    run_quit(app);
+    run_quit(app, false);
     Ok(())
 }
 
-fn run_quit(app: AppHandle) {
+/// Same teardown as a quit, then launches the app again from its own path.
+pub(crate) fn relaunch(app: AppHandle) {
+    run_quit(app, true);
+}
+
+fn run_quit(app: AppHandle, restart: bool) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -188,7 +132,11 @@ fn run_quit(app: AppHandle) {
     let _ = app.emit("app://quitting", ());
     std::thread::spawn(move || {
         shutdown_runtime(&app);
-        app.exit(0);
+        if restart {
+            app.request_restart();
+        } else {
+            app.exit(0);
+        }
     });
 }
 

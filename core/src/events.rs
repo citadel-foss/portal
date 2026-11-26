@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 
 use crate::error::AppError;
 use crate::types::{MakerPhaseEvent, RecoveryHandoff};
+use crate::update::UpdateProgress;
 
 /// How many events a slow subscriber may fall behind before it is told to resynchronize
 /// rather than silently missing a state change.
@@ -28,6 +29,7 @@ pub enum AppEvent {
     SwapFinished(String),
     SwapFailed(AppError),
     SwapRecovering(RecoveryHandoff),
+    UpdateProgress(UpdateProgress),
 }
 
 impl AppEvent {
@@ -39,6 +41,7 @@ impl AppEvent {
             Self::SwapFinished(_) => "swap://finished",
             Self::SwapFailed(_) => "swap://failed",
             Self::SwapRecovering(_) => "swap://recovering",
+            Self::UpdateProgress(_) => "update://progress",
         }
     }
 
@@ -51,6 +54,7 @@ impl AppEvent {
             Self::SwapFinished(swap_id) => serde_json::to_value(swap_id),
             Self::SwapFailed(error) => serde_json::to_value(error),
             Self::SwapRecovering(handoff) => serde_json::to_value(handoff),
+            Self::UpdateProgress(progress) => serde_json::to_value(progress),
         };
         // These payloads are plain owned DTOs with no map keys to reject, so failure is not
         // reachable; a null body is still better than dropping the notification entirely.

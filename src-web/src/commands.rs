@@ -245,6 +245,48 @@ pub static OPERATIONS: &[Operation] = &[
         let _ = (&ctx, &args);
         Box::pin(async move { encode(&ops::taker_wallet::get_btc_price().await?) })
     }),
+    op("check_update", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            encode(
+                &tokio::task::spawn_blocking(crate::update::check)
+                    .await
+                    .map_err(AppError::internal)??,
+            )
+        })
+    }),
+    // Restarts the server for every browser on it, not only the one that asked.
+    op("install_update", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            let rt = ctx.rt.clone();
+            tokio::task::spawn_blocking(move || crate::update::install(&rt))
+                .await
+                .map_err(AppError::internal)??;
+            encode(&())
+        })
+    }),
+    op("update_changes", true, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            encode(
+                &tokio::task::spawn_blocking(portal_core::update::changes)
+                    .await
+                    .map_err(AppError::internal)??,
+            )
+        })
+    }),
+    op("update_blockers", false, |ctx, args| {
+        let _ = (&ctx, &args);
+        Box::pin(async move {
+            let rt = ctx.rt.clone();
+            encode(
+                &tokio::task::spawn_blocking(move || rt.running_work())
+                    .await
+                    .map_err(AppError::internal)?,
+            )
+        })
+    }),
     op("get_electrum_presets", false, |ctx, args| {
         let _ = (&ctx, &args);
         Box::pin(async move { encode(&ops::chain_backend::electrum_presets()) })
@@ -1124,5 +1166,8 @@ mod tests {
         assert!(!lookup("get_balances").unwrap().mutates);
         assert!(lookup("check_backend").unwrap().mutates);
         assert!(lookup("get_btc_price").unwrap().mutates);
+        assert!(lookup("check_update").unwrap().mutates);
+        assert!(lookup("install_update").unwrap().mutates);
+        assert!(lookup("update_changes").unwrap().mutates);
     }
 }

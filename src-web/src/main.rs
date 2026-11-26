@@ -8,6 +8,7 @@ mod files;
 mod routes;
 mod sse;
 mod state;
+mod update;
 
 use std::sync::Arc;
 
@@ -44,11 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     portal_core::shutdown_signal::arm();
+    update::remember_exe(config.assets_dir.is_some());
 
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(serve(config))
+        .build()?;
+    let served = runtime.block_on(serve(config));
+    // Bounded: a blocking task still waiting on the network must not hold up the restart.
+    runtime.shutdown_timeout(Duration::from_secs(5));
+    served?;
+    update::relaunch_if_requested()
 }
 
 /// Best effort: a machine with no desktop, or no opener, still has the URL printed above.
@@ -164,7 +170,9 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         console.line(&format!("\nPortal is running. Open: {url}"));
         // Local use only, where the person who started it is at this machine's browser. A
         // server behind a proxy has no one at its screen, and the URL above is the answer.
-        if state.config.access_profile == config::AccessProfile::DevelopmentLoopback {
+        if state.config.access_profile == config::AccessProfile::DevelopmentLoopback
+            && std::env::var_os(update::RELAUNCHED_ENV).is_none()
+        {
             open_browser(&url);
         }
     } else {
@@ -175,21 +183,41 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Connect info feeds the login throttle's per-client count.
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .with_graceful_shutdown(await_signal())
-        .await?;
+    let server = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(await_signal());
+    // Bounded: a client that stops reading never lets its connection finish, which would hold
+    // teardown off indefinitely. What is still open afterwards ends with the runtime.
+    let drain_limit = DRAIN_LIMIT.min(Duration::from_secs(shutdown_timeout) / 4);
+    tokio::select! {
+        served = server => served?,
+        _ = async {
+            portal_core::shutdown_signal::wait().await;
+            tokio::time::sleep(drain_limit).await;
+        } => log::warn!("connections still open after {:?}; closing them", drain_limit),
+    }
 
     // Reached once in-flight requests have drained. Everything below outlives the HTTP
     // server: routers, the wallet and Tor are the process, not the transport.
-    teardown(&state, Duration::from_secs(shutdown_timeout)).await;
+    let drained = SHUTDOWN_AT.get().map_or(Duration::ZERO, |at| at.elapsed());
+    teardown(&state, Duration::from_secs(shutdown_timeout).saturating_sub(drained)).await;
+    console.reattach();
     Ok(())
 }
+
+/// The most in-flight requests get to finish once shutdown starts. Never more than a quarter of
+/// the stop budget: the rest belongs to the teardown, which is what protects funds.
+const DRAIN_LIMIT: Duration = Duration::from_secs(10);
+
+/// When shutdown was asked for. The drain and the teardown share one stop budget from here, so
+/// together they still fit the supervisor's grace period.
+static SHUTDOWN_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// Stops accepting new work on SIGTERM or SIGINT, then lets in-flight requests drain.
 ///
 /// Through `shutdown_signal`, the same flag the desktop host waits on.
 async fn await_signal() {
     portal_core::shutdown_signal::wait().await;
+    let _ = SHUTDOWN_AT.set(std::time::Instant::now());
     log::info!("shutdown signal received; draining in-flight requests");
 }
 

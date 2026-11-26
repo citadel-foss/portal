@@ -60,6 +60,8 @@ pub enum ErrorCode {
     InsecureDataDirectory,
     InvalidFileSelection,
     BackendRouteChanged,
+    /// The in-app update could not be downloaded, verified or put in place.
+    UpdateFailed,
     // infrastructure
     StatePoisoned,
     Io,
@@ -122,7 +124,8 @@ impl ErrorCode {
             | Self::RouterNotInitialized
             | Self::RouterAlreadyRunning
             | Self::RouterNotRunning
-            | Self::ReportNotFound => ErrorClass::NeedsInput,
+            | Self::ReportNotFound
+            | Self::UpdateFailed => ErrorClass::NeedsInput,
 
             // Funds are already committed to contracts; recovery owns them from here.
             Self::ContractsBroadcasted => ErrorClass::UnsafeToRetry,

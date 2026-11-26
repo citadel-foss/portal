@@ -25,6 +25,8 @@ export interface HostCapabilities {
   nativeFilePicker: boolean;
   /** Quitting the process is offered. Never on the web: the supervisor owns the daemon. */
   canQuit: boolean;
+  /** The app can check for and install updates. */
+  selfUpdate: boolean;
 }
 
 /** A durable operation whose outcome the server could not confirm. */
@@ -66,6 +68,9 @@ export interface Host {
    *  file's name. `walletPassword` unseals the wallet's seed. Desktop saves it
    *  where a native dialog says; web has the server produce it and downloads it. */
   createBackup(walletPassword: string, password: string, routerId?: string): Promise<string>;
+  /** Called once an update is installed. Resolves only if the host is back and the page has
+   *  been told to reload; rejects if it never came back. */
+  awaitRestart(): Promise<void>;
 }
 
 /** Mirrors `RestoreSelectionView` in core. */

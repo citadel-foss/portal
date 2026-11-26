@@ -750,6 +750,42 @@
       "note": "The supervisor owns service termination; web UI offers logout, not daemon quit."
     },
     {
+      "name": "check_update",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Reads the release's build.json. CSRF-protected on web: it reaches the network on the server's behalf."
+    },
+    {
+      "name": "install_update",
+      "executionClass": "transient",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Replaces the installed app or server binary and restarts it; on web that restarts it for every session."
+    },
+    {
+      "name": "update_changes",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "Lists the pull requests merged after this build, from the release's changes.json. CSRF-protected on web: it reaches the network on the server's behalf."
+    },
+    {
+      "name": "update_blockers",
+      "executionClass": "probe",
+      "desktop": true,
+      "web": true,
+      "webAdaptation": "none",
+      "retryClass": "none",
+      "note": "The swaps, recoveries and routers an update would interrupt."
+    },
+    {
       "name": "list_taker_blocklist",
       "executionClass": "read",
       "desktop": true,

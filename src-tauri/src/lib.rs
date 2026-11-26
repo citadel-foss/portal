@@ -5,7 +5,7 @@ mod native;
 
 use commands::{
     auth, blocklist, chain_backend, logs, maker, maker_reports, maker_settings, maker_wallet,
-    market, setup, shutdown, taker_reports, taker_swap, taker_wallet,
+    market, setup, shutdown, taker_reports, taker_swap, taker_wallet, update,
 };
 use std::sync::Arc;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -207,6 +207,10 @@ pub fn run() {
             logs::get_maker_logs,
             // app lifecycle
             shutdown::quit_app,
+            update::check_update,
+            update::install_update,
+            update::update_changes,
+            update::update_blockers,
         ]))
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -228,6 +232,7 @@ pub fn run() {
                 portal_core::logging::set_log_dir(root);
             }
             portal_core::tor::sweep_stale_tor_dirs();
+            update::sweep_staging();
 
             // A SIGTERM or SIGINT quits through Tauri, which runs the same teardown as the
             // Quit menu: routers and wallets first, Tor last.

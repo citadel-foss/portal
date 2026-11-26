@@ -151,24 +151,25 @@ export function Modal({ title, children, footer, onClose, wide = false }: ModalP
   const panelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
-    const panel = panelRef.current;
-    const focusable = panel?.querySelectorAll<HTMLElement>(
-      'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    focusable?.[0]?.focus();
+    // Queried on every Tab: content that loads after opening adds buttons, and a disabled
+    // button can't take focus. Focus moves here rather than natively because WebKit's Tab skips
+    // buttons unless the user turned on full keyboard access, so it would leave the dialog.
+    const focusables = () => [
+      ...(panelRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) ?? []),
+    ].filter((el) => el.getClientRects().length > 0);
+    focusables()[0]?.focus();
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
-      if (e.key === "Tab" && focusable?.length) {
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
+      if (e.key !== "Tab") return;
+      const focusable = focusables();
+      if (!focusable.length) return;
+      e.preventDefault();
+      const at = focusable.indexOf(document.activeElement as HTMLElement);
+      const step = e.shiftKey ? -1 : 1;
+      const next = at === -1 ? (e.shiftKey ? focusable.length - 1 : 0) : at + step;
+      focusable[(next + focusable.length) % focusable.length].focus();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {

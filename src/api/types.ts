@@ -71,11 +71,42 @@ export interface TorStatus {
   controlPort?: number;
 }
 
-/** Work a quit would interrupt rather than finish. Payload of `app://quit-blocked`. */
+/** Work a quit or an update would interrupt rather than finish. Payload of `app://quit-blocked`. */
 export interface QuitBlockers {
   swapRunning: boolean;
   recoveryRunning: boolean;
   runningRouters: string[];
+}
+
+/** The latest published build against this one. `inPlace` is false when Portal can't replace its
+ *  own install (a package-manager install, a read-only folder) and should link the release. */
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  available: boolean;
+  inPlace: boolean;
+  releaseUrl: string;
+}
+
+/** A pull request merged between the running build and the release's. */
+export interface Change {
+  number: number;
+  title: string;
+  url: string;
+}
+
+/** What an update brings in, newest first, per repository. */
+export interface Changes {
+  portal: Change[];
+  openswap: Change[];
+  /** False when the release's history starts after this build, so only newer changes are listed. */
+  complete: boolean;
+}
+
+/** Payload of `update://progress`. */
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
 }
 
 export type ConnectionType = "tor" | "clearnet";
@@ -175,6 +206,7 @@ export type ErrorCode =
   | "INVALID_FILE_SELECTION"
   | "BACKEND_ROUTE_CHANGED"
   | "CONTRACTS_BROADCASTED"
+  | "UPDATE_FAILED"
   | "INVALID_INPUT"
   | "STATE_POISONED"
   | "IO"

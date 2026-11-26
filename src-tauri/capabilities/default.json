@@ -31,6 +31,15 @@
         },
         {
           "url": "https://faucet.citadelfoss.xyz/*"
+        },
+        {
+          "url": "https://github.com/citadel-foss/portal/releases/*"
+        },
+        {
+          "url": "https://github.com/citadel-foss/portal/pull/*"
+        },
+        {
+          "url": "https://github.com/citadel-foss/openswap/pull/*"
         }
       ]
     },
@@ -100,6 +109,10 @@
     "allow-poll-maker",
     "allow-prepare-swap",
     "allow-quit-app",
+    "allow-check-update",
+    "allow-install-update",
+    "allow-update-changes",
+    "allow-update-blockers",
     "allow-list-recoveries",
     "allow-recover-swap",
     "allow-remove-maker",

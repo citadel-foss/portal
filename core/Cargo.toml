@@ -20,6 +20,11 @@ argon2.workspace = true
 zeroize.workspace = true
 minreq.workspace = true
 log4rs.workspace = true
+# In-app update. ureq rather than minreq: it gives each resolved address its own connect
+# timeout, and one of GitHub's release-asset addresses can black-hole a connection.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+semver = "1"
+sha2 = "0.10"
 
 [features]
 # Selected by each host, not here, so a headless build can opt out of the bundled Tor.
