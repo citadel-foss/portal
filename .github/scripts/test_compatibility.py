@@ -193,6 +193,12 @@ class Changes(unittest.TestCase):
         self.assertEqual(self.calls, [("citadel-foss/portal", "p71", "p72"),
                                       ("citadel-foss/openswap", "o71", "o72")])
 
+    def test_merge_subject_without_a_number_is_skipped(self):
+        self.assertIsNone(packaging.pull_request("Merge pull request #"))
+        self.assertIsNone(packaging.pull_request("Merge pull request #abc from x/y"))
+        self.assertEqual(packaging.merged(["Merge pull request #", "fix: thing (#7)"]),
+                         [{"number": 7, "title": "fix: thing"}])
+
     def test_unchanged_repository_is_not_compared(self):
         changes = self.extend({}, self.previous, openswap_sha="o71")
         self.assertEqual(changes["builds"][0]["openswap"], [])

@@ -70,7 +70,7 @@ def pull_request(message):
     lines = message.splitlines()
     first = lines[0].strip() if lines else ""
     if first.startswith("Merge pull request #"):
-        number = first.removeprefix("Merge pull request #").split()[0]
+        number = (first.removeprefix("Merge pull request #").split() or [""])[0]
         title = next((line.strip() for line in lines[1:] if line.strip()), first)
     elif first.endswith(")") and " (#" in first:
         title, number = first[:-1].rsplit(" (#", 1)
