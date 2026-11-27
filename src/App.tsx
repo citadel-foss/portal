@@ -24,9 +24,11 @@ import { WalletPage } from "./pages/wallet/WalletPage";
 import {
   confirmRecoveryPhraseSaved,
   confirmRouterRecoveryPhraseSaved,
-  getRecoveryPhrase,
-  getRouterRecoveryPhrase,
   getSessionState,
+  recoveryPhraseSaved,
+  revealRecoveryPhrase,
+  revealRouterRecoveryPhrase,
+  routerRecoveryPhraseSaved,
 } from "./api/commands";
 import { refreshWalletCache } from "./lib/wallet-sync";
 import { watchUnresolved } from "./store/unresolved";
@@ -64,26 +66,32 @@ function RequireWallet() {
   // role was wanted, and the picker offers its own way back to the role choice. The role
   // picker stays the entry point the connection gate hands off to.
   if (!initialized) return <Navigate to="/setup" replace />;
-  // Asked here, not after `init_taker`, so a reload or a lost response before the user confirmed
-  // still lands on the phrase instead of losing it.
+  // Asked here, not after `init_taker`, so every way into a wallet passes it: a create, an
+  // unlock of one never confirmed, a reload.
   return (
-    <RecoveryPhraseGate ask={getRecoveryPhrase} confirm={confirmRecoveryPhraseSaved} subject="wallet">
+    <RecoveryPhraseGate
+      saved={recoveryPhraseSaved}
+      reveal={revealRecoveryPhrase}
+      confirm={confirmRecoveryPhraseSaved}
+      subject="wallet"
+    >
       <Outlet />
     </RecoveryPhraseGate>
   );
 }
 
-/** A new router's phrase comes before anything else on it, its setup included: the router can be
+/** A router's phrase comes before anything else on it, its setup included: the router can be
  *  funded the moment it runs, and its words must be saved before there is anything to lose. */
 function RequireRouterPhrase() {
   const id = useParams<{ routerId: string }>().routerId!;
-  // Asked again on every page of the router: a start can still create its wallet, and that start's
-  // error sends the user here to save the new words.
+  // Asked again on every page of the router: Rust only learns a stopped router's phrase is unsaved
+  // when a start opens its wallet, and that start's error sends the user here.
   const { pathname } = useLocation();
-  const ask = useCallback(() => getRouterRecoveryPhrase(id), [id]);
-  const confirm = useCallback((phraseId: string) => confirmRouterRecoveryPhraseSaved(id, phraseId), [id]);
+  const saved = useCallback(() => routerRecoveryPhraseSaved(id), [id]);
+  const reveal = useCallback((password: string) => revealRouterRecoveryPhrase(id, password), [id]);
+  const confirm = useCallback((password: string) => confirmRouterRecoveryPhraseSaved(id, password), [id]);
   return (
-    <RecoveryPhraseGate key={pathname} ask={ask} confirm={confirm} subject="router">
+    <RecoveryPhraseGate key={pathname} saved={saved} reveal={reveal} confirm={confirm} subject="router">
       <Outlet />
     </RecoveryPhraseGate>
   );

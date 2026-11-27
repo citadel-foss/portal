@@ -189,6 +189,7 @@ export type ErrorCode =
   | "WALLET_NETWORK_MISMATCH"
   | "WALLET_NEEDS_UPGRADE"
   | "WALLET_UPGRADE_BLOCKED"
+  | "RECOVERY_PHRASE_NOT_SAVED"
   | "NOT_INITIALIZED"
   | "SWAP_IN_PROGRESS"
   | "INSUFFICIENT_FUNDS"
@@ -388,10 +389,8 @@ export interface RouterSettings {
   network?: string;
 }
 
-/** A new wallet's or router's phrase, still waiting to be saved. `id` goes back with the
- *  confirmation, so it clears this phrase and no other. */
+/** A wallet's or router's recovery phrase, decrypted for one response. */
 export interface RecoveryPhrase {
-  id: string;
   words: string;
 }
 

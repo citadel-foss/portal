@@ -22,7 +22,7 @@ pub fn has_embedded() -> bool {
     !embedded::FILES.is_empty()
 }
 
-fn no_store() -> SetResponseHeaderLayer<HeaderValue> {
+pub(crate) fn no_store() -> SetResponseHeaderLayer<HeaderValue> {
     // No private API response or backup byte may be cached; the shell is versioned with the
     // build, so it must not be reused across incompatible releases either.
     SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))

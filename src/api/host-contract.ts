@@ -71,6 +71,9 @@ export interface Host {
   /** Called once an update is installed. Resolves only if the host is back and the page has
    *  been told to reload; rejects if it never came back. */
   awaitRestart(): Promise<void>;
+  /** Keeps the window out of screenshots, recordings and screen shares while `on`. Desktop
+   *  only; a browser offers no such control. */
+  protectScreen(on: boolean): Promise<void>;
 }
 
 /** Mirrors `RestoreSelectionView` in core. */
