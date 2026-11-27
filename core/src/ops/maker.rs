@@ -1364,6 +1364,65 @@ mod tests {
             MakerPhase::Failed { message } if message == "previous failure"));
     }
 
+    /// The phrase path opens the file itself rather than through `router_wallet`, so it needs its
+    /// own proof that a start cannot open the same file meanwhile.
+    #[tokio::test]
+    async fn phrase_reads_respect_the_reservation_and_a_failed_confirm_keeps_the_gate() {
+        let state = Arc::new(AppState::default());
+        let router_id = "phrase-reservation".to_string();
+        let missing =
+            std::env::temp_dir().join(format!("portal-phrase-test-{}", uuid::Uuid::new_v4()));
+        let settings = MakerSettingsDto::from_init(&named("Test"), &missing);
+        state.makers.lock().unwrap().insert(
+            router_id.clone(),
+            MakerHandle {
+                settings,
+                runtime: None,
+                phase: MakerPhase::Initializing,
+                generation: 0,
+                phrase_unsaved: true,
+            },
+        );
+        let reservation = RouterReservation {
+            state: state.clone(),
+            router_id: router_id.clone(),
+            previous: MakerPhase::Stopped,
+        };
+        let revealed = reveal_router_recovery_phrase(&state, &router_id, "pw".into()).await;
+        assert!(matches!(
+            revealed,
+            Err(AppError {
+                code: ErrorCode::RouterBusy,
+                ..
+            })
+        ));
+        let confirmed = confirm_router_recovery_phrase_saved(&state, &router_id, "pw".into()).await;
+        assert!(matches!(
+            confirmed,
+            Err(AppError {
+                code: ErrorCode::RouterBusy,
+                ..
+            })
+        ));
+        drop(reservation);
+        assert!(matches!(
+            state.makers.lock().unwrap()[&router_id].phase,
+            MakerPhase::Stopped
+        ));
+
+        assert!(
+            confirm_router_recovery_phrase_saved(&state, &router_id, "pw".into())
+                .await
+                .is_err()
+        );
+        assert!(!router_recovery_phrase_saved(&state, &router_id).unwrap());
+        assert!(matches!(
+            state.makers.lock().unwrap()[&router_id].phase,
+            MakerPhase::Stopped
+        ));
+        let _ = std::fs::remove_dir_all(&missing);
+    }
+
     #[test]
     fn maker_ids_are_path_safe() {
         assert!(valid_id("maker_01-test"));
